@@ -1,0 +1,260 @@
+<!-- submissions.html — Submissions module UI -->
+<!-- Server-rendered: currentUser and userRoles are available as template vars -->
+
+<div id="submissions-module">
+
+  <!-- Tab bar -->
+  <div class="module-tabs">
+    <button class="module-tab active" data-tab="new"  onclick="SubUI.switchTab('new')">
+      <i class="ti ti-plus"></i> New Submission
+    </button>
+    <button class="module-tab" data-tab="mine" onclick="SubUI.switchTab('mine')">
+      <i class="ti ti-list"></i> My Submissions
+    </button>
+    <? var roles = JSON.parse(userRoles); ?>
+    <? if (roles.includes('super_admin') || roles.includes('staff') || roles.includes('senate_faculty')) { ?>
+    <button class="module-tab" data-tab="all"  onclick="SubUI.switchTab('all')">
+      <i class="ti ti-table"></i> All Submissions
+    </button>
+    <? } ?>
+  </div>
+
+  <!-- ── Tab: New Submission ─────────────────────────── -->
+  <div id="tab-new" class="tab-panel">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title"><i class="ti ti-file-plus"></i> New Submission</div>
+
+      <!-- Form type selector -->
+      <div class="form-group">
+        <label class="form-label" for="form-type-select">Form type <span class="required">*</span></label>
+        <select class="form-select" id="form-type-select" onchange="SubUI.onFormTypeChange(this.value)">
+          <option value="">— Select a form type —</option>
+        </select>
+      </div>
+
+      <!-- Dynamic form fields injected here -->
+      <div id="dynamic-form-fields"></div>
+
+      <div id="submit-actions" class="form-actions" style="display:none;">
+        <button class="btn btn-primary" id="submit-btn" onclick="SubUI.submitForm()">
+          <i class="ti ti-send"></i> Submit
+        </button>
+        <button class="btn btn-secondary" onclick="SubUI.resetForm()">Clear</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Tab: My Submissions ────────────────────────── -->
+  <div id="tab-mine" class="tab-panel" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title flex items-center gap-2" style="justify-content:space-between;">
+        <span><i class="ti ti-list"></i> My Submissions</span>
+        <div class="flex gap-2">
+          <select class="form-select" id="mine-type-filter" style="width:auto;" onchange="SubUI.loadMySubmissions()">
+            <option value="">All form types</option>
+          </select>
+          <button class="btn btn-secondary btn-sm" onclick="SubUI.loadMySubmissions()">
+            <i class="ti ti-refresh"></i>
+          </button>
+        </div>
+      </div>
+      <div id="my-submissions-table">
+        <div class="empty-state"><i class="ti ti-inbox" style="font-size:32px;display:block;margin-bottom:8px;"></i>No submissions yet</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Tab: All Submissions (admin) ──────────────── -->
+  <div id="tab-all" class="tab-panel" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title flex items-center gap-2" style="justify-content:space-between;">
+        <span><i class="ti ti-table"></i> All Submissions</span>
+        <div class="flex gap-2">
+          <select class="form-select" id="all-type-filter" style="width:auto;" onchange="SubUI.loadAllSubmissions()">
+            <option value="">All form types</option>
+          </select>
+          <button class="btn btn-secondary btn-sm" onclick="SubUI.loadAllSubmissions()">
+            <i class="ti ti-refresh"></i>
+          </button>
+        </div>
+      </div>
+      <div id="all-submissions-table">
+        <div class="empty-state">Select a form type to load submissions.</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<style>
+.status-select {
+  padding: 3px 8px; border: 1px solid var(--color-border); border-radius: 4px;
+  font-size: 12.5px; background: var(--color-surface); cursor: pointer;
+}
+</style>
+
+<script>
+window.SubUI = (() => {
+
+  let _formTypes = [];
+  let _activeTab = 'new';
+  const _isAdmin = <?= (roles.includes('super_admin') || roles.includes('staff') || roles.includes('senate_faculty')) ? 'true' : 'false' ?>;
+
+  // ── Field definitions per form type ────────────────
+  // These mirror server-side FORM_TYPES fields, minus meta columns.
+  const FIELD_DEFS = {
+    general: [
+      { name: 'Subject',     label: 'Subject',      type: 'text',     required: true },
+      { name: 'Description', label: 'Description',  type: 'textarea', required: true },
+      { name: 'Priority',    label: 'Priority',     type: 'select',   required: true,
+        options: ['Low', 'Medium', 'High', 'Urgent'] },
+    ],
+    leave: [
+      { name: 'StartDate',  label: 'Start date',   type: 'date',     required: true },
+      { name: 'EndDate',    label: 'End date',     type: 'date',     required: true },
+      { name: 'LeaveType',  label: 'Leave type',   type: 'select',   required: true,
+        options: ['Annual', 'Sick', 'Personal', 'Unpaid', 'Other'] },
+      { name: 'Reason',     label: 'Reason',       type: 'textarea', required: false },
+    ],
+  };
+
+  // ── Init ─────────────────────────────────────────────
+  function init() {
+    App.call('submissions', 'getFormTypes', {}, types => {
+      _formTypes = types;
+      _populateTypeSelectors(types);
+    });
+  }
+
+  function _populateTypeSelectors(types) {
+    [
+      document.getElementById('form-type-select'),
+      document.getElementById('mine-type-filter'),
+      document.getElementById('all-type-filter'),
+    ].forEach(sel => {
+      if (!sel) return;
+      types.forEach(t => {
+        const opt = document.createElement('option');
+        opt.value = t.key;
+        opt.textContent = t.label;
+        sel.appendChild(opt);
+      });
+    });
+  }
+
+  // ── Tab switching ─────────────────────────────────────
+  function switchTab(tab) {
+    _activeTab = tab;
+    document.querySelectorAll('.tab-panel').forEach(p => p.style.display = 'none');
+    document.querySelectorAll('.module-tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+    document.getElementById('tab-' + tab).style.display = 'block';
+    if (tab === 'mine') loadMySubmissions();
+    if (tab === 'all')  loadAllSubmissions();
+  }
+
+  // ── Dynamic form rendering ────────────────────────────
+  function onFormTypeChange(formType) {
+    const container = document.getElementById('dynamic-form-fields');
+    const actions   = document.getElementById('submit-actions');
+    if (!formType) { container.innerHTML = ''; actions.style.display = 'none'; return; }
+
+    const fields = FIELD_DEFS[formType];
+    if (!fields) { container.innerHTML = '<p class="text-muted text-sm">No field definitions for this form type.</p>'; return; }
+
+    container.innerHTML = fields.map(f => _renderField(f)).join('');
+    actions.style.display = 'flex';
+  }
+
+  function _renderField(f) {
+    const req = f.required ? '<span class="required">*</span>' : '';
+    let input = '';
+    if (f.type === 'textarea') {
+      input = `<textarea class="form-textarea" name="${f.name}" id="field-${f.name}" ${f.required ? 'required' : ''}></textarea>`;
+    } else if (f.type === 'select') {
+      const opts = f.options.map(o => `<option value="${o}">${o}</option>`).join('');
+      input = `<select class="form-select" name="${f.name}" id="field-${f.name}" ${f.required ? 'required' : ''}><option value="">— Select —</option>${opts}</select>`;
+    } else {
+      input = `<input class="form-input" type="${f.type}" name="${f.name}" id="field-${f.name}" ${f.required ? 'required' : ''}>`;
+    }
+    return `
+      <div class="form-group">
+        <label class="form-label" for="field-${f.name}">${f.label} ${req}</label>
+        ${input}
+        <div class="form-error"></div>
+      </div>`;
+  }
+
+  // ── Submit ────────────────────────────────────────────
+  function submitForm() {
+    const formType = document.getElementById('form-type-select').value;
+    if (!formType) { Toast.show('Please select a form type.', 'error'); return; }
+
+    const { data, isValid } = FormHelper.collect('dynamic-form-fields');
+    if (!isValid) { Toast.show('Please fix the highlighted fields.', 'error'); return; }
+
+    FormHelper.setLoading('submit-btn', true);
+    App.call('submissions', 'submit', { formType, data }, result => {
+      FormHelper.setLoading('submit-btn', false);
+      Toast.show('Submission ' + result.id + ' received!', 'success');
+      resetForm();
+    }, () => FormHelper.setLoading('submit-btn', false));
+  }
+
+  function resetForm() {
+    document.getElementById('form-type-select').value = '';
+    document.getElementById('dynamic-form-fields').innerHTML = '';
+    document.getElementById('submit-actions').style.display = 'none';
+  }
+
+  // ── Load tables ───────────────────────────────────────
+  function loadMySubmissions() {
+    const formType = document.getElementById('mine-type-filter').value;
+    if (!formType) { document.getElementById('my-submissions-table').innerHTML = '<div class="empty-state">Select a form type to load submissions.</div>'; return; }
+    const el = document.getElementById('my-submissions-table');
+    el.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
+    App.call('submissions', 'list', { formType }, rows => {
+      el.innerHTML = rows.length ? _renderTable(rows, false) : '<div class="empty-state">No submissions found.</div>';
+    });
+  }
+
+  function loadAllSubmissions() {
+    const formType = document.getElementById('all-type-filter').value;
+    if (!formType) { document.getElementById('all-submissions-table').innerHTML = '<div class="empty-state">Select a form type to load submissions.</div>'; return; }
+    const el = document.getElementById('all-submissions-table');
+    el.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
+    App.call('submissions', 'list', { formType }, rows => {
+      el.innerHTML = rows.length ? _renderTable(rows, true) : '<div class="empty-state">No submissions found.</div>';
+    });
+  }
+
+  function _renderTable(rows, isAdmin) {
+    const cols = Object.keys(rows[0]).filter(k => !['UpdatedAt','UpdatedBy','Notes'].includes(k));
+    const statusColors = { Pending: 'badge-warning', Approved: 'badge-success', Rejected: 'badge-danger', Closed: 'badge-neutral' };
+    const headers = cols.map(c => `<th>${c}</th>`).join('') + (isAdmin ? '<th>Actions</th>' : '');
+    const body = rows.map(row => {
+      const cells = cols.map(c => {
+        if (c === 'Status') return `<td><span class="badge ${statusColors[row[c]] || 'badge-neutral'}">${row[c]}</span></td>`;
+        return `<td>${row[c] || ''}</td>`;
+      }).join('');
+      const actions = isAdmin
+        ? `<td><select class="status-select" onchange="SubUI.changeStatus('${row.ID}', this.value, '${document.getElementById('all-type-filter').value}')">
+              ${['Pending','Approved','Rejected','Closed'].map(s => `<option ${s===row.Status?'selected':''}>${s}</option>`).join('')}
+           </select></td>`
+        : '';
+      return `<tr>${cells}${actions}</tr>`;
+    }).join('');
+    return `<div class="table-wrap"><table class="data-table"><thead><tr>${headers}</tr></thead><tbody>${body}</tbody></table></div>`;
+  }
+
+  function changeStatus(id, status, formType) {
+    App.call('submissions', 'updateStatus', { formType, id, status }, () => {
+      Toast.show('Status updated to ' + status, 'success');
+    });
+  }
+
+  return { switchTab, onFormTypeChange, submitForm, resetForm, loadMySubmissions, loadAllSubmissions, changeStatus, init };
+
+})();
+
+SubUI.init();
+</script>

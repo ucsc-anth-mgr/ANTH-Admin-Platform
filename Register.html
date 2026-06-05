@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title><?= appTitle ?> — Request access</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
+  <?!= include('_Styles') ?>
+</head>
+<body>
+
+<header id="topbar">
+  <div class="topbar-left">
+    <span class="topbar-title"><?= appTitle ?></span>
+  </div>
+  <div class="topbar-right">
+    <i class="ti ti-user-circle" aria-hidden="true"></i>
+    <span class="topbar-user"><?= userEmail ?></span>
+  </div>
+</header>
+
+<div id="content" style="padding:28px 32px;">
+  <div id="reg-container" style="max-width:560px;margin:0 auto;">
+
+    <div class="card">
+      <div class="card-title"><i class="ti ti-user-plus"></i> Request access</div>
+      <p class="text-muted" style="margin:-8px 0 18px;">
+        You're signed in as <strong><?= userEmail ?></strong>, but you don't have access yet.
+        Submit a request and an administrator will review it.
+      </p>
+
+      <div id="reg-form">
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label" for="r-firstname">First name <span class="required">*</span></label>
+            <input class="form-input" type="text" id="r-firstname" name="firstName" required placeholder="Maria">
+            <div class="form-error"></div>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="r-lastname">Last name <span class="required">*</span></label>
+            <input class="form-input" type="text" id="r-lastname" name="lastName" required placeholder="Ramirez">
+            <div class="form-error"></div>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label" for="r-idtype">I am a…</label>
+            <select class="form-select" id="r-idtype" name="idType" onchange="Reg.onIdTypeChange()">
+              <option value="">— Select —</option>
+              <option value="student">Student</option>
+              <option value="employee">Faculty / Staff</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="r-idnumber">ID number</label>
+            <input class="form-input" type="text" id="r-idnumber" name="idNumber" placeholder="—">
+            <div class="form-hint" id="r-idhint">Select a type first.</div>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="r-role">Requested role</label>
+          <select class="form-select" id="r-role" name="requestedRole">
+            <option value="">— Select the role you need —</option>
+          </select>
+          <div class="form-hint">An administrator confirms or adjusts your role on approval.</div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="r-note">Note (optional)</label>
+          <textarea class="form-textarea" id="r-note" name="note" placeholder="Anything that helps us verify your request"></textarea>
+        </div>
+
+        <div class="form-actions">
+          <button class="btn btn-primary" id="reg-submit-btn" onclick="Reg.submit()">
+            <i class="ti ti-send"></i> Submit request
+          </button>
+        </div>
+      </div>
+
+      <div id="reg-done" style="display:none;text-align:center;padding:20px 0;">
+        <i class="ti ti-circle-check" style="font-size:44px;color:var(--color-success);"></i>
+        <h2 style="font-size:18px;margin:12px 0 6px;color:var(--ucsc-navy);">Request submitted</h2>
+        <p class="text-muted">An administrator will review your request. You'll get an email when it's decided.</p>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<div id="toast-container" aria-live="polite"></div>
+
+<?!= include('_Scripts') ?>
+
+<script>
+const Reg = (() => {
+
+  function init() {
+    const roles = <?!= roles ?>;
+    const sel = document.getElementById('r-role');
+    // Don't offer privileged roles for self-selection
+    const offerable = roles.filter(r => r !== 'super_admin');
+    offerable.forEach(r => {
+      const o = document.createElement('option');
+      o.value = r; o.textContent = r;
+      sel.appendChild(o);
+    });
+  }
+
+  function onIdTypeChange() {
+    const t = document.getElementById('r-idtype').value;
+    const hint = document.getElementById('r-idhint');
+    const input = document.getElementById('r-idnumber');
+    if (t === 'student')  { hint.textContent = '7 digits.'; input.placeholder = '1234567'; }
+    else if (t === 'employee') { hint.textContent = '8 digits.'; input.placeholder = '12345678'; }
+    else { hint.textContent = 'Select a type first.'; input.placeholder = '—'; }
+  }
+
+  function submit() {
+    const firstName = document.getElementById('r-firstname').value.trim();
+    const lastName = document.getElementById('r-lastname').value.trim();
+    if (!firstName || !lastName) { Toast.show('Please enter your first and last name.', 'error'); return; }
+    const idType = document.getElementById('r-idtype').value;
+    const idNumber = document.getElementById('r-idnumber').value.trim();
+    if (idNumber) {
+      if (idType === 'student' && !/^\d{7}$/.test(idNumber)) { Toast.show('Student ID must be 7 digits.', 'error'); return; }
+      if (idType === 'employee' && !/^\d{8}$/.test(idNumber)) { Toast.show('Employee ID must be 8 digits.', 'error'); return; }
+    }
+
+    const payload = {
+      firstName: firstName,
+      lastName: lastName,
+      idType: idType,
+      idNumber: idNumber,
+      requestedRole: document.getElementById('r-role').value,
+      note: document.getElementById('r-note').value.trim(),
+    };
+
+    const btn = document.getElementById('reg-submit-btn');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="ti ti-loader-2" style="animation:spin 0.7s linear infinite"></i> Submitting…';
+
+    google.script.run
+      .withSuccessHandler(() => {
+        document.getElementById('reg-form').style.display = 'none';
+        document.getElementById('reg-done').style.display = 'block';
+      })
+      .withFailureHandler(err => {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="ti ti-send"></i> Submit request';
+        Toast.show((err && err.message) || 'Could not submit request.', 'error');
+      })
+      .submitAccessRequest(payload);
+  }
+
+  return { init, onIdTypeChange, submit };
+
+})();
+
+Reg.init();
+</script>
+
+</body>
+</html>

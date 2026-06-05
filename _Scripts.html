@@ -1,0 +1,155 @@
+<script>
+// ============================================================
+// _Scripts.html — Client-side App framework (v2)
+// ============================================================
+
+const App = (() => {
+
+  let _state = { userEmail: '', userRoles: [], activePage: '', modules: [] };
+
+  function init(state) {
+    Object.assign(_state, state);
+    _renderQuickActions();
+    if (_state.activePage && _state.activePage !== 'dashboard') {
+      loadModule(_state.activePage);
+    }
+  }
+
+  // ── Dashboard ─────────────────────────────────────────────
+  function goDashboard() {
+    _setActiveNav('dashboard');
+    document.getElementById('module-container').innerHTML = `
+      <div class="card welcome-card">
+        <h1 class="welcome-title">Welcome!</h1>
+        <p class="text-muted" style="margin-bottom:20px;">Select an option from the menu to get started.</p>
+        <div id="quick-actions" class="quick-actions"></div>
+      </div>`;
+    _renderQuickActions();
+    _state.activePage = 'dashboard';
+  }
+
+  function _renderQuickActions() {
+    const el = document.getElementById('quick-actions');
+    if (!el) return;
+    el.innerHTML = _state.modules
+      .filter(m => m.key !== 'admin')
+      .map(m => `<button class="btn btn-primary" onclick="App.loadModule('${m.key}')">
+                   <i class="ti ${m.icon}"></i> ${m.label}
+                 </button>`).join('');
+    if (!el.innerHTML) el.innerHTML = '<p class="text-muted text-sm">No modules available yet.</p>';
+  }
+
+  // ── Module loader ─────────────────────────────────────────
+  function loadModule(moduleKey) {
+    _setActiveNav(moduleKey);
+    const container = document.getElementById('module-container');
+    container.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
+
+    google.script.run
+      .withSuccessHandler(html => {
+        container.innerHTML = html;
+        _state.activePage = moduleKey;
+        container.querySelectorAll('script').forEach(s => {
+          const fresh = document.createElement('script');
+          if (s.src) fresh.src = s.src; else fresh.textContent = s.textContent;
+          document.head.appendChild(fresh).remove();
+        });
+        if (window.innerWidth <= 720) document.getElementById('sidebar').classList.add('collapsed');
+      })
+      .withFailureHandler(err => {
+        container.innerHTML = `
+          <div class="card">
+            <div style="color:var(--color-danger);display:flex;align-items:center;gap:8px;">
+              <i class="ti ti-alert-circle"></i><strong>Error loading module</strong>
+            </div>
+            <p style="margin-top:8px;color:var(--color-muted);font-size:13px;">${_esc(err.message)}</p>
+          </div>`;
+        Toast.show(err.message || 'Failed to load module', 'error');
+      })
+      .getModuleHTML(moduleKey);
+  }
+
+  // ── Server call helper ────────────────────────────────────
+  function call(module, action, payload, onSuccess, onError) {
+    google.script.run
+      .withSuccessHandler(onSuccess)
+      .withFailureHandler(err => {
+        const msg = (err && err.message) || 'An error occurred.';
+        Toast.show(msg, 'error');
+        if (onError) onError(err);
+      })
+      .dispatch(module, action, payload);
+  }
+
+  function toggleSidebar() { document.getElementById('sidebar').classList.toggle('collapsed'); }
+
+  function _setActiveNav(key) {
+    document.querySelectorAll('.nav-item').forEach(a => a.classList.toggle('active', a.dataset.module === key));
+  }
+  function _esc(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  return { init, goDashboard, loadModule, call, toggleSidebar };
+
+})();
+
+
+// ============================================================
+// Toast
+// ============================================================
+const Toast = (() => {
+  function show(message, type, duration) {
+    const container = document.getElementById('toast-container');
+    const el = document.createElement('div');
+    const icon = type === 'success' ? 'ti-circle-check' : type === 'error' ? 'ti-alert-circle' : 'ti-info-circle';
+    el.className = `toast toast-${type || 'info'}`;
+    el.innerHTML = `<i class="ti ${icon}" style="font-size:16px;flex-shrink:0"></i><span>${message}</span>`;
+    container.appendChild(el);
+    setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity 0.3s'; setTimeout(() => el.remove(), 300); }, duration || 3500);
+  }
+  return { show };
+})();
+
+
+// ============================================================
+// FormHelper
+// ============================================================
+const FormHelper = (() => {
+  function collect(containerId) {
+    const container = document.getElementById(containerId);
+    const inputs = container.querySelectorAll('[name]');
+    const data = {}; let isValid = true;
+    inputs.forEach(el => {
+      const errEl = el.parentElement.querySelector('.form-error');
+      if (errEl) errEl.classList.remove('visible');
+      el.style.borderColor = '';
+      const val = el.value.trim();
+      if (el.hasAttribute('required') && !val) { _err(el, errEl, 'This field is required.'); isValid = false; }
+      if (el.type === 'email' && val && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val)) { _err(el, errEl, 'Enter a valid email address.'); isValid = false; }
+      data[el.name] = val;
+    });
+    return { data, isValid };
+  }
+  function reset(containerId) {
+    document.getElementById(containerId).querySelectorAll('[name]').forEach(el => {
+      el.value = '';
+      const errEl = el.parentElement.querySelector('.form-error');
+      if (errEl) errEl.classList.remove('visible');
+    });
+  }
+  function setLoading(btnId, loading, label) {
+    const btn = document.getElementById(btnId); if (!btn) return;
+    if (btn.dataset.originalText === undefined) btn.dataset.originalText = btn.innerHTML;
+    btn.disabled = loading;
+    btn.innerHTML = loading
+      ? '<i class="ti ti-loader-2" style="animation:spin 0.7s linear infinite"></i> ' + (label || 'Saving…')
+      : btn.dataset.originalText;
+  }
+  function _err(el, errEl, msg) {
+    el.style.borderColor = 'var(--color-danger)';
+    if (errEl) { errEl.textContent = msg; errEl.classList.add('visible'); }
+  }
+  return { collect, reset, setLoading };
+})();
+</script>

@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title><?= appTitle ?></title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
+  <?!= include('_Styles') ?>
+</head>
+<body>
+
+<!-- ── Top header bar ──────────────────────────────────────── -->
+<header id="topbar">
+  <div class="topbar-left">
+    <button id="nav-toggle" onclick="App.toggleSidebar()" aria-label="Toggle menu">
+      <i class="ti ti-menu-2"></i>
+    </button>
+    <span class="topbar-title"><?= appTitle ?></span>
+  </div>
+  <div class="topbar-right">
+    <i class="ti ti-user-circle" aria-hidden="true"></i>
+    <span class="topbar-user">Logged in as <?= userEmail ?></span>
+  </div>
+</header>
+
+<!-- ── Body: sidebar + content ─────────────────────────────── -->
+<div id="layout">
+
+  <nav id="sidebar">
+    <ul class="nav-list">
+      <li>
+        <a class="nav-item active" href="#" data-module="dashboard"
+           onclick="App.goDashboard(); return false;">
+          <i class="ti ti-home" aria-hidden="true"></i><span>Dashboard</span>
+        </a>
+      </li>
+      <? modules.forEach(function(mod) { ?>
+        <li>
+          <a class="nav-item" href="#" data-module="<?= mod.key ?>"
+             onclick="App.loadModule('<?= mod.key ?>'); return false;">
+            <i class="ti <?= mod.icon ?>" aria-hidden="true"></i><span><?= mod.label ?></span>
+          </a>
+        </li>
+      <? }); ?>
+    </ul>
+  </nav>
+
+  <main id="content">
+    <div id="module-container">
+      <!-- Dashboard / welcome -->
+      <div class="card welcome-card">
+        <h1 class="welcome-title">Welcome!</h1>
+        <p class="text-muted" style="margin-bottom:20px;">Select an option from the menu to get started.</p>
+        <div id="quick-actions" class="quick-actions"></div>
+      </div>
+    </div>
+  </main>
+
+</div>
+
+<div id="toast-container" aria-live="polite"></div>
+
+<?!= include('_Scripts') ?>
+
+<script>
+  App.init({
+    userEmail: <?!= JSON.stringify(userEmail) ?>,
+    userRoles: <?!= userRoles ?>,
+    activePage: <?!= JSON.stringify(activePage) ?>,
+    modules: <?!= JSON.stringify(modules) ?>,
+  });
+</script>
+
+</body>
+</html>

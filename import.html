@@ -1,0 +1,211 @@
+<!-- import.html — Batch user import module UI -->
+<div id="import-module">
+
+  <div class="card">
+    <div class="card-title"><i class="ti ti-file-upload"></i> Import users from CSV</div>
+    <p class="text-muted text-sm" style="margin:-8px 0 12px;">
+      Each upload is one kind of people (e.g. a student roster). Pick the role and ID type,
+      upload the report, confirm which columns are which, preview, then import.
+      Headers are flexible — the importer auto-detects name, email, and ID columns.
+    </p>
+
+    <!-- Step 1: batch settings + file -->
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label" for="imp-role">Role for this batch <span class="required">*</span></label>
+        <select class="form-select" id="imp-role" onchange="ImportUI.onRoleChange()">
+          <option value="">— Select role —</option>
+        </select>
+        <div class="form-hint" id="imp-role-hint">Everyone in the file gets this role.</div>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="imp-idtype">This report's IDs are <span class="required">*</span></label>
+        <select class="form-select" id="imp-idtype">
+          <option value="student">Student IDs (7 digits)</option>
+          <option value="employee">Employee IDs (8 digits)</option>
+          <option value="none">No ID column</option>
+        </select>
+        <div class="form-hint">Defaults from the role; override if this report differs.</div>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <input type="file" id="imp-file" accept=".csv,text/csv" class="form-input" style="padding:7px;">
+      <div class="form-hint">CSV needs first name, last name, and an email and/or ID per person.</div>
+    </div>
+    <div class="form-actions" style="margin-top:8px;">
+      <button class="btn btn-secondary" id="imp-detect-btn" onclick="ImportUI.detect()"><i class="ti ti-list-search"></i> Read file &amp; detect columns</button>
+    </div>
+
+    <!-- Step 2: column mapping (filled after detect) -->
+    <div id="imp-mapping" style="display:none;margin-top:18px;">
+      <div class="card-title" style="font-size:15px;"><i class="ti ti-columns"></i> Confirm column mapping</div>
+      <p class="text-muted text-sm" style="margin:-6px 0 12px;">
+        <span id="imp-rowcount"></span> data rows found. Correct any column below before previewing.
+      </p>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">First name <span class="required">*</span></label>
+          <select class="form-select" id="map-first"></select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Last name <span class="required">*</span></label>
+          <select class="form-select" id="map-last"></select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Email</label>
+          <select class="form-select" id="map-email"></select>
+        </div>
+        <div class="form-group" id="map-id-group">
+          <label class="form-label">ID number</label>
+          <select class="form-select" id="map-id"></select>
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-secondary" id="imp-preview-btn" onclick="ImportUI.preview()"><i class="ti ti-eye"></i> Preview</button>
+      </div>
+    </div>
+
+    <!-- Step 3: plan + commit -->
+    <div id="imp-preview" style="margin-top:18px;"></div>
+  </div>
+
+</div>
+
+<script>
+window.ImportUI = (() => {
+
+  let _csv = null;
+  let _idTypeDefaults = {};
+
+  function init() {
+    App.call('import', 'importOptions', {}, res => {
+      const sel = document.getElementById('imp-role');
+      if (!sel) return;   // module was navigated away before the response arrived
+      _idTypeDefaults = res.idTypeDefaults || {};
+      const list = res.assignable || [];
+      list.forEach(r => {
+        const o = document.createElement('option');
+        o.value = r; o.textContent = r;
+        sel.appendChild(o);
+      });
+      if (!list.length) {
+        document.getElementById('imp-role-hint').innerHTML =
+          '<span style="color:var(--color-danger);">You have no roles you are permitted to assign. Contact a super admin.</span>';
+      }
+    });
+  }
+
+  function onRoleChange() {
+    const role = document.getElementById('imp-role').value;
+    if (role && _idTypeDefaults[role]) {
+      document.getElementById('imp-idtype').value = _idTypeDefaults[role];
+    }
+  }
+
+  function detect() {
+    const file = document.getElementById('imp-file').files[0];
+    if (!file) { Toast.show('Choose a CSV file first.', 'error'); return; }
+    if (!document.getElementById('imp-role').value) { Toast.show('Select the role for this batch.', 'error'); return; }
+    const reader = new FileReader();
+    reader.onload = e => {
+      _csv = e.target.result;
+      FormHelper.setLoading('imp-detect-btn', true);
+      App.call('import', 'detectColumns', { csv: _csv }, res => {
+        FormHelper.setLoading('imp-detect-btn', false);
+        _renderMapping(res);
+      }, () => FormHelper.setLoading('imp-detect-btn', false));
+    };
+    reader.onerror = () => Toast.show('Could not read the file.', 'error');
+    reader.readAsText(file);
+  }
+
+  function _renderMapping(res) {
+    document.getElementById('imp-rowcount').textContent = res.rowCount;
+    const fields = [
+      { id: 'map-first', key: 'first', required: true },
+      { id: 'map-last',  key: 'last',  required: true },
+      { id: 'map-email', key: 'email', required: false },
+      { id: 'map-id',    key: 'id',    required: false },
+    ];
+    fields.forEach(f => {
+      const sel = document.getElementById(f.id);
+      sel.innerHTML = '<option value="">— Not in this file —</option>'
+        + res.headers.map(h => `<option value="${h.replace(/"/g,'&quot;')}">${h}</option>`).join('');
+      sel.value = res.mapping[f.key] || '';
+    });
+    document.getElementById('imp-mapping').style.display = 'block';
+    document.getElementById('imp-preview').innerHTML = '';
+  }
+
+  function _settings() {
+    return {
+      csv: _csv,
+      role: document.getElementById('imp-role').value,
+      idType: document.getElementById('imp-idtype').value,
+      mapping: {
+        first: document.getElementById('map-first').value,
+        last:  document.getElementById('map-last').value,
+        email: document.getElementById('map-email').value,
+        id:    document.getElementById('map-id').value,
+      },
+    };
+  }
+
+  function preview() {
+    const s = _settings();
+    if (!s.mapping.first || !s.mapping.last) { Toast.show('Map the First and Last name columns.', 'error'); return; }
+    if (s.idType !== 'none' && !s.mapping.id) { Toast.show('Map the ID column, or set the ID type to "none".', 'error'); return; }
+    const out = document.getElementById('imp-preview');
+    out.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Validating…</span></div>';
+    App.call('import', 'preview', s, plan => { out.innerHTML = _renderPlan(plan); }, () => { out.innerHTML = ''; });
+  }
+
+  function _renderPlan(plan) {
+    const s = plan.summary;
+    const badge = (n, cls, label) => `<span class="badge ${cls}" style="margin-right:8px;">${n} ${label}</span>`;
+    const rows = plan.rows.map(r => {
+      if (r.action === 'skip') {
+        return `<tr><td>${r.line}</td><td>${r.email||'—'}</td><td><span class="badge badge-danger">skip</span></td><td class="text-sm" style="color:var(--color-danger);">${r.reason}</td></tr>`;
+      }
+      if (r.action === 'create') {
+        return `<tr><td>${r.line}</td><td>${r.email}</td><td><span class="badge badge-success">create</span></td><td class="text-sm">${r.details||''}</td></tr>`;
+      }
+      return `<tr><td>${r.line}</td><td>${r.email||'—'}</td><td><span class="badge badge-navy">update</span></td><td class="text-sm">${r.details||''}</td></tr>`;
+    }).join('');
+    const canCommit = (s.create + s.update) > 0;
+    return `
+      <div style="margin-bottom:12px;">${badge(s.create,'badge-success','to create')}${badge(s.update,'badge-navy','to update')}${badge(s.skip,'badge-danger','to skip')}</div>
+      <div class="table-wrap"><table class="data-table"><thead><tr><th>Line</th><th>Email</th><th>Action</th><th>Details</th></tr></thead><tbody>${rows}</tbody></table></div>
+      <div class="form-actions">
+        <button class="btn btn-primary" id="imp-commit-btn" onclick="ImportUI.commit()" ${canCommit?'':'disabled'}><i class="ti ti-check"></i> Import ${s.create + s.update} user(s)</button>
+        <button class="btn btn-secondary" onclick="ImportUI.cancel()">Cancel</button>
+      </div>
+      ${s.skip ? `<p class="text-sm text-muted" style="margin-top:8px;">${s.skip} row(s) will be skipped — including any conflicts, which are listed with details above.</p>` : ''}`;
+  }
+
+  function commit() {
+    if (!_csv) { Toast.show('Read a file first.', 'error'); return; }
+    FormHelper.setLoading('imp-commit-btn', true);
+    App.call('import', 'commit', _settings(), res => {
+      const s = res.summary;
+      Toast.show(`Imported: ${s.created} created, ${s.updated} updated, ${s.skipped} skipped.`, 'success', 6000);
+      cancel();
+    }, () => FormHelper.setLoading('imp-commit-btn', false));
+  }
+
+  function cancel() {
+    _csv = null;
+    document.getElementById('imp-file').value = '';
+    document.getElementById('imp-mapping').style.display = 'none';
+    document.getElementById('imp-preview').innerHTML = '';
+  }
+
+  return { init, onRoleChange, detect, preview, commit, cancel };
+
+})();
+
+ImportUI.init();
+</script>
