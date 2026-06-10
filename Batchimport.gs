@@ -25,7 +25,7 @@ const BatchImport = (() => {
   const COLUMN_HINTS = {
     first: ['first', 'firstname', 'first name', 'given', 'given name', 'givenname', 'preferred first', 'preferred first name'],
     last:  ['last', 'lastname', 'last name', 'surname', 'family name', 'familyname', 'preferred last', 'preferred last name'],
-    email: ['email', 'e-mail', 'email address', 'e-mail address', 'mail', 'ucsc email'],
+    email: ['email', 'e-mail', 'email address', 'e-mail address', 'mail', 'ucsc email', 'campus email', 'campus e-mail', 'school email', 'university email'],
     id:    ['id', 'sid', 'student id', 'studentid', 'student id number', 'employee id', 'employeeid', 'emp id', 'empid', 'perm', 'id number', 'idnumber'],
   };
 
@@ -231,12 +231,14 @@ const BatchImport = (() => {
     const m = p.mapping || {};
     const cell = h => h ? String(row[String(h).trim().toLowerCase()] || '').trim() : '';
 
+    // Strip float suffix that spreadsheet apps add to numeric cells (e.g. "1234567.0" → "1234567")
+    const _cleanId = v => String(v).trim().replace(/\.0+$/, '');
     const rec = {
       first:   cell(m.first),
       last:    cell(m.last),
       email:   cell(m.email),
       idType:  p.idType === 'none' ? '' : p.idType,
-      idValue: p.idType === 'none' ? '' : cell(m.id),
+      idValue: p.idType === 'none' ? '' : _cleanId(cell(m.id)),
       kind:    'other',
       source:  p.source || 'Batch import',
     };
@@ -287,7 +289,13 @@ const BatchImport = (() => {
     const bits = [];
     bits.push('matched by ' + rr.matchedBy + ' → ' + (rr.profile.name || rr.profile.email));
     if (rr.idToFill)  bits.push('will add ' + (rr.idToFill.type === 'student' ? 'StudentID' : 'EmployeeID') + ' ' + rr.idToFill.value);
-    if (rr.nameIsNew) bits.push('will record "' + rec.first + ' ' + rec.last + '" as an alternate name');
+    const _storedName = !!(String(rr.profile.firstName || '').trim() || String(rr.profile.lastName || '').trim());
+    const _rowHasName = !!(rec.first || rec.last);
+    if (!_storedName && _rowHasName) {
+      bits.push('will set name to "' + rec.first + ' ' + rec.last + '"');
+    } else if (rr.nameIsNew) {
+      bits.push('will record "' + rec.first + ' ' + rec.last + '" as an alternate name');
+    }
     if (rr.profile.roles.indexOf(p.role) === -1) bits.push('will add role ' + p.role);
     if (bits.length === 1) bits.push('no changes');
     result.details = bits.join('; ');
@@ -344,7 +352,7 @@ const BatchImport = (() => {
     const records = _tokenize(text);
     if (!records.length) return { headers: [], rows: [] };
 
-    const headers = records[0].map(h => String(h).trim());
+    const headers = records[0].map(h => String(h).trim().replace(/[\r\n]+/g, ' ').trim());
     const lower = headers.map(h => h.toLowerCase());
     const rows = [];
     for (let i = 1; i < records.length; i++) {

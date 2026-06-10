@@ -5,42 +5,131 @@
 
 const App = (() => {
 
-  let _state = { userEmail: '', userRoles: [], activePage: '', modules: [] };
+  let _state = { userEmail: '', userName: '', userRoles: [], activePage: '', modules: [], tasks: [] };
 
   function init(state) {
     Object.assign(_state, state);
-    _renderQuickActions();
-    if (_state.activePage && _state.activePage !== 'dashboard') {
-      loadModule(_state.activePage);
+    // Dashboard is the default page; render it fresh so tasks appear at login.
+    if (!_state.activePage || _state.activePage === 'dashboard') {
+      goDashboard();
+    } else {
+      // initialFocus (from a deep-link URL like ?page=thesis&focus=ID) opens
+      // the module already focused on a record. Null for a normal load.
+      loadModule(_state.activePage, _state.initialFocus || null);
     }
   }
 
   // ── Dashboard ─────────────────────────────────────────────
   function goDashboard() {
     _setActiveNav('dashboard');
-    document.getElementById('module-container').innerHTML = `
-      <div class="card welcome-card">
-        <h1 class="welcome-title">Welcome!</h1>
-        <p class="text-muted" style="margin-bottom:20px;">Select an option from the menu to get started.</p>
-        <div id="quick-actions" class="quick-actions"></div>
-      </div>`;
-    _renderQuickActions();
     _state.activePage = 'dashboard';
+    window.__focus = null;   // clear any stale deep-link focus
+    const greeting = _state.userName ? `Welcome, ${_esc(_state.userName)}` : 'Welcome';
+    document.getElementById('module-container').innerHTML = `
+      <div class="dashboard">
+        <div class="card welcome-card">
+          <h1 class="welcome-title">${greeting}</h1>
+          <p class="text-muted" style="margin-bottom:0;">Here's what needs your attention.</p>
+        </div>
+        <div class="card" id="tasks-card">
+          <div class="card-title" style="justify-content:space-between;">
+            <span style="display:flex;align-items:center;gap:8px;">
+              <i class="ti ti-checklist"></i> Needs your attention
+            </span>
+            <button class="btn btn-secondary btn-sm" onclick="App.refreshTasks()" title="Refresh">
+              <i class="ti ti-refresh"></i>
+            </button>
+          </div>
+          <div id="tasks-list"></div>
+        </div>
+      </div>`;
+    _renderTasks();
   }
 
-  function _renderQuickActions() {
-    const el = document.getElementById('quick-actions');
+  function _renderTasks() {
+    const el = document.getElementById('tasks-list');
     if (!el) return;
-    el.innerHTML = _state.modules
-      .filter(m => m.key !== 'admin')
-      .map(m => `<button class="btn btn-primary" onclick="App.loadModule('${m.key}')">
-                   <i class="ti ${m.icon}"></i> ${m.label}
-                 </button>`).join('');
-    if (!el.innerHTML) el.innerHTML = '<p class="text-muted text-sm">No modules available yet.</p>';
+    const tasks = _state.tasks || [];
+    if (!tasks.length) {
+      el.innerHTML = `<div class="empty-state" style="padding:28px;">
+        <i class="ti ti-circle-check" style="font-size:28px;color:var(--color-success);"></i>
+        <p style="margin-top:8px;">You're all caught up — no tasks right now.</p>
+      </div>`;
+      return;
+    }
+    el.innerHTML = `<ul class="task-list">${tasks.map(_taskRow).join('')}</ul>`;
+  }
+
+  function _taskRow(t) {
+    const u = _urgencyMeta(t.urgency);
+    const when = _taskTiming(t);
+    // Deep-link payload is passed by id lookup at click time (avoids quoting issues).
+    return `<li class="task-item urgency-${_esc(t.urgency || 'normal')}"
+                onclick="App.openTask('${_esc(t.taskId)}')" role="button" tabindex="0"
+                onkeypress="if(event.key==='Enter'){App.openTask('${_esc(t.taskId)}')}">
+      <span class="task-badge badge-${u.cls}" title="${u.label}">
+        <i class="ti ${u.icon}"></i> ${u.label}
+      </span>
+      <span class="task-label">${_esc(t.label || '(untitled task)')}</span>
+      <span class="task-when text-muted">${_esc(when)}</span>
+      <i class="ti ti-chevron-right task-chev" aria-hidden="true"></i>
+    </li>`;
+  }
+
+  function _urgencyMeta(urgency) {
+    switch (urgency) {
+      case 'overdue':  return { cls: 'danger',  icon: 'ti-alert-triangle', label: 'Overdue' };
+      case 'due_soon': return { cls: 'warning', icon: 'ti-clock',          label: 'Due soon' };
+      case 'stale':    return { cls: 'muted',   icon: 'ti-hourglass',      label: 'Needs follow-up' };
+      default:         return { cls: 'normal',  icon: 'ti-point',          label: 'Open' };
+    }
+  }
+
+  // Human-readable timing line: prefer a due date, else show age.
+  function _taskTiming(t) {
+    if (t.dueAt) {
+      const due = new Date(t.dueAt);
+      if (!isNaN(due.getTime())) {
+        const days = Math.round((due.getTime() - Date.now()) / 86400000);
+        if (days < 0)  return `due ${Math.abs(days)}d ago`;
+        if (days === 0) return 'due today';
+        return `due in ${days}d`;
+      }
+    }
+    if (t.createdAt) {
+      const created = new Date(t.createdAt);
+      if (!isNaN(created.getTime())) {
+        const days = Math.floor((Date.now() - created.getTime()) / 86400000);
+        return days <= 0 ? 'opened today' : `opened ${days}d ago`;
+      }
+    }
+    return '';
+  }
+
+  // Deep-link: open the owning module focused on the task's source record.
+  function openTask(taskId) {
+    const t = (_state.tasks || []).find(x => x.taskId === taskId);
+    if (!t) return;
+    if (!t.module) { Toast.show('This task has no linked module.', 'error'); return; }
+    loadModule(t.module, { sourceType: t.sourceType, sourceId: t.sourceId, taskId: t.taskId });
+  }
+
+  // Refresh tasks in place (no full reload), via the shell-level endpoint.
+  function refreshTasks() {
+    google.script.run
+      .withSuccessHandler(tasks => { _state.tasks = tasks || []; _renderTasks(); })
+      .withFailureHandler(() => Toast.show('Could not refresh tasks.', 'error'))
+      .getMyTasks();
   }
 
   // ── Module loader ─────────────────────────────────────────
-  function loadModule(moduleKey) {
+  // focus (optional): { sourceType, sourceId, taskId } — a deep-link
+  // request. It is set on window.__focus BEFORE the module's scripts run,
+  // so a module that supports deep-linking can read it during its own
+  // init and open/highlight that record. Modules that don't support focus
+  // simply ignore window.__focus and open normally. The shell never needs
+  // to know what any module does with it — that's the loose-coupling seam.
+  function loadModule(moduleKey, focus) {
     _setActiveNav(moduleKey);
     const container = document.getElementById('module-container');
     container.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
@@ -49,6 +138,8 @@ const App = (() => {
       .withSuccessHandler(html => {
         container.innerHTML = html;
         _state.activePage = moduleKey;
+        // Publish the deep-link focus (or clear it) before scripts execute.
+        window.__focus = focus || null;
         container.querySelectorAll('script').forEach(s => {
           const fresh = document.createElement('script');
           if (s.src) fresh.src = s.src; else fresh.textContent = s.textContent;
@@ -90,7 +181,7 @@ const App = (() => {
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
-  return { init, goDashboard, loadModule, call, toggleSidebar };
+  return { init, goDashboard, loadModule, call, toggleSidebar, openTask, refreshTasks };
 
 })();
 

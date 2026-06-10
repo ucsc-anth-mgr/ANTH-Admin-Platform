@@ -1,812 +1,295 @@
-<!-- admin.html — Admin module UI (v2) with Module Manager -->
-<div id="admin-module">
-
-  <div class="module-tabs">
-    <button class="module-tab active" data-tab="modules" onclick="AdminUI.switchTab('modules')"><i class="ti ti-apps"></i> Modules</button>
-    <button class="module-tab"        data-tab="users"   onclick="AdminUI.switchTab('users')"><i class="ti ti-users"></i> Users</button>
-    <button class="module-tab"        data-tab="adduser" onclick="AdminUI.switchTab('adduser')"><i class="ti ti-user-plus"></i> Add / Edit User</button>
-    <button class="module-tab"        data-tab="requests" onclick="AdminUI.switchTab('requests')"><i class="ti ti-inbox"></i> Requests <span id="req-badge" class="badge badge-warning" style="display:none;margin-left:4px;"></span></button>
-    <button class="module-tab"        data-tab="roles"   onclick="AdminUI.switchTab('roles')"><i class="ti ti-shield"></i> Roles</button>
-    <button class="module-tab"        data-tab="audit"   onclick="AdminUI.switchTab('audit')"><i class="ti ti-history"></i> Audit Log</button>
-  </div>
-
-  <!-- ══ MODULE MANAGER ══════════════════════════════════ -->
-  <div id="tab-modules" class="tab-panel">
-    <div class="card" style="margin-top:20px;">
-      <div class="card-title between"><span><i class="ti ti-apps"></i> Module manager</span>
-        <button class="btn btn-primary btn-sm" onclick="AdminUI.openModuleForm()"><i class="ti ti-plus"></i> Configure module</button>
-      </div>
-      <p class="text-muted text-sm" style="margin:-8px 0 16px;">
-        Turn modules on or off, rename them, change who can access them, and set their menu order.
-        New module <em>code</em> is added by a developer; once added, it appears here ready to configure.
-      </p>
-      <div id="modules-table"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
-    </div>
-
-    <!-- Module edit form (hidden until opened) -->
-    <div class="card" id="module-form-card" style="display:none;max-width:640px;">
-      <div class="card-title"><i class="ti ti-settings"></i> <span id="module-form-title">Configure module</span></div>
-
-      <div id="handler-warning" class="text-sm" style="display:none;background:#fdeecb;color:#9a6206;padding:10px 12px;border-radius:6px;margin-bottom:16px;">
-        <i class="ti ti-alert-triangle"></i> <span id="handler-warning-text"></span>
-      </div>
-
-      <div class="form-row">
-        <div class="form-group">
-          <label class="form-label" for="m-key">Module key <span class="required">*</span></label>
-          <input class="form-input" id="m-key" name="key" placeholder="e.g. thesis">
-          <div class="form-hint">Lowercase, no spaces. Permanent ID.</div>
-        </div>
-        <div class="form-group">
-          <label class="form-label" for="m-label">Menu label <span class="required">*</span></label>
-          <input class="form-input" id="m-label" name="label" placeholder="e.g. Senior Thesis">
-        </div>
-      </div>
-
-      <div class="form-row">
-        <div class="form-group">
-          <label class="form-label" for="m-handler">Handler (code) <span class="required">*</span></label>
-          <select class="form-select" id="m-handler" name="handler" onchange="AdminUI.checkHandler()"></select>
-          <div class="form-hint">Server object — provided by your developer.</div>
-        </div>
-        <div class="form-group">
-          <label class="form-label" for="m-include">UI file <span class="required">*</span></label>
-          <input class="form-input" id="m-include" name="include" placeholder="e.g. thesis">
-          <div class="form-hint">HTML file name without .html</div>
-        </div>
-      </div>
-
-      <div class="form-group">
-        <label class="form-label">Icon</label>
-        <div id="icon-picker" style="display:flex;flex-wrap:wrap;gap:6px;"></div>
-        <input type="hidden" id="m-icon" name="icon" value="ti-box">
-      </div>
-
-      <div class="form-group">
-        <label class="form-label">Who can access <span class="required">*</span></label>
-        <div id="module-role-chips" style="display:flex;flex-wrap:wrap;gap:10px;margin-top:4px;"></div>
-      </div>
-
-      <div class="form-row">
-        <div class="form-group">
-          <label class="form-label" for="m-order">Menu order</label>
-          <input class="form-input" type="number" id="m-order" name="order" value="10" min="0">
-        </div>
-        <div class="form-group">
-          <label class="form-label" for="m-enabled">Status</label>
-          <select class="form-select" id="m-enabled" name="enabled">
-            <option value="TRUE">Enabled (visible)</option>
-            <option value="FALSE">Disabled (hidden)</option>
-          </select>
-        </div>
-      </div>
-
-      <div class="form-actions">
-        <button class="btn btn-primary" id="save-module-btn" onclick="AdminUI.saveModule()"><i class="ti ti-device-floppy"></i> Save module</button>
-        <button class="btn btn-secondary" onclick="AdminUI.closeModuleForm()">Cancel</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- ══ USERS ═══════════════════════════════════════════ -->
-  <div id="tab-users" class="tab-panel" style="display:none;">
-    <div class="card" style="margin-top:20px;">
-      <div class="card-title between"><span><i class="ti ti-users"></i> User roster</span>
-        <button class="btn btn-secondary btn-sm" onclick="AdminUI.loadUsers()"><i class="ti ti-refresh"></i> Refresh</button>
-      </div>
-      <div id="users-table"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
-    </div>
-  </div>
-
-  <!-- ══ ADD / EDIT USER ═════════════════════════════════ -->
-  <div id="tab-adduser" class="tab-panel" style="display:none;">
-    <div class="card" style="margin-top:20px;max-width:560px;">
-      <div class="card-title"><i class="ti ti-user-plus"></i> Add or update a user</div>
-      <div class="form-group">
-        <label class="form-label" for="u-email">Email address <span class="required">*</span></label>
-        <input class="form-input" type="email" id="u-email" name="email" required placeholder="user@ucsc.edu">
-        <div class="form-error"></div>
-      </div>
-      <div class="form-row">
-        <div class="form-group">
-          <label class="form-label" for="u-firstname">First name</label>
-          <input class="form-input" type="text" id="u-firstname" name="firstName" placeholder="Maria">
-        </div>
-        <div class="form-group">
-          <label class="form-label" for="u-lastname">Last name</label>
-          <input class="form-input" type="text" id="u-lastname" name="lastName" placeholder="Ramirez">
-        </div>
-      </div>
-      <div class="form-group">
-        <label class="form-label">Roles <span class="required">*</span></label>
-        <div id="role-checkboxes" style="display:flex;flex-wrap:wrap;gap:10px;margin-top:4px;"></div>
-      </div>
-      <div class="form-row">
-        <div class="form-group">
-          <label class="form-label" for="u-studentid">Student ID</label>
-          <input class="form-input" type="text" id="u-studentid" name="studentId" placeholder="1234567">
-          <div class="form-hint">7 digits. Leave blank if none.</div>
-        </div>
-        <div class="form-group">
-          <label class="form-label" for="u-employeeid">Employee ID</label>
-          <input class="form-input" type="text" id="u-employeeid" name="employeeId" placeholder="12345678">
-          <div class="form-hint">8 digits. Leave blank if none.</div>
-        </div>
-      </div>
-      <div class="form-group">
-        <label class="form-label" for="u-active">Status</label>
-        <select class="form-select" id="u-active" name="active"><option value="TRUE">Active</option><option value="FALSE">Deactivated</option></select>
-      </div>
-      <div class="form-group">
-        <label class="form-label" for="u-notes">Notes</label>
-        <input class="form-input" type="text" id="u-notes" name="notes" placeholder="Optional">
-      </div>
-      <div class="form-actions">
-        <button class="btn btn-primary" id="save-user-btn" onclick="AdminUI.saveUser()"><i class="ti ti-device-floppy"></i> Save user</button>
-        <button class="btn btn-secondary" onclick="AdminUI.clearUserForm()">Clear</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- ══ REQUESTS (self-registration queue) ══════════════ -->
-  <div id="tab-requests" class="tab-panel" style="display:none;">
-    <div class="card" style="margin-top:20px;">
-      <div class="card-title between"><span><i class="ti ti-inbox"></i> Pending access requests</span>
-        <button class="btn btn-secondary btn-sm" onclick="AdminUI.loadRequests()"><i class="ti ti-refresh"></i> Refresh</button>
-      </div>
-      <p class="text-muted text-sm" style="margin:-8px 0 16px;">
-        People who signed in without access can request it here. Approving creates their user profile with the role you choose.
-      </p>
-      <div id="requests-table"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
-    </div>
-  </div>
-
-  <!-- ══ ROLES ════════════════════════════════════════════ -->
-  <div id="tab-roles" class="tab-panel" style="display:none;">
-    <div class="card" style="margin-top:20px;">
-      <div class="card-title between"><span><i class="ti ti-shield"></i> Roles</span>
-        <button class="btn btn-secondary btn-sm" onclick="AdminUI.loadRoles()"><i class="ti ti-refresh"></i> Refresh</button>
-      </div>
-      <p class="text-muted text-sm" style="margin:-8px 0 16px;">
-        Roles are identity categories you assign to users. A role can only be deleted once no users or modules use it.
-        <strong>super_admin</strong> is protected and cannot be deleted.
-      </p>
-      <div id="roles-table"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
-    </div>
-
-    <div class="card" style="max-width:560px;">
-      <div class="card-title"><i class="ti ti-shield-plus"></i> <span id="role-form-title">Add a role</span></div>
-      <div class="form-group">
-        <label class="form-label" for="r-name">Role name <span class="required">*</span></label>
-        <input class="form-input" id="r-name" placeholder="e.g. senate_faculty">
-        <div class="form-hint">Lowercase, no spaces. Use underscores. This is the permanent identifier.</div>
-      </div>
-      <div class="form-group">
-        <label class="form-label" for="r-desc">Description</label>
-        <input class="form-input" id="r-desc" placeholder="e.g. Senate faculty members">
-      </div>
-      <div class="form-actions">
-        <button class="btn btn-primary" id="save-role-btn" onclick="AdminUI.saveRole()"><i class="ti ti-device-floppy"></i> Save role</button>
-        <button class="btn btn-secondary" onclick="AdminUI.clearRoleForm()">Clear</button>
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="card-title between"><span><i class="ti ti-file-upload"></i> Import permissions</span>
-        <button class="btn btn-secondary btn-sm" onclick="AdminUI.loadImportPolicy()"><i class="ti ti-refresh"></i> Refresh</button>
-      </div>
-      <p class="text-muted text-sm" style="margin:-8px 0 16px;">
-        Grant a role the ability to batch-import users, and limit which roles it may assign. A role listed here gains access to the Import module.
-        <strong>super_admin</strong> can always import and assign any role.
-      </p>
-      <div id="policy-table" style="margin-bottom:18px;"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
-
-      <div style="max-width:560px;">
-        <div class="form-group">
-          <label class="form-label" for="p-importer">Importer role <span class="required">*</span></label>
-          <select class="form-select" id="p-importer"></select>
-          <div class="form-hint">The role that will be allowed to import users.</div>
-        </div>
-        <div class="form-group">
-          <label class="form-label">May assign these roles <span class="required">*</span></label>
-          <div id="p-assignable-chips" style="display:flex;flex-wrap:wrap;gap:10px;margin-top:4px;"></div>
-        </div>
-        <div class="form-actions">
-          <button class="btn btn-primary" id="save-policy-btn" onclick="AdminUI.savePolicy()"><i class="ti ti-device-floppy"></i> Save permission</button>
-        </div>
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="card-title between"><span><i class="ti ti-bell"></i> Request notifications</span>
-        <button class="btn btn-secondary btn-sm" onclick="AdminUI.loadNotifyRules()"><i class="ti ti-refresh"></i> Refresh</button>
-      </div>
-      <p class="text-muted text-sm" style="margin:-8px 0 16px;">
-        When someone requests access, super admins are always emailed. Add a rule to ALSO notify
-        specific people (e.g. the undergraduate and graduate advisors) when a particular role is requested.
-      </p>
-      <div id="notify-table" style="margin-bottom:18px;"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
-
-      <div style="max-width:560px;">
-        <div class="form-group">
-          <label class="form-label" for="n-role">When this role is requested <span class="required">*</span></label>
-          <select class="form-select" id="n-role"></select>
-        </div>
-        <div class="form-group">
-          <label class="form-label" for="n-emails">Also notify these emails <span class="required">*</span></label>
-          <input class="form-input" type="text" id="n-emails" placeholder="uadvisor@ucsc.edu, gadvisor@ucsc.edu">
-          <div class="form-hint">Comma-separated. Super admins are always notified regardless.</div>
-        </div>
-        <div class="form-group">
-          <label class="form-label" for="n-note">Note</label>
-          <input class="form-input" type="text" id="n-note" placeholder="Optional (e.g. 'undergrad & grad advisors')">
-        </div>
-        <div class="form-actions">
-          <button class="btn btn-primary" id="save-notify-btn" onclick="AdminUI.saveNotifyRule()"><i class="ti ti-device-floppy"></i> Save rule</button>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- ══ AUDIT ═══════════════════════════════════════════ -->
-  <div id="tab-audit" class="tab-panel" style="display:none;">
-    <div class="card" style="margin-top:20px;">
-      <div class="card-title between"><span><i class="ti ti-history"></i> Recent audit log</span>
-        <button class="btn btn-secondary btn-sm" onclick="AdminUI.loadAudit()"><i class="ti ti-refresh"></i> Refresh</button>
-      </div>
-      <div id="audit-table"><div class="empty-state">Click refresh to load.</div></div>
-    </div>
-  </div>
-
-</div>
-
 <style>
-.role-chip { display:inline-flex; align-items:center; gap:6px; padding:6px 12px; border:1px solid var(--color-border); border-radius:100px; cursor:pointer; font-size:13px; user-select:none; transition:background .15s; }
-.role-chip input { margin:0; cursor:pointer; }
-.role-chip.checked { background:#eaf0f6; border-color:var(--ucsc-navy); color:var(--ucsc-navy); font-weight:600; }
-.icon-opt { width:38px; height:38px; display:flex; align-items:center; justify-content:center; border:1px solid var(--color-border); border-radius:8px; cursor:pointer; font-size:20px; color:var(--color-muted); transition:all .15s; }
-.icon-opt:hover { border-color:var(--ucsc-navy); color:var(--ucsc-navy); }
-.icon-opt.selected { background:var(--ucsc-navy); color:#fff; border-color:var(--ucsc-navy); }
-.edit-link { color:var(--ucsc-navy); cursor:pointer; font-size:12.5px; text-decoration:none; margin-right:10px; }
-.edit-link:hover { text-decoration:underline; }
-.edit-link.danger { color:var(--color-danger); }
-.toggle-switch { position:relative; width:38px; height:21px; display:inline-block; cursor:pointer; }
-.toggle-switch input { opacity:0; width:0; height:0; }
-.toggle-slider { position:absolute; inset:0; background:#c4cdd6; border-radius:21px; transition:.2s; }
-.toggle-slider::before { content:''; position:absolute; height:15px; width:15px; left:3px; bottom:3px; background:#fff; border-radius:50%; transition:.2s; }
-.toggle-switch input:checked + .toggle-slider { background:var(--ucsc-navy); }
-.toggle-switch input:checked + .toggle-slider::before { transform:translateX(17px); }
+/* ── Reset & base ───────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  /* UCSC official brand colors */
+  --ucsc-navy: #003C6C;
+  --ucsc-navy-dark: #002b4d;
+  --ucsc-navy-light: #1a5688;
+  --ucsc-gold: #FDC700;
+
+  --topbar-h: 60px;
+  --sidebar-w: 230px;
+
+  --color-bg: #f5f7fa;
+  --color-surface: #ffffff;
+  --color-border: #e2e6ec;
+  --color-text: #1f2733;
+  --color-muted: #66707d;
+  --color-danger: #c0392b;
+  --color-success: #1e8449;
+  --color-warning: #c87f0a;
+
+  --radius: 8px;
+  --shadow-card: 0 2px 8px rgba(0,0,0,0.06);
+  --shadow-pop: 0 4px 16px rgba(0,0,0,0.12);
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --transition: 0.18s ease;
+}
+
+body {
+  font-family: var(--font);
+  font-size: 14px;
+  color: var(--color-text);
+  background: var(--color-bg);
+  line-height: 1.5;
+  min-height: 100vh;
+}
+
+/* ── Top header bar ──────────────────────────────────────── */
+#topbar {
+  height: var(--topbar-h);
+  background: var(--ucsc-navy);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 22px;
+  position: sticky;
+  top: 0;
+  z-index: 200;
+}
+.topbar-left { display: flex; align-items: center; gap: 14px; }
+#nav-toggle {
+  background: none; border: none; color: #fff; cursor: pointer;
+  font-size: 22px; padding: 4px; display: flex; align-items: center;
+  border-radius: 4px; transition: background var(--transition);
+}
+#nav-toggle:hover { background: rgba(255,255,255,0.12); }
+.topbar-title { font-size: 19px; font-weight: 700; letter-spacing: 0.2px; }
+.topbar-right { display: flex; align-items: center; gap: 8px; font-size: 13px; color: rgba(255,255,255,0.9); }
+.topbar-right .ti { font-size: 18px; }
+.topbar-user { white-space: nowrap; }
+
+/* Gold accent strip under header (subtle UCSC nod) */
+#topbar::after {
+  content: ''; position: absolute; left: 0; right: 0; bottom: 0;
+  height: 3px; background: var(--ucsc-gold);
+}
+
+/* ── Layout: sidebar + content ───────────────────────────── */
+#layout {
+  display: flex;
+  min-height: calc(100vh - var(--topbar-h));
+}
+
+#sidebar {
+  width: var(--sidebar-w);
+  min-width: var(--sidebar-w);
+  background: var(--color-surface);
+  border-right: 1px solid var(--color-border);
+  padding: 14px 0;
+  transition: margin-left var(--transition);
+  flex-shrink: 0;
+}
+#sidebar.collapsed { margin-left: calc(-1 * var(--sidebar-w)); }
+
+.nav-list { list-style: none; }
+.nav-item {
+  display: flex; align-items: center; gap: 11px;
+  padding: 10px 20px;
+  color: var(--color-text);
+  text-decoration: none;
+  font-size: 14px;
+  border-left: 3px solid transparent;
+  transition: background var(--transition), color var(--transition), border-color var(--transition);
+}
+.nav-item .ti { font-size: 19px; flex-shrink: 0; color: var(--color-muted); transition: color var(--transition); }
+.nav-item:hover { background: #eef2f7; }
+.nav-item.active {
+  background: #eaf0f6;
+  color: var(--ucsc-navy);
+  border-left-color: var(--ucsc-navy);
+  font-weight: 600;
+}
+.nav-item.active .ti { color: var(--ucsc-navy); }
+
+/* ── Content ─────────────────────────────────────────────── */
+#content { flex: 1; overflow-x: hidden; padding: 28px 32px; }
+#module-container { max-width: 1080px; margin: 0 auto; }
+
+/* ── Cards ───────────────────────────────────────────────── */
+.card {
+  background: var(--color-surface);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+  padding: 28px 32px;
+  margin-bottom: 22px;
+}
+.card-title {
+  font-size: 17px; font-weight: 700; color: var(--ucsc-navy);
+  margin-bottom: 18px; display: flex; align-items: center; gap: 9px;
+}
+.card-title .ti { color: var(--ucsc-navy); font-size: 20px; }
+
+.welcome-card { max-width: 1080px; }
+.welcome-title { font-size: 20px; font-weight: 700; color: var(--ucsc-navy); margin-bottom: 6px; }
+.quick-actions { display: flex; flex-wrap: wrap; gap: 12px; }
+
+/* ── Buttons ─────────────────────────────────────────────── */
+.btn {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 9px 18px; border-radius: 6px; border: 1px solid transparent;
+  font-size: 14px; font-weight: 500; cursor: pointer;
+  font-family: var(--font); text-decoration: none;
+  transition: background var(--transition), box-shadow var(--transition);
+}
+.btn-primary { background: var(--ucsc-navy); color: #fff; }
+.btn-primary:hover { background: var(--ucsc-navy-dark); }
+.btn-secondary { background: var(--color-surface); color: var(--color-text); border-color: var(--color-border); }
+.btn-secondary:hover { background: var(--color-bg); }
+.btn-gold { background: var(--ucsc-gold); color: var(--ucsc-navy); font-weight: 600; }
+.btn-gold:hover { background: #e6b400; }
+.btn-danger { background: var(--color-danger); color: #fff; }
+.btn-sm { padding: 5px 12px; font-size: 12.5px; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ── Forms ───────────────────────────────────────────────── */
+.form-group { margin-bottom: 17px; }
+.form-label { display: block; font-weight: 600; margin-bottom: 6px; font-size: 13px; color: var(--color-text); }
+.form-label .required { color: var(--color-danger); margin-left: 2px; }
+.form-input, .form-select, .form-textarea {
+  width: 100%; padding: 9px 12px;
+  border: 1px solid var(--color-border); border-radius: 6px;
+  font-size: 14px; font-family: var(--font);
+  color: var(--color-text); background: var(--color-surface);
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+.form-input:focus, .form-select:focus, .form-textarea:focus {
+  outline: none; border-color: var(--ucsc-navy);
+  box-shadow: 0 0 0 3px rgba(0,60,108,0.12);
+}
+.form-textarea { resize: vertical; min-height: 90px; }
+.form-hint { font-size: 12px; color: var(--color-muted); margin-top: 4px; }
+.form-error { font-size: 12px; color: var(--color-danger); margin-top: 4px; display: none; }
+.form-error.visible { display: block; }
+.form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.form-actions { display: flex; gap: 10px; margin-top: 22px; }
+
+/* ── Tables ──────────────────────────────────────────────── */
+.table-wrap { overflow-x: auto; }
+table.data-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.data-table th {
+  text-align: left; padding: 11px 14px;
+  border-bottom: 2px solid var(--color-border);
+  color: var(--ucsc-navy); font-weight: 600; white-space: nowrap;
+}
+.data-table td { padding: 11px 14px; border-bottom: 1px solid var(--color-border); vertical-align: middle; }
+.data-table tr:hover td { background: #f8fafc; }
+
+/* ── Badges ──────────────────────────────────────────────── */
+.badge {
+  display: inline-flex; align-items: center; padding: 2px 9px;
+  border-radius: 100px; font-size: 11.5px; font-weight: 600;
+}
+.badge-success { background: #d5f0e0; color: #1e7a45; }
+.badge-warning { background: #fdeecb; color: #9a6206; }
+.badge-danger  { background: #fadddd; color: #a8302a; }
+.badge-neutral { background: #e9edf2; color: #54606e; }
+.badge-navy    { background: #dde8f2; color: var(--ucsc-navy); }
+.badge-gold    { background: #fdf3cc; color: #8a6d00; }
+
+/* ── Toast ───────────────────────────────────────────────── */
+#toast-container { position: fixed; bottom: 24px; right: 24px; z-index: 9999; display: flex; flex-direction: column; gap: 10px; }
+.toast {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 16px; background: var(--color-surface);
+  border: 1px solid var(--color-border); border-radius: var(--radius);
+  box-shadow: var(--shadow-pop); font-size: 13.5px;
+  min-width: 240px; max-width: 360px; animation: slideIn 0.2s ease;
+}
+.toast-success { border-left: 3px solid var(--color-success); }
+.toast-error   { border-left: 3px solid var(--color-danger); }
+.toast-info    { border-left: 3px solid var(--ucsc-navy); }
+@keyframes slideIn { from { transform: translateX(20px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+/* ── Loading / states ────────────────────────────────────── */
+.module-loading { display: flex; align-items: center; gap: 10px; padding: 40px 0; color: var(--color-muted); }
+@keyframes spin { to { transform: rotate(360deg); } }
+.spinner { width: 20px; height: 20px; border: 2px solid var(--color-border); border-top-color: var(--ucsc-navy); border-radius: 50%; animation: spin 0.7s linear infinite; flex-shrink: 0; }
+.empty-state { text-align: center; padding: 40px; color: var(--color-muted); }
+
+/* ── Module tabs (shared by module UIs) ──────────────────── */
+.module-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--color-border); margin-bottom: 0; }
+.module-tab {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 10px 16px; border: none; background: none;
+  border-bottom: 2px solid transparent; cursor: pointer;
+  font-size: 13.5px; color: var(--color-muted);
+  font-family: var(--font); transition: color var(--transition); margin-bottom: -1px;
+}
+.module-tab.active { color: var(--ucsc-navy); border-bottom-color: var(--ucsc-navy); font-weight: 600; }
+.module-tab:hover:not(.active) { color: var(--color-text); }
+
+/* ── Utilities ───────────────────────────────────────────── */
+.flex { display: flex; } .items-center { align-items: center; }
+.between { justify-content: space-between; }
+.gap-2 { gap: 8px; } .gap-3 { gap: 12px; }
+.mb-4 { margin-bottom: 16px; } .mt-2 { margin-top: 8px; }
+.text-muted { color: var(--color-muted); } .text-sm { font-size: 12.5px; }
+
+/* ── Responsive: sidebar overlays on narrow screens ──────── */
+@media (max-width: 720px) {
+  #sidebar { position: fixed; top: var(--topbar-h); bottom: 0; z-index: 150; box-shadow: var(--shadow-pop); }
+  #sidebar.collapsed { margin-left: calc(-1 * var(--sidebar-w)); }
+  .topbar-user { display: none; }
+  #content { padding: 20px 16px; }
+  .card { padding: 22px 18px; }
+}
+/* ── Dashboard: task list + urgency badges ───────────────── */
+.dashboard { display: flex; flex-direction: column; gap: 18px; max-width: 1080px; }
+.task-list { list-style: none; margin: 0; padding: 0; }
+.task-item {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 14px; border: 1px solid var(--color-border); border-radius: var(--radius);
+  margin-bottom: 8px; cursor: pointer; background: var(--color-surface);
+  transition: border-color var(--transition), box-shadow var(--transition), transform var(--transition);
+}
+.task-item:last-child { margin-bottom: 0; }
+.task-item:hover { border-color: var(--ucsc-navy); box-shadow: var(--shadow-pop); transform: translateX(2px); }
+.task-item:focus { outline: 2px solid var(--ucsc-gold); outline-offset: 1px; }
+/* Left accent stripe by urgency */
+.task-item.urgency-overdue  { border-left: 3px solid var(--color-danger); }
+.task-item.urgency-due_soon { border-left: 3px solid var(--color-warning); }
+.task-item.urgency-stale    { border-left: 3px solid var(--color-muted); }
+.task-item.urgency-normal   { border-left: 3px solid var(--color-border); }
+
+.task-badge {
+  display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0;
+  font-size: 11.5px; font-weight: 600; padding: 3px 9px; border-radius: 999px;
+  white-space: nowrap;
+}
+.task-badge .ti { font-size: 13px; }
+.badge-danger  { background: #fbeae8; color: var(--color-danger); }
+.badge-warning { background: #fbf1e0; color: var(--color-warning); }
+.badge-muted   { background: var(--color-bg); color: var(--color-muted); }
+.badge-normal  { background: var(--color-bg); color: var(--color-muted); }
+
+.task-label { flex: 1 1 auto; font-size: 14px; color: var(--color-text); min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-when { flex-shrink: 0; font-size: 12px; }
+.task-chev { color: var(--color-muted); flex-shrink: 0; font-size: 16px; }
+
+@media (max-width: 720px) {
+  .task-when { display: none; }
+  .task-item { flex-wrap: wrap; }
+}
+/* ── Admin roster: search / filter / sort controls ───────── */
+.roster-controls {
+  display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+  margin: 4px 0 14px;
+}
+.roster-controls .form-select { width: auto; min-width: 140px; }
+.roster-search { position: relative; flex: 1 1 240px; min-width: 200px; }
+.roster-search .ti {
+  position: absolute; left: 10px; top: 50%; transform: translateY(-50%);
+  color: var(--color-muted); font-size: 16px; pointer-events: none;
+}
+.roster-search .form-input { width: 100%; padding-left: 32px; }
+
+@media (max-width: 720px) {
+  .roster-controls .form-select { flex: 1 1 100%; width: 100%; }
+  .roster-search { flex: 1 1 100%; }
+}
 </style>
-
-<script>
-window.AdminUI = (() => {
-
-  let _roles = [];
-  let _iconChoices = [];
-  let _availableHandlers = [];
-  let _editingKey = null;
-
-  function init() {
-    loadModules();
-    App.call('admin', 'listRoles', {}, roles => { _roles = roles; _renderRoleCheckboxes(roles); });
-    App.call('admin', 'iconChoices', {}, icons => { _iconChoices = icons; });
-    _refreshRequestBadge();
-  }
-
-  function _refreshRequestBadge() {
-    App.call('admin', 'listPendingRequests', {}, reqs => {
-      const badge = document.getElementById('req-badge');
-      if (!badge) return;
-      if (reqs.length) { badge.textContent = reqs.length; badge.style.display = 'inline-flex'; }
-      else { badge.style.display = 'none'; }
-    });
-  }
-
-  function switchTab(tab) {
-    document.querySelectorAll('.tab-panel').forEach(p => p.style.display = 'none');
-    document.querySelectorAll('.module-tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
-    document.getElementById('tab-' + tab).style.display = 'block';
-    if (tab === 'modules') loadModules();
-    if (tab === 'users')   loadUsers();
-    if (tab === 'requests') loadRequests();
-    if (tab === 'roles')   { loadRoles(); loadImportPolicy(); loadNotifyRules(); }
-    if (tab === 'audit')   loadAudit();
-  }
-
-  // ══ MODULE MANAGER ════════════════════════════════════
-  function loadModules() {
-    const el = document.getElementById('modules-table');
-    el.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
-    App.call('admin', 'listModules', {}, mods => {
-      const rows = mods.map(m => `
-        <tr>
-          <td><i class="ti ${m.icon}" style="font-size:18px;color:var(--ucsc-navy);vertical-align:middle;margin-right:8px;"></i><strong>${m.label}</strong>
-              <div class="text-sm text-muted">${m.key}</div></td>
-          <td>${m.roles.map(r => `<span class="badge badge-navy" style="margin:1px;">${r}</span>`).join(' ')}</td>
-          <td>${m.order}</td>
-          <td>${m.handlerOk ? '<span class="badge badge-success">code ok</span>' : '<span class="badge badge-warning">no code</span>'}</td>
-          <td>
-            <label class="toggle-switch" title="${m.enabled ? 'Enabled' : 'Disabled'}">
-              <input type="checkbox" ${m.enabled ? 'checked' : ''} ${m.key === 'admin' ? 'disabled' : ''}
-                     onchange="AdminUI.toggleModule('${m.key}', this.checked)">
-              <span class="toggle-slider"></span>
-            </label>
-          </td>
-          <td style="white-space:nowrap;">
-            <a class="edit-link" onclick='AdminUI.editModule(${JSON.stringify(m)})'><i class="ti ti-pencil"></i> Edit</a>
-            ${m.key === 'admin' ? '' : `<a class="edit-link danger" onclick="AdminUI.deleteModule('${m.key}','${m.label}')"><i class="ti ti-trash"></i> Remove</a>`}
-          </td>
-        </tr>`).join('');
-      el.innerHTML = `<div class="table-wrap"><table class="data-table">
-        <thead><tr><th>Module</th><th>Access</th><th>Order</th><th>Code</th><th>On</th><th></th></tr></thead>
-        <tbody>${rows}</tbody></table></div>`;
-    });
-  }
-
-  function toggleModule(key, enabled) {
-    App.call('admin', 'setModuleEnabled', { key, enabled }, () => {
-      Toast.show('Module ' + (enabled ? 'enabled' : 'disabled') + '. Refresh the page to update your menu.', 'success');
-    });
-  }
-
-  function deleteModule(key, label) {
-    if (!confirm('Remove the "' + label + '" module from the menu?\n\nThis only removes its configuration — the underlying code stays in the project and can be reconfigured later.')) return;
-    App.call('admin', 'removeModule', { key }, () => { Toast.show('Module removed: ' + label, 'success'); loadModules(); });
-  }
-
-  function openModuleForm() {
-    _editingKey = null;
-    document.getElementById('module-form-title').textContent = 'Configure a module';
-    _resetModuleForm();
-    _populateHandlerSelect(null);
-    _renderIconPicker('ti-box');
-    _renderModuleRoleChips([]);
-    document.getElementById('m-key').disabled = false;
-    document.getElementById('module-form-card').style.display = 'block';
-    document.getElementById('module-form-card').scrollIntoView({ behavior: 'smooth' });
-  }
-
-  function editModule(m) {
-    _editingKey = m.key;
-    document.getElementById('module-form-title').textContent = 'Edit: ' + m.label;
-    document.getElementById('m-key').value = m.key;
-    document.getElementById('m-key').disabled = true;        // key is permanent
-    document.getElementById('m-label').value = m.label;
-    document.getElementById('m-include').value = m.include;
-    document.getElementById('m-order').value = m.order;
-    document.getElementById('m-enabled').value = m.enabled ? 'TRUE' : 'FALSE';
-    _populateHandlerSelect(m.handler);
-    _renderIconPicker(m.icon);
-    _renderModuleRoleChips(m.roles);
-    checkHandler();
-    document.getElementById('module-form-card').style.display = 'block';
-    document.getElementById('module-form-card').scrollIntoView({ behavior: 'smooth' });
-  }
-
-  function closeModuleForm() { document.getElementById('module-form-card').style.display = 'none'; }
-
-  function _resetModuleForm() {
-    ['m-key','m-label','m-include'].forEach(id => document.getElementById(id).value = '');
-    document.getElementById('m-order').value = 10;
-    document.getElementById('m-enabled').value = 'TRUE';
-    document.getElementById('handler-warning').style.display = 'none';
-  }
-
-  function _populateHandlerSelect(selected) {
-    // Combine registered handlers (from code) with any currently-set value
-    App.call('admin', 'availableHandlers', {}, available => {
-      _availableHandlers = available;
-      const sel = document.getElementById('m-handler');
-      const all = new Set(available);
-      if (selected) all.add(selected);
-      // Always include known registered handlers
-      ['AdminModule','SubmissionsModule'].forEach(h => all.add(h));
-      sel.innerHTML = '<option value="">— Select handler —</option>' +
-        Array.from(all).map(h => `<option value="${h}" ${h===selected?'selected':''}>${h}</option>`).join('');
-      checkHandler();
-    });
-  }
-
-  function checkHandler() {
-    const val = document.getElementById('m-handler').value;
-    const warn = document.getElementById('handler-warning');
-    const txt = document.getElementById('handler-warning-text');
-    // Warn if the selected handler isn't among registered ones
-    App.call('admin', 'listModules', {}, () => {}); // noop keep-alive
-    if (val && !['AdminModule','SubmissionsModule'].includes(val) && !_availableHandlers.includes(val)) {
-      txt.textContent = 'The handler "' + val + '" is not registered in code yet. The module will appear in the menu but will error when opened until a developer adds it.';
-      warn.style.display = 'block';
-    } else {
-      warn.style.display = 'none';
-    }
-  }
-
-  function _renderIconPicker(selected) {
-    const el = document.getElementById('icon-picker');
-    document.getElementById('m-icon').value = selected || 'ti-box';
-    const icons = _iconChoices.length ? _iconChoices : ['ti-box','ti-file-text','ti-users','ti-folder','ti-calendar','ti-book'];
-    el.innerHTML = icons.map(ic => `<div class="icon-opt ${ic===selected?'selected':''}" data-icon="${ic}" onclick="AdminUI.pickIcon('${ic}')"><i class="ti ${ic}"></i></div>`).join('');
-  }
-  function pickIcon(ic) {
-    document.getElementById('m-icon').value = ic;
-    document.querySelectorAll('.icon-opt').forEach(o => o.classList.toggle('selected', o.dataset.icon === ic));
-  }
-
-  function _renderModuleRoleChips(selectedRoles) {
-    const container = document.getElementById('module-role-chips');
-    const roles = _roles.length ? _roles : ['super_admin','admin','staff','viewer'];
-    container.innerHTML = roles.map(r => `
-      <label class="role-chip ${selectedRoles.includes(r)?'checked':''}" id="mchip-${r}">
-        <input type="checkbox" value="${r}" ${selectedRoles.includes(r)?'checked':''} onchange="AdminUI.onModuleChip(this)"> ${r}
-      </label>`).join('');
-  }
-  function onModuleChip(input) {
-    document.getElementById('mchip-' + input.value).classList.toggle('checked', input.checked);
-  }
-
-  function saveModule() {
-    const key = document.getElementById('m-key').value.trim();
-    const label = document.getElementById('m-label').value.trim();
-    const handler = document.getElementById('m-handler').value;
-    const include = document.getElementById('m-include').value.trim();
-    const icon = document.getElementById('m-icon').value;
-    const order = document.getElementById('m-order').value;
-    const enabled = document.getElementById('m-enabled').value === 'TRUE';
-    const roles = Array.from(document.querySelectorAll('#module-role-chips input:checked')).map(i => i.value);
-
-    if (!key || !label || !handler || !include) { Toast.show('Please fill in all required fields.', 'error'); return; }
-    if (!roles.length) { Toast.show('Select at least one role.', 'error'); return; }
-
-    FormHelper.setLoading('save-module-btn', true);
-    App.call('admin', 'upsertModule', { key, label, handler, include, icon, order, enabled, roles }, res => {
-      FormHelper.setLoading('save-module-btn', false);
-      Toast.show('Module ' + res.status + ': ' + label + '. Refresh the page to see menu changes.', 'success');
-      closeModuleForm();
-      loadModules();
-    }, () => FormHelper.setLoading('save-module-btn', false));
-  }
-
-  // ══ USERS ═════════════════════════════════════════════
-  function loadUsers() {
-    const el = document.getElementById('users-table');
-    el.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
-    App.call('admin', 'listUsers', {}, users => {
-      if (!users.length) { el.innerHTML = '<div class="empty-state">No users configured yet.</div>'; return; }
-      const rows = users.map(u => {
-        const roleBadges = (u.roles || []).map(r => `<span class="badge badge-navy" style="margin:1px;">${r}</span>`).join(' ');
-        const ids = [];
-        if (u.studentId) ids.push(`${u.studentId} <span class="text-muted text-sm">(student)</span>`);
-        if (u.employeeId) ids.push(`${u.employeeId} <span class="text-muted text-sm">(employee)</span>`);
-        const idText = ids.length ? ids.join('<br>') : '<span class="text-muted">—</span>';
-        return `
-          <tr>
-            <td>${u.nameLastFirst || '<span class="text-muted">—</span>'}<div class="text-sm text-muted">${u.email}</div></td>
-            <td>${roleBadges}</td>
-            <td>${idText}</td>
-            <td><span class="badge ${u.active?'badge-success':'badge-neutral'}">${u.active?'Active':'Inactive'}</span></td>
-            <td><a class="edit-link" onclick='AdminUI.editUser(${JSON.stringify(u).replace(/'/g,"&#39;")})'><i class="ti ti-pencil"></i> Edit</a></td>
-          </tr>`;
-      }).join('');
-      el.innerHTML = `<div class="table-wrap"><table class="data-table"><thead><tr><th>Name / Email</th><th>Roles</th><th>ID</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
-    });
-  }
-
-  function _renderRoleCheckboxes(roles) {
-    const c = document.getElementById('role-checkboxes'); if (!c) return;
-    c.innerHTML = roles.map(r => `<label class="role-chip" id="chip-${r}"><input type="checkbox" value="${r}" onchange="AdminUI.onChip(this)"> ${r}</label>`).join('');
-  }
-  function onChip(input) { document.getElementById('chip-'+input.value).classList.toggle('checked', input.checked); }
-
-  function editUser(u) {
-    switchTab('adduser');
-    document.getElementById('u-email').value = u.email;
-    document.getElementById('u-firstname').value = u.firstName || '';
-    document.getElementById('u-lastname').value = u.lastName || '';
-    document.getElementById('u-studentid').value = u.studentId || '';
-    document.getElementById('u-employeeid').value = u.employeeId || '';
-    document.getElementById('u-active').value = u.active ? 'TRUE' : 'FALSE';
-    document.getElementById('u-notes').value = u.notes || '';
-    const ur = u.roles || [];
-    document.querySelectorAll('#role-checkboxes input').forEach(inp => {
-      inp.checked = ur.includes(inp.value);
-      document.getElementById('chip-'+inp.value).classList.toggle('checked', inp.checked);
-    });
-  }
-
-  function saveUser() {
-    const email = document.getElementById('u-email').value.trim();
-    if (!email) { Toast.show('Email is required.', 'error'); return; }
-    const roles = Array.from(document.querySelectorAll('#role-checkboxes input:checked')).map(i=>i.value);
-    if (!roles.length) { Toast.show('Select at least one role.', 'error'); return; }
-    const studentId = document.getElementById('u-studentid').value.trim();
-    const employeeId = document.getElementById('u-employeeid').value.trim();
-    // Client-side ID length hint (server re-validates authoritatively)
-    if (studentId && !/^\d{7}$/.test(studentId)) { Toast.show('Student ID must be exactly 7 digits.', 'error'); return; }
-    if (employeeId && !/^\d{8}$/.test(employeeId)) { Toast.show('Employee ID must be exactly 8 digits.', 'error'); return; }
-    FormHelper.setLoading('save-user-btn', true);
-    App.call('admin', 'upsertUser', {
-      email, roles,
-      firstName: document.getElementById('u-firstname').value.trim(),
-      lastName: document.getElementById('u-lastname').value.trim(),
-      studentId, employeeId,
-      active: document.getElementById('u-active').value==='TRUE',
-      notes: document.getElementById('u-notes').value.trim(),
-    }, res => {
-      FormHelper.setLoading('save-user-btn', false);
-      Toast.show('User ' + res.status + ': ' + email, 'success');
-      clearUserForm(); loadUsers();
-    }, () => FormHelper.setLoading('save-user-btn', false));
-  }
-
-  function clearUserForm() {
-    ['u-email','u-firstname','u-lastname','u-studentid','u-employeeid','u-notes'].forEach(id => document.getElementById(id).value='');
-    document.getElementById('u-active').value='TRUE';
-    document.querySelectorAll('#role-checkboxes input').forEach(i => { i.checked=false; document.getElementById('chip-'+i.value).classList.remove('checked'); });
-  }
-
-  // ══ REQUESTS ══════════════════════════════════════════
-  function loadRequests() {
-    const el = document.getElementById('requests-table');
-    el.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
-    App.call('admin', 'listPendingRequests', {}, reqs => {
-      _refreshRequestBadge();
-      if (!reqs.length) { el.innerHTML = '<div class="empty-state"><i class="ti ti-inbox-off" style="font-size:32px;display:block;margin-bottom:8px;"></i>No pending requests</div>'; return; }
-      el.innerHTML = reqs.map(r => _requestCard(r)).join('');
-    });
-  }
-
-  function _requestCard(r) {
-    const roleOptions = (_roles || []).filter(x => x !== 'super_admin').map(role =>
-      `<label class="role-chip" id="reqchip-${r.requestId}-${role}">
-         <input type="checkbox" value="${role}" ${role===r.requestedRole?'checked':''}
-           onchange="this.closest('.role-chip').classList.toggle('checked', this.checked)"> ${role}
-       </label>`).join('');
-    const idText = r.idNumber ? `${r.idNumber} (${r.idType||'id'})` : '—';
-    return `
-      <div class="card" style="border:1px solid var(--color-border);box-shadow:none;margin-bottom:14px;">
-        <div class="flex between items-center" style="margin-bottom:8px;">
-          <div><strong>${r.name||'(no name)'}</strong> <span class="text-muted text-sm">${r.email}</span></div>
-          <span class="text-sm text-muted">${r.submittedAt}</span>
-        </div>
-        <div class="text-sm" style="margin-bottom:6px;">
-          ID: ${idText} &nbsp;·&nbsp; Requested role: <span class="badge badge-gold">${r.requestedRole||'none'}</span>
-        </div>
-        ${r.note ? `<div class="text-sm text-muted" style="margin-bottom:10px;">"${r.note}"</div>` : ''}
-        <div style="margin:10px 0 4px;font-size:13px;font-weight:600;">Grant role(s):</div>
-        <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;" id="reqroles-${r.requestId}">${roleOptions}</div>
-        <div class="flex gap-2">
-          <button class="btn btn-primary btn-sm" onclick="AdminUI.approveRequest('${r.requestId}')"><i class="ti ti-check"></i> Approve</button>
-          <button class="btn btn-danger btn-sm" onclick="AdminUI.rejectRequest('${r.requestId}')"><i class="ti ti-x"></i> Reject</button>
-        </div>
-      </div>`;
-  }
-
-  function approveRequest(requestId) {
-    const roles = Array.from(document.querySelectorAll('#reqroles-' + requestId + ' input:checked')).map(i => i.value);
-    if (!roles.length) { Toast.show('Select at least one role to grant.', 'error'); return; }
-    const note = prompt('Optional note to include in the approval email:') || '';
-    App.call('admin', 'approveRequest', { requestId, roles, note }, res => {
-      Toast.show('Approved: ' + res.email, 'success');
-      loadRequests();
-    });
-  }
-
-  function rejectRequest(requestId) {
-    const note = prompt('Reason for rejection (emailed to the requester):');
-    if (note === null) return;  // cancelled
-    App.call('admin', 'rejectRequest', { requestId, note }, res => {
-      Toast.show('Rejected: ' + res.email, 'success');
-      loadRequests();
-    });
-  }
-
-  // ══ ROLES ═════════════════════════════════════════════
-  function loadRoles() {
-    const el = document.getElementById('roles-table');
-    el.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
-    App.call('admin', 'listRolesDetailed', {}, roles => {
-      if (!roles.length) { el.innerHTML = '<div class="empty-state">No roles defined yet.</div>'; return; }
-      const rows = roles.map(r => {
-        const inUse = r.userCount > 0 || r.moduleCount > 0;
-        const usageBits = [];
-        if (r.userCount)   usageBits.push(r.userCount + ' user' + (r.userCount===1?'':'s'));
-        if (r.moduleCount) usageBits.push(r.moduleCount + ' module' + (r.moduleCount===1?'':'s'));
-        const usageText = usageBits.length ? usageBits.join(', ') : '<span class="text-muted">unused</span>';
-        const del = r.protected
-          ? '<span class="badge badge-navy"><i class="ti ti-lock"></i> protected</span>'
-          : (inUse
-              ? `<a class="edit-link" style="color:var(--color-muted);cursor:not-allowed;" onclick="AdminUI.explainBlocked('${r.role}')"><i class="ti ti-trash-off"></i> in use</a>`
-              : `<a class="edit-link danger" onclick="AdminUI.deleteRole('${r.role}')"><i class="ti ti-trash"></i> Delete</a>`);
-        return `<tr>
-          <td><strong>${r.role}</strong></td>
-          <td>${r.description || ''}</td>
-          <td>${usageText}</td>
-          <td style="white-space:nowrap;">
-            <a class="edit-link" onclick="AdminUI.editRole('${r.role}', ${JSON.stringify(r.description||'').replace(/"/g,'&quot;')})"><i class="ti ti-pencil"></i> Edit</a>
-            ${del}
-          </td>
-        </tr>`;
-      }).join('');
-      el.innerHTML = `<div class="table-wrap"><table class="data-table">
-        <thead><tr><th>Role</th><th>Description</th><th>In use by</th><th></th></tr></thead>
-        <tbody>${rows}</tbody></table></div>`;
-    });
-  }
-
-  function editRole(role, description) {
-    document.getElementById('role-form-title').textContent = 'Edit: ' + role;
-    document.getElementById('r-name').value = role;
-    document.getElementById('r-name').disabled = true;   // name is permanent
-    document.getElementById('r-desc').value = description || '';
-    document.getElementById('r-desc').focus();
-  }
-
-  function saveRole() {
-    const role = document.getElementById('r-name').value.trim();
-    const description = document.getElementById('r-desc').value.trim();
-    if (!role) { Toast.show('Role name is required.', 'error'); return; }
-    FormHelper.setLoading('save-role-btn', true);
-    App.call('admin', 'upsertRole', { role, description }, res => {
-      FormHelper.setLoading('save-role-btn', false);
-      Toast.show('Role ' + res.status + ': ' + res.role, 'success');
-      clearRoleForm();
-      loadRoles();
-    }, () => FormHelper.setLoading('save-role-btn', false));
-  }
-
-  function clearRoleForm() {
-    document.getElementById('role-form-title').textContent = 'Add a role';
-    document.getElementById('r-name').value = '';
-    document.getElementById('r-name').disabled = false;
-    document.getElementById('r-desc').value = '';
-  }
-
-  function deleteRole(role) {
-    if (!confirm('Delete the "' + role + '" role? This cannot be undone.')) return;
-    App.call('admin', 'removeRole', { role }, () => {
-      Toast.show('Role deleted: ' + role, 'success');
-      loadRoles();
-    });
-  }
-
-  function explainBlocked(role) {
-    App.call('admin', 'roleUsage', { role }, d => {
-      const parts = [];
-      if (d.users.length)   parts.push('Users: ' + d.users.join(', '));
-      if (d.modules.length) parts.push('Modules: ' + d.modules.join(', '));
-      Toast.show('"' + role + '" is still in use. Remove it from these first — ' + parts.join(' | '), 'error', 7000);
-    });
-  }
-
-  // ══ IMPORT POLICY ═════════════════════════════════════
-  function loadImportPolicy() {
-    // Populate importer-role dropdown (exclude super_admin) and assignable chips
-    const sel = document.getElementById('p-importer');
-    if (sel) {
-      sel.innerHTML = (_roles || []).filter(r => r !== 'super_admin')
-        .map(r => `<option value="${r}">${r}</option>`).join('');
-    }
-    const chips = document.getElementById('p-assignable-chips');
-    if (chips) {
-      chips.innerHTML = (_roles || []).filter(r => r !== 'super_admin')
-        .map(r => `<label class="role-chip" id="pchip-${r}"><input type="checkbox" value="${r}" onchange="this.closest('.role-chip').classList.toggle('checked', this.checked)"> ${r}</label>`).join('');
-    }
-    const el = document.getElementById('policy-table');
-    el.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
-    App.call('admin', 'listImportPolicy', {}, policy => {
-      if (!policy.length) { el.innerHTML = '<div class="empty-state text-sm">No import permissions configured. Only super admins can import.</div>'; return; }
-      const rows = policy.map(p => `
-        <tr>
-          <td><strong>${p.importerRole}</strong></td>
-          <td>${p.assignableRoles.map(r => `<span class="badge badge-navy" style="margin:1px;">${r}</span>`).join(' ') || '<span class="text-muted">none</span>'}</td>
-          <td><a class="edit-link" onclick='AdminUI.editPolicy(${JSON.stringify(p).replace(/'/g,"&#39;")})'><i class="ti ti-pencil"></i> Edit</a>
-              <a class="edit-link danger" onclick="AdminUI.deletePolicy('${p.importerRole}')"><i class="ti ti-trash"></i> Remove</a></td>
-        </tr>`).join('');
-      el.innerHTML = `<div class="table-wrap"><table class="data-table"><thead><tr><th>Importer role</th><th>May assign</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
-    });
-  }
-
-  function editPolicy(p) {
-    document.getElementById('p-importer').value = p.importerRole;
-    document.querySelectorAll('#p-assignable-chips input').forEach(inp => {
-      inp.checked = p.assignableRoles.includes(inp.value);
-      document.getElementById('pchip-'+inp.value).classList.toggle('checked', inp.checked);
-    });
-  }
-
-  function savePolicy() {
-    const importerRole = document.getElementById('p-importer').value;
-    if (!importerRole) { Toast.show('Select an importer role.', 'error'); return; }
-    const assignableRoles = Array.from(document.querySelectorAll('#p-assignable-chips input:checked')).map(i => i.value);
-    if (!assignableRoles.length) { Toast.show('Select at least one role they may assign.', 'error'); return; }
-    FormHelper.setLoading('save-policy-btn', true);
-    App.call('admin', 'upsertImportPolicy', { importerRole, assignableRoles }, res => {
-      FormHelper.setLoading('save-policy-btn', false);
-      Toast.show('Import permission ' + res.status + ' for: ' + res.importerRole, 'success');
-      loadImportPolicy();
-    }, () => FormHelper.setLoading('save-policy-btn', false));
-  }
-
-  function deletePolicy(importerRole) {
-    if (!confirm('Remove import permission for "' + importerRole + '"? They will lose access to the Import module.')) return;
-    App.call('admin', 'removeImportPolicy', { importerRole }, () => {
-      Toast.show('Removed import permission: ' + importerRole, 'success');
-      loadImportPolicy();
-    });
-  }
-
-  // ══ REQUEST NOTIFICATIONS ═════════════════════════════
-  function loadNotifyRules() {
-    const sel = document.getElementById('n-role');
-    if (sel) {
-      sel.innerHTML = '<option value="">— Select role —</option>'
-        + (_roles || []).filter(r => r !== 'super_admin').map(r => `<option value="${r}">${r}</option>`).join('');
-    }
-    const el = document.getElementById('notify-table');
-    if (!el) return;
-    el.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
-    App.call('admin', 'listNotifyRules', {}, rules => {
-      if (!document.getElementById('notify-table')) return;
-      const withEmails = rules.filter(r => r.emails && r.emails.length);
-      if (!withEmails.length) { el.innerHTML = '<div class="empty-state text-sm">No notification rules yet. Only super admins are emailed about requests.</div>'; return; }
-      const rows = withEmails.map(r => `
-        <tr>
-          <td><span class="badge badge-gold">${r.requestedRole}</span></td>
-          <td class="text-sm">${r.emails.join(', ')}</td>
-          <td class="text-sm text-muted">${r.note || ''}</td>
-          <td><a class="edit-link" onclick='AdminUI.editNotifyRule(${JSON.stringify(r).replace(/'/g,"&#39;")})'><i class="ti ti-pencil"></i> Edit</a>
-              <a class="edit-link danger" onclick="AdminUI.deleteNotifyRule('${r.requestedRole}')"><i class="ti ti-trash"></i> Remove</a></td>
-        </tr>`).join('');
-      el.innerHTML = `<div class="table-wrap"><table class="data-table"><thead><tr><th>Requested role</th><th>Notify</th><th>Note</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
-    });
-  }
-
-  function editNotifyRule(r) {
-    document.getElementById('n-role').value = r.requestedRole;
-    document.getElementById('n-emails').value = (r.emails || []).join(', ');
-    document.getElementById('n-note').value = r.note || '';
-  }
-
-  function saveNotifyRule() {
-    const requestedRole = document.getElementById('n-role').value;
-    if (!requestedRole) { Toast.show('Select the requested role.', 'error'); return; }
-    const emails = document.getElementById('n-emails').value.trim();
-    if (!emails) { Toast.show('Enter at least one email.', 'error'); return; }
-    FormHelper.setLoading('save-notify-btn', true);
-    App.call('admin', 'upsertNotifyRule', {
-      requestedRole, emails,
-      note: document.getElementById('n-note').value.trim(),
-    }, res => {
-      FormHelper.setLoading('save-notify-btn', false);
-      Toast.show('Notification rule ' + res.status + ' for: ' + res.requestedRole, 'success');
-      ['n-emails','n-note'].forEach(id => document.getElementById(id).value='');
-      document.getElementById('n-role').value = '';
-      loadNotifyRules();
-    }, () => FormHelper.setLoading('save-notify-btn', false));
-  }
-
-  function deleteNotifyRule(requestedRole) {
-    if (!confirm('Remove the notification rule for "' + requestedRole + '"? Only super admins will be emailed about these requests.')) return;
-    App.call('admin', 'removeNotifyRule', { requestedRole }, () => {
-      Toast.show('Removed notification rule: ' + requestedRole, 'success');
-      loadNotifyRules();
-    });
-  }
-
-  // ══ AUDIT ═════════════════════════════════════════════
-  function loadAudit() {
-    const el = document.getElementById('audit-table');
-    el.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
-    App.call('admin', 'recentAudit', {}, rows => {
-      if (!rows.length) { el.innerHTML = '<div class="empty-state">No audit entries found.</div>'; return; }
-      const body = rows.map(r => `<tr><td>${r.timestamp||''}</td><td>${r.user}</td><td>${r.module}</td><td>${r.action}</td><td><span class="badge ${r.status==='success'?'badge-success':'badge-danger'}">${r.status}</span></td></tr>`).join('');
-      el.innerHTML = `<div class="table-wrap"><table class="data-table"><thead><tr><th>Time</th><th>User</th><th>Module</th><th>Action</th><th>Status</th></tr></thead><tbody>${body}</tbody></table></div>`;
-    });
-  }
-
-  return { init, switchTab, loadModules, toggleModule, deleteModule, openModuleForm, editModule, closeModuleForm, checkHandler, pickIcon, onModuleChip, saveModule, loadUsers, onChip, editUser, saveUser, clearUserForm, loadAudit, loadRoles, editRole, saveRole, clearRoleForm, deleteRole, explainBlocked, loadRequests, approveRequest, rejectRequest, loadImportPolicy, editPolicy, savePolicy, deletePolicy, loadNotifyRules, editNotifyRule, saveNotifyRule, deleteNotifyRule };
-
-})();
-
-AdminUI.init();
-</script>

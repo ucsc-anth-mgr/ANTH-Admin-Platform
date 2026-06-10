@@ -96,14 +96,17 @@ const PersonMatch = (() => {
 
   /**
    * Resolve, and on a certain match with no conflicts:
-   *   - fill an empty ID slot if the record supplies a new ID, and
-   *   - attach a new name spelling as an alternate.
-   * Returns the resolve() result plus { altAttached, idFilled }.
+   *   - fill an empty ID slot if the record supplies a new ID,
+   *   - if the profile has NO preferred name yet, promote the incoming
+   *     name to FirstName/LastName (namePromoted), and
+   *   - otherwise attach a new name spelling as an alternate.
+   * Returns the resolve() result plus { altAttached, idFilled, namePromoted }.
    */
   function resolveAndRecord(rec) {
     const result = resolve(rec);
     result.altAttached = false;
     result.idFilled = false;
+    result.namePromoted = false;
     if (result.status !== 'matched') return result;
 
     // Only auto-apply when there are no conflicts to review
@@ -112,8 +115,28 @@ const PersonMatch = (() => {
         const r = Auth.fillEmptyId(result.profile.email, result.idToFill.type, result.idToFill.value);
         result.idFilled = (r.status === 'filled');
       }
-      if (result.nameIsNew) {
-        Auth.attachAltName(result.profile.email, {
+      const p = result.profile;
+      const hasStoredName = !!(String(p.firstName || '').trim() || String(p.lastName || '').trim());
+      const recHasName = !!(String(rec.first || '').trim() || String(rec.last || '').trim());
+
+      if (!hasStoredName && recHasName) {
+        // Empty preferred name → the incoming name becomes the primary
+        // name, even if that spelling was previously stored as an alternate.
+        const fresh = Auth.getProfile(p.email);  // re-read in case fillEmptyId just wrote
+        Auth.upsertUser({
+          email:     fresh.email,
+          firstName: rec.first || '',
+          lastName:  rec.last || '',
+          roles:     fresh.roles,
+          studentId:  fresh.studentId,
+          employeeId: fresh.employeeId,
+          active:    fresh.active,
+          notes:     fresh.notes,
+        });
+        result.namePromoted = true;
+        result.profile = Auth.getProfile(p.email);  // return the updated profile
+      } else if (result.nameIsNew) {
+        Auth.attachAltName(p.email, {
           kind:   rec.kind || 'other',
           first:  rec.first || '',
           last:   rec.last || '',

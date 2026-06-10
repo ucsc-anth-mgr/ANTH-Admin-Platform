@@ -57,6 +57,34 @@ const DataService = (() => {
 
 
   /**
+   * Deletes the first row where keyField === keyValue. The row is removed
+   * entirely (not cleared), so no empty record is left behind. Returns
+   * true if a row was deleted, false if no match.
+   *
+   * Deliberately destructive — callers own the decision and any cleanup
+   * of references (tasks, files) that point at the deleted record.
+   *
+   * @param {string} sheetId
+   * @param {string} tabName
+   * @param {string} keyField
+   * @param {string} keyValue
+   * @returns {boolean}
+   */
+  function remove(sheetId, tabName, keyField, keyValue) {
+    const { sheet, headers, data } = _open(sheetId, tabName);
+    const keyCol = _headerIndex(headers, keyField);
+
+    for (let i = 0; i < data.length; i++) {
+      if (String(data[i][keyCol]) === String(keyValue)) {
+        sheet.deleteRow(i + 2); // +1 for header, +1 for 1-based index
+        return true;
+      }
+    }
+    return false;
+  }
+
+
+  /**
    * Returns all rows as an array of objects.
    *
    * @param {string} sheetId
@@ -128,6 +156,6 @@ const DataService = (() => {
   }
 
 
-  return { insert, update, getAll, query, generateId };
+  return { insert, update, remove, getAll, query, generateId };
 
 })();

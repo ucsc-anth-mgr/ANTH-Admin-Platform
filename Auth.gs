@@ -1,8 +1,17 @@
 // ============================================================
 // Auth.gs — Identity & role engine (platform-wide profiles)
 // ============================================================
-// Users tab columns:  Email | FirstName | LastName | Roles | IDType | IDNumber | Active | Notes
+// Users tab columns:  Email | Roles | Active | Notes | FirstName | LastName | AltNames | StudentID | EmployeeID
 // Roles tab columns:  Role  | Description
+//
+//   Email      — PRIMARY key for authentication and identity matching.
+//                IDs are a BACKUP match path only (see PersonMatch).
+//   AltNames   — JSON array of alternate-spelling objects, used for
+//                matching only (not display); preserved on update unless
+//                explicitly supplied.
+//   StudentID  — 7 digits;  EmployeeID — 8 digits (each validated when set).
+//   Display names (name = "First Last", nameLastFirst = "Last, First")
+//                are COMPUTED, not stored.
 //
 // Columns are read BY HEADER NAME, not position, so the Users tab
 // may have columns in any order and new columns can be added later

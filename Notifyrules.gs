@@ -2,25 +2,35 @@
 // NotifyRules.gs — Request notification rules
 // ============================================================
 // Maps a REQUESTED ROLE -> extra email recipients notified when an
-// access request for that role is submitted. Super admins are always
-// notified regardless; these rules ADD recipients (e.g. the
-// undergraduate/graduate advisors for student and visitor requests).
+// access request for that role is submitted. Super admins are notified
+// based on a configurable toggle (see getSettings/saveSettings); these
+// rules ADD role-specific recipients (e.g. the undergraduate/graduate
+// advisors for student and visitor requests).
 //
 // NotifyRules tab columns:  RequestedRole | NotifyEmails | Note
 // Managed in Admin → Roles → "Request notifications".
+//
+// Reserved row: RequestedRole = "__settings__"
+//   NotifyEmails column holds JSON: { "notifySuperAdmins": true|false }
+//   This row is excluded from list() and never shown in the UI table.
 // ============================================================
 
 const NotifyRules = (() => {
 
-  const HEADERS = ['RequestedRole', 'NotifyEmails', 'Note'];
+  const HEADERS      = ['RequestedRole', 'NotifyEmails', 'Note'];
+  const SETTINGS_KEY = '__settings__';
 
 
-  /** Returns all rules as [{ requestedRole, emails[], note }]. */
+  /** Returns all rules as [{ requestedRole, emails[], note }].
+   *  Reserved rows (starting with '__') are excluded. */
   function list() {
     const sheet = _ensureSheet();
     const data  = sheet.getDataRange().getValues();
     return data.slice(1)
-      .filter(row => String(row[0]).trim())
+      .filter(row => {
+        const key = String(row[0]).trim();
+        return key && !key.startsWith('__');
+      })
       .map(row => ({
         requestedRole: String(row[0]).trim().toLowerCase(),
         emails: _parseEmails(row[1]),
@@ -44,12 +54,63 @@ const NotifyRules = (() => {
 
 
   /**
+   * Returns the global notification settings.
+   * Defaults to { notifySuperAdmins: true } if no settings row exists,
+   * preserving existing behavior for portals that have never set this.
+   * @returns {{ notifySuperAdmins: boolean }}
+   */
+  function getSettings() {
+    try {
+      const sheet = _ensureSheet();
+      const data  = sheet.getDataRange().getValues();
+      for (let i = 1; i < data.length; i++) {
+        if (String(data[i][0]).trim() === SETTINGS_KEY) {
+          const raw = String(data[i][1] || '').trim();
+          if (!raw) break;
+          const parsed = JSON.parse(raw);
+          return {
+            notifySuperAdmins: parsed.notifySuperAdmins !== false,
+          };
+        }
+      }
+    } catch (e) {
+      Logger.log('NotifyRules.getSettings failed: ' + e);
+    }
+    return { notifySuperAdmins: true };
+  }
+
+
+  /**
+   * Persists global notification settings.
+   * @param {Object} p - { notifySuperAdmins: boolean }
+   * @returns {{ status: string, notifySuperAdmins: boolean }}
+   */
+  function saveSettings(p) {
+    const notifySuperAdmins = p.notifySuperAdmins !== false;
+    const value = JSON.stringify({ notifySuperAdmins: notifySuperAdmins });
+
+    const sheet = _ensureSheet();
+    const data  = sheet.getDataRange().getValues();
+    for (let i = 1; i < data.length; i++) {
+      if (String(data[i][0]).trim() === SETTINGS_KEY) {
+        sheet.getRange(i + 1, 2).setValue(value);
+        sheet.getRange(i + 1, 3).setValue('portal settings — do not edit manually');
+        return { status: 'updated', notifySuperAdmins: notifySuperAdmins };
+      }
+    }
+    sheet.appendRow([SETTINGS_KEY, value, 'portal settings — do not edit manually']);
+    return { status: 'created', notifySuperAdmins: notifySuperAdmins };
+  }
+
+
+  /**
    * Adds or updates a rule (keyed by requested role).
    * @param {Object} p - { requestedRole, emails: "a@x, b@y" or [..] , note? }
    */
   function upsert(p) {
     const role = String(p.requestedRole || '').trim().toLowerCase();
     if (!role) throw new Error('Choose the requested role.');
+    if (role.startsWith('__')) throw new Error('Invalid role name.');
     const validRoles = Auth.listRoles();
     if (validRoles.indexOf(role) === -1) throw new Error('Unknown role: ' + role);
 
@@ -75,6 +136,7 @@ const NotifyRules = (() => {
   /** Removes the rule for a requested role. */
   function remove(p) {
     const role = String(p.requestedRole || '').trim().toLowerCase();
+    if (role.startsWith('__')) throw new Error('Cannot remove reserved settings row.');
     const sheet = _ensureSheet();
     const data  = sheet.getDataRange().getValues();
     for (let i = 1; i < data.length; i++) {
@@ -106,6 +168,6 @@ const NotifyRules = (() => {
   }
 
 
-  return { list, recipientsFor, upsert, remove };
+  return { list, recipientsFor, getSettings, saveSettings, upsert, remove };
 
 })();

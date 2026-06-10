@@ -1,0 +1,878 @@
+<!-- thesis.html — Senior Thesis module UI -->
+<!-- Server-rendered: currentUser and userRoles are available as template vars -->
+
+<div id="thesis-module">
+
+  <!-- Tab bar (role-aware). Students submit and track; reviewers see their
+       queue and sponsorship history. Keep the role lists below in sync with
+       the _canReview/_isStudent constants in the controller script. -->
+  <div class="module-tabs">
+    <? var roles = JSON.parse(userRoles); ?>
+    <? var canReview = false; ?>
+    <? ['super_admin','senate_faculty','lecturer','staff','staff_undergrad'].forEach(function(r){ if (roles.includes(r)) canReview = true; }); ?>
+    <? var isStudent = roles.includes('undergraduate_student'); ?>
+    <? if (isStudent) { ?>
+    <button class="module-tab" data-tab="submit" id="tab-btn-submit" onclick="ThesisUI.switchTab('submit')">
+      <i class="ti ti-file-upload"></i> Submit a thesis
+    </button>
+    <button class="module-tab" data-tab="mine" onclick="ThesisUI.switchTab('mine')">
+      <i class="ti ti-list"></i> My theses
+    </button>
+    <? } ?>
+    <? if (canReview) { ?>
+    <button class="module-tab" data-tab="queue" onclick="ThesisUI.switchTab('queue')">
+      <i class="ti ti-inbox"></i> Review queue
+    </button>
+    <? } ?>
+    <? var canSponsor = roles.includes('senate_faculty') || roles.includes('lecturer') || roles.includes('super_admin'); ?>
+    <? if (canSponsor) { ?>
+    <button class="module-tab" data-tab="sponsored" onclick="ThesisUI.switchTab('sponsored')">
+      <i class="ti ti-user-check"></i> Sponsored theses
+    </button>
+    <? } ?>
+    <? var isAdvisor = roles.includes('staff_undergrad') || roles.includes('super_admin'); ?>
+    <? if (isAdvisor) { ?>
+    <button class="module-tab" data-tab="grad" onclick="ThesisUI.switchTab('grad')">
+      <i class="ti ti-school"></i> Graduation queue
+    </button>
+    <? } ?>
+  </div>
+
+  <!-- ── Tab: Submit ───────────────────────────────────── -->
+  <div id="tab-submit" class="tab-panel" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title"><i class="ti ti-file-upload"></i> Senior thesis submission</div>
+
+      <div id="resubmit-banner" class="form-hint" style="display:none;"></div>
+
+      <div id="thesis-form">
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label" for="th-quarter">Quarter <span class="required">*</span></label>
+            <select class="form-select" name="quarter" id="th-quarter" required>
+              <option value="">— Select —</option>
+              <option>Fall</option><option>Winter</option><option>Spring</option><option>Summer</option>
+            </select>
+            <div class="form-error"></div>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="th-year">Year <span class="required">*</span></label>
+            <input class="form-input" type="text" name="year" id="th-year" inputmode="numeric" maxlength="4" placeholder="2026" required>
+            <div class="form-error"></div>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="th-title">Thesis title <span class="required">*</span></label>
+          <input class="form-input" type="text" name="title" id="th-title" required>
+          <div class="form-error"></div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="th-abstract">Abstract / description <span class="required">*</span></label>
+          <textarea class="form-textarea" name="abstract" id="th-abstract" rows="6" required
+            placeholder="A short summary of your thesis."></textarea>
+          <div class="form-error"></div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Geographic regions <span class="required">*</span></label>
+          <div class="form-hint">Add one or more countries. A locality (e.g. a state, city, or area) is optional.</div>
+          <div class="region-add-row">
+            <select class="form-select" id="th-country"><option value="">— Select a country —</option></select>
+            <input class="form-input" type="text" id="th-locality" placeholder="Locality (optional)">
+            <button type="button" class="btn btn-secondary" onclick="ThesisUI.addRegion()"><i class="ti ti-plus"></i> Add</button>
+          </div>
+          <div id="th-region-chips" class="region-chips"></div>
+          <div class="form-error" id="th-region-error"></div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="th-sponsor">Faculty sponsor <span class="required">*</span></label>
+          <select class="form-select" name="sponsorEmail" id="th-sponsor" required>
+            <option value="">— Loading faculty… —</option>
+          </select>
+          <div class="form-error"></div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="th-file">Thesis PDF <span class="required">*</span></label>
+          <input class="form-input" type="file" id="th-file" accept="application/pdf">
+          <div class="form-hint">Upload the final thesis as a single PDF. Resubmitting replaces the file already on record.</div>
+          <div class="form-error" id="th-file-error"></div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Public availability</label>
+          <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
+            <input type="checkbox" id="th-share"> Allow my thesis to be made publicly available
+          </label>
+          <div class="form-hint">If unchecked, your thesis is kept within the department ("Don't share").</div>
+        </div>
+
+        <div class="form-actions">
+          <button class="btn btn-primary" id="th-submit-btn" onclick="ThesisUI.submit()">
+            <i class="ti ti-send"></i> Submit thesis
+          </button>
+          <button class="btn btn-secondary" id="th-cancel-resubmit" style="display:none;" onclick="ThesisUI.cancelResubmit()">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Tab: My theses ────────────────────────────────── -->
+  <div id="tab-mine" class="tab-panel" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title" style="justify-content:space-between;">
+        <span><i class="ti ti-list"></i> My theses</span>
+        <button class="btn btn-secondary btn-sm" onclick="ThesisUI.loadMine()"><i class="ti ti-refresh"></i></button>
+      </div>
+      <div id="mine-list"><div class="empty-state"><i class="ti ti-inbox" style="font-size:32px;display:block;margin-bottom:8px;"></i>No theses yet</div></div>
+    </div>
+  </div>
+
+  <!-- ── Tab: Review queue ─────────────────────────────── -->
+  <div id="tab-queue" class="tab-panel" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title" style="justify-content:space-between;">
+        <span><i class="ti ti-inbox"></i> Review queue</span>
+        <span style="display:inline-flex;gap:8px;align-items:center;">
+          <? if (roles.includes('super_admin')) { ?>
+          <label style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:normal;cursor:pointer;">
+            <input type="checkbox" id="th-scope-all" onchange="ThesisUI.loadQueue()"> Show all theses
+          </label>
+          <? } ?>
+          <button class="btn btn-secondary btn-sm" onclick="ThesisUI.loadQueue()"><i class="ti ti-refresh"></i></button>
+        </span>
+      </div>
+      <div id="queue-list"><div class="empty-state">Nothing awaiting you right now.</div></div>
+    </div>
+  </div>
+
+  <!-- ── Tab: Sponsored theses ─────────────────────────── -->
+  <div id="tab-sponsored" class="tab-panel" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title" style="justify-content:space-between;">
+        <span><i class="ti ti-user-check"></i> Theses I've sponsored</span>
+        <button class="btn btn-secondary btn-sm" onclick="ThesisUI.loadSponsored()"><i class="ti ti-refresh"></i></button>
+      </div>
+      <div id="sponsored-list"><div class="empty-state">No sponsored theses yet.</div></div>
+    </div>
+  </div>
+
+  <!-- ── Tab: Graduation queue (advisor) ───────────────── -->
+  <div id="tab-grad" class="tab-panel" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title" style="justify-content:space-between;">
+        <span><i class="ti ti-school"></i> Approved theses awaiting graduation records</span>
+        <button class="btn btn-secondary btn-sm" onclick="ThesisUI.loadGradQueue()"><i class="ti ti-refresh"></i></button>
+      </div>
+      <p class="text-muted" style="font-size:13px;margin-top:0;">
+        Theses awaiting your final processing. For each: open the thesis document, then either
+        confirm the Degree Progress Report milestone and complete (approved theses), close out
+        (No Pass), or return it to the sponsor for re-review.
+      </p>
+      <div id="grad-list"><div class="empty-state">Nothing waiting.</div></div>
+    </div>
+  </div>
+
+  <!-- Detail / action modal -->
+  <div id="th-modal" class="th-modal" style="display:none;">
+    <div class="th-modal-card card">
+      <div class="card-title" style="justify-content:space-between;">
+        <span id="th-modal-title">Thesis</span>
+        <button class="btn btn-secondary btn-sm" onclick="ThesisUI.closeModal()"><i class="ti ti-x"></i></button>
+      </div>
+      <div id="th-modal-body"></div>
+    </div>
+  </div>
+
+  <!-- Busy overlay: shown during slow round-trips (upload, record loads) -->
+  <div id="th-busy" class="th-busy" style="display:none;">
+    <div class="th-busy-box">
+      <div class="spinner"></div>
+      <span id="th-busy-msg">Working…</span>
+    </div>
+  </div>
+
+</div>
+
+<style>
+.th-modal {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.4);
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: 40px 16px; z-index: 1000; overflow-y: auto;
+}
+.th-modal-card { max-width: 640px; width: 100%; margin: 0; }
+.th-detail-grid { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; font-size: 13.5px; margin: 4px 0 16px; }
+.th-detail-grid dt { color: var(--color-muted); }
+.th-detail-grid dd { margin: 0; }
+.th-stage { font-size: 12px; }
+.region-add-row { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.region-add-row .form-select { flex: 2 1 220px; }
+.region-add-row .form-input { flex: 1 1 160px; }
+.region-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.region-chip {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: var(--color-surface); border: 1px solid var(--color-border);
+  border-radius: 999px; padding: 4px 6px 4px 12px; font-size: 13px;
+}
+.region-chip .chip-continent { color: var(--color-muted); font-size: 11px; }
+.region-chip button {
+  border: none; background: none; cursor: pointer; color: var(--color-muted);
+  display: inline-flex; padding: 2px; border-radius: 50%;
+}
+.region-chip button:hover { color: var(--color-danger); }
+.th-busy {
+  position: fixed; inset: 0; background: rgba(255,255,255,0.75);
+  display: flex; align-items: center; justify-content: center; z-index: 1100;
+}
+.th-busy-box {
+  display: flex; align-items: center; gap: 12px;
+  background: var(--color-surface); border: 1px solid var(--color-border);
+  border-radius: var(--radius); box-shadow: var(--shadow-pop);
+  padding: 16px 22px; font-size: 14px;
+}
+</style>
+
+<script>
+window.ThesisUI = (() => {
+
+  const QUARTER_RANK = { Fall: 0, Winter: 1, Spring: 2, Summer: 3 };
+  const STAGE_META = {
+    SUBMITTED:       { cls: 'badge-warning', label: 'Awaiting sponsor' },
+    PENDING_HONORS:  { cls: 'badge-navy',    label: 'Honors review' },
+    PENDING_ADVISOR: { cls: 'badge-gold',    label: 'Final processing' },
+    RETURNED:        { cls: 'badge-danger',  label: 'Returned' },
+    COMPLETE:        { cls: 'badge-success', label: 'Complete' },
+  };
+
+  let _sponsors = [];          // eligible sponsors
+  let _readers = [];           // eligible honors readers
+  let _regions = [];           // [{country, locality}] chips for the form
+  let _filePayload = null;     // { dataBase64, mimeType }
+  let _resubmitId = null;      // set when revising a returned thesis
+  const _roles = <?!= userRoles ?>;
+  // Keep in sync with the role lists in the tab-bar template scriptlets.
+  const _canReview = ['super_admin','senate_faculty','lecturer','staff','staff_undergrad']
+    .some(r => _roles.indexOf(r) !== -1);
+  const _isStudent = _roles.indexOf('undergraduate_student') !== -1;
+  const _isAdvisorUser = _roles.indexOf('staff_undergrad') !== -1 || _roles.indexOf('super_admin') !== -1;
+
+  // Theses whose PDF the advisor has opened this session — gates completion.
+  const _viewedDocs = {};
+
+  // ── Init ─────────────────────────────────────────────
+  function init() {
+    App.call('thesis', 'listEligible', { capability: 'sponsor' }, list => {
+      _sponsors = list || [];
+      _fillFacultySelect(document.getElementById('th-sponsor'), _sponsors);
+    });
+    App.call('thesis', 'listEligible', { capability: 'reader' }, list => {
+      _readers = list || [];
+    });
+    App.call('thesis', 'listCountries', {}, groups => _fillCountrySelect(groups || []));
+    document.getElementById('th-file').addEventListener('change', _onFileChange);
+
+    // Default tab is audience-dependent. Students: load their theses
+    // first — if any exist (active, returned, or completed), the Submit
+    // tab is hidden to prevent a second submission, and they land on My
+    // theses. (A RETURNED thesis still reaches the form via its Revise &
+    // resubmit button, which opens the submit panel directly.) Advisors
+    // land on their work queue (Graduation queue); other reviewers on the
+    // Review queue.
+    const _isAdvisorRole = _roles.indexOf('staff_undergrad') !== -1;
+    if (_isStudent) {
+      App.call('thesis', 'mySubmissions', {}, rows => {
+        rows = rows || [];
+        const el = document.getElementById('mine-list');
+        if (el) el.innerHTML = rows.length ? _renderList(rows, 'mine') : '<div class="empty-state">No theses yet</div>';
+        if (rows.length) {
+          const btn = document.getElementById('tab-btn-submit');
+          if (btn) btn.style.display = 'none';
+          switchTab('mine');
+        } else {
+          switchTab('submit');
+        }
+      });
+    } else {
+      switchTab(_isAdvisorRole ? 'grad' : (_canReview ? 'queue' : 'submit'));
+    }
+
+    // Dashboard/email deep-link: open the focused record's detail. If the
+    // record is awaiting final processing and the viewer works the
+    // graduation queue, land on that tab — it is where the action lives.
+    const f = window.__focus;
+    if (f && f.sourceId) {
+      _busy('Loading thesis…');
+      App.call('thesis', 'get', { thesisId: f.sourceId }, rec => {
+        _idle();
+        if (_isAdvisorUser && rec && rec.stage === 'PENDING_ADVISOR'
+            && document.querySelector('#thesis-module [data-tab="grad"]')) {
+          switchTab('grad');
+        }
+        _openDetail(rec);
+      }, () => _idle());
+    }
+  }
+
+  // Country dropdown grouped by continent (native <optgroup>).
+  function _fillCountrySelect(groups) {
+    const sel = document.getElementById('th-country');
+    if (!sel) return;
+    sel.innerHTML = '<option value="">— Select a country —</option>';
+    groups.forEach(g => {
+      if (!g.countries || !g.countries.length) return;
+      const og = document.createElement('optgroup');
+      og.label = g.continent;
+      g.countries.forEach(name => {
+        const opt = document.createElement('option');
+        opt.value = name; opt.textContent = name;
+        og.appendChild(opt);
+      });
+      sel.appendChild(og);
+    });
+  }
+
+  function _fillFacultySelect(sel, people) {
+    if (!sel) return;
+    sel.innerHTML = '<option value="">— Select faculty —</option>';
+    (people || []).forEach(fac => {
+      const opt = document.createElement('option');
+      opt.value = fac.email; opt.textContent = fac.name;
+      sel.appendChild(opt);
+    });
+  }
+
+  // ── Region chips ─────────────────────────────────────
+  function addRegion() {
+    const errEl = document.getElementById('th-region-error');
+    errEl.classList.remove('visible');
+    const country  = document.getElementById('th-country').value;
+    const locality = document.getElementById('th-locality').value.trim();
+    if (!country) { errEl.textContent = 'Pick a country to add.'; errEl.classList.add('visible'); return; }
+
+    const dup = _regions.some(r =>
+      r.country.toLowerCase() === country.toLowerCase() &&
+      (r.locality || '').toLowerCase() === locality.toLowerCase());
+    if (dup) { errEl.textContent = 'That region is already added.'; errEl.classList.add('visible'); return; }
+
+    _regions.push({ country: country, locality: locality });
+    document.getElementById('th-country').value = '';
+    document.getElementById('th-locality').value = '';
+    _renderRegionChips();
+  }
+
+  function removeRegion(idx) {
+    _regions.splice(idx, 1);
+    _renderRegionChips();
+  }
+
+  function _renderRegionChips() {
+    const el = document.getElementById('th-region-chips');
+    if (!el) return;
+    el.innerHTML = _regions.map((r, i) => {
+      const loc = r.locality ? _esc(r.locality) + ', ' : '';
+      return '<span class="region-chip">' + loc + _esc(r.country)
+        + ' <button type="button" title="Remove" onclick="ThesisUI.removeRegion(' + i + ')"><i class="ti ti-x"></i></button></span>';
+    }).join('');
+  }
+
+  // ── Tabs ─────────────────────────────────────────────
+  function switchTab(tab) {
+    document.querySelectorAll('#thesis-module .tab-panel').forEach(p => p.style.display = 'none');
+    document.querySelectorAll('#thesis-module .module-tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+    document.getElementById('tab-' + tab).style.display = 'block';
+    if (tab === 'mine')      loadMine();
+    if (tab === 'queue')     loadQueue();
+    if (tab === 'sponsored') loadSponsored();
+    if (tab === 'grad')      loadGradQueue();
+  }
+
+  // ── File handling ────────────────────────────────────
+  function _onFileChange(e) {
+    const errEl = document.getElementById('th-file-error');
+    errEl.classList.remove('visible');
+    _filePayload = null;
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    if (file.type !== 'application/pdf') {
+      errEl.textContent = 'The thesis must be a PDF file.'; errEl.classList.add('visible');
+      e.target.value = ''; return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const b64 = String(reader.result).split(',')[1] || '';
+      _filePayload = { dataBase64: b64, mimeType: 'application/pdf' };
+    };
+    reader.onerror = () => { errEl.textContent = 'Could not read that file. Try again.'; errEl.classList.add('visible'); };
+    reader.readAsDataURL(file);
+  }
+
+  // ── Submit / resubmit ────────────────────────────────
+  function submit() {
+    const { data, isValid } = FormHelper.collect('thesis-form');
+    if (!isValid) { Toast.show('Please fix the highlighted fields.', 'error'); return; }
+    if (!/^\d{4}$/.test(data.year)) { Toast.show('Year must be a 4-digit year.', 'error'); return; }
+    if (!_filePayload) { Toast.show('Attach the thesis PDF.', 'error'); return; }
+    if (!_regions.length) { Toast.show('Add at least one geographic region.', 'error'); return; }
+
+    const payload = {
+      quarter: data.quarter, year: data.year, title: data.title,
+      abstract: data.abstract,
+      regions: _regions,
+      sponsorEmail: data.sponsorEmail,
+      shareConsent: document.getElementById('th-share').checked,
+      file: _filePayload,
+    };
+    if (_resubmitId) payload.thesisId = _resubmitId;
+
+    FormHelper.setLoading('th-submit-btn', true, _resubmitId ? 'Resubmitting…' : 'Submitting…');
+    _busy(_resubmitId ? 'Uploading your revised thesis…' : 'Uploading your thesis…');
+    App.call('thesis', 'submit', payload, res => {
+      FormHelper.setLoading('th-submit-btn', false);
+      _idle();
+      Toast.show(res.resubmitted ? 'Thesis resubmitted.' : 'Thesis submitted to your sponsor.', 'success');
+      _resetForm();
+      switchTab('mine');
+    }, () => { FormHelper.setLoading('th-submit-btn', false); _idle(); });
+  }
+
+  function _resetForm() {
+    FormHelper.reset('thesis-form');
+    document.getElementById('th-file').value = '';
+    document.getElementById('th-share').checked = false;
+    _filePayload = null; _resubmitId = null;
+    _regions = []; _renderRegionChips();
+    document.getElementById('resubmit-banner').style.display = 'none';
+    document.getElementById('th-cancel-resubmit').style.display = 'none';
+  }
+
+  function cancelResubmit() { _resetForm(); switchTab('mine'); }
+
+  function startResubmit(rec) {
+    _resubmitId = rec.thesisId;
+    switchTab('submit');
+    document.getElementById('th-quarter').value = rec.quarter || '';
+    document.getElementById('th-year').value = rec.year || '';
+    document.getElementById('th-title').value = rec.title || '';
+    document.getElementById('th-abstract').value = rec.abstract || '';
+    _regions = (rec.regions || []).map(r => ({ country: r.country, locality: r.locality || '' }));
+    _renderRegionChips();
+    document.getElementById('th-sponsor').value = rec.sponsorEmail || '';
+    document.getElementById('th-share').checked = !!rec.shareConsent;
+    const banner = document.getElementById('resubmit-banner');
+    banner.style.display = 'block';
+    banner.innerHTML = '<strong>Revising a returned thesis.</strong> '
+      + (rec.returnNote ? 'Reviewer note: ' + _esc(rec.returnNote) : '')
+      + ' Upload the revised PDF and submit.';
+    document.getElementById('th-cancel-resubmit').style.display = 'inline-flex';
+    closeModal();
+  }
+
+  // ── Lists ────────────────────────────────────────────
+  function loadMine() {
+    const el = document.getElementById('mine-list');
+    el.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
+    App.call('thesis', 'mySubmissions', {}, rows => {
+      el.innerHTML = rows.length ? _renderList(rows, 'mine') : '<div class="empty-state">No theses yet</div>';
+    });
+  }
+
+  function loadQueue() {
+    const el = document.getElementById('queue-list');
+    el.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
+    const allBox = document.getElementById('th-scope-all');
+    const payload = (allBox && allBox.checked) ? { scope: 'all' } : {};
+    App.call('thesis', 'queue', payload, rows => {
+      el.innerHTML = rows.length ? _renderList(rows, 'queue') : '<div class="empty-state">Nothing awaiting you right now.</div>';
+    });
+  }
+
+  function loadSponsored() {
+    const el = document.getElementById('sponsored-list');
+    if (!el) return;
+    el.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
+    App.call('thesis', 'sponsored', {}, rows => {
+      el.innerHTML = rows.length ? _renderList(rows, 'sponsored') : '<div class="empty-state">No sponsored theses yet.</div>';
+    });
+  }
+
+  function loadGradQueue() {
+    const el = document.getElementById('grad-list');
+    if (!el) return;
+    el.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
+    App.call('thesis', 'gradQueue', {}, rows => {
+      el.innerHTML = rows.length ? _renderGradList(rows) : '<div class="empty-state">Nothing waiting.</div>';
+    });
+  }
+
+  function _renderGradList(rows) {
+    const body = rows.map(r => {
+      const approved = !!r.sponsorDecision && r.sponsorDecision !== 'No Pass';
+      const outcome = _esc(r.sponsorDecision || '—') + (r.honorsDecision ? ' → ' + _esc(r.honorsDecision) : '');
+      const viewed = !!_viewedDocs[r.thesisId];
+
+      const docCell = r.documentLink
+        ? '<a class="btn btn-secondary btn-sm" href="' + _esc(r.documentLink) + '" target="_blank" rel="noopener" '
+          + 'onclick="event.stopPropagation();ThesisUI.markDocViewed(\'' + _esc(r.thesisId) + '\')">'
+          + '<i class="ti ti-file-text"></i> Open PDF</a>'
+        : '<span class="text-muted">No document</span>';
+
+      const milestoneCell = approved
+        ? '<label style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer;" onclick="event.stopPropagation();">'
+          + '<input type="checkbox" id="gq-ms-' + _esc(r.thesisId) + '"' + (viewed ? '' : ' disabled title="Open the PDF first"') + '>'
+          + ' Milestone entered</label>'
+        : '<span class="text-muted" style="font-size:12px;">No Pass — no milestone</span>';
+
+      const doneLabel = approved ? 'Complete' : 'Close out';
+      return '<tr onclick="ThesisUI.open(\'' + _esc(r.thesisId) + '\')" style="cursor:pointer;">'
+        + '<td>' + _esc(r.term) + '</td>'
+        + '<td>' + _esc(r.studentName) + '<div class="text-muted" style="font-size:11px;">' + _esc(r.studentId) + '</div></td>'
+        + '<td>' + _esc(r.title) + '</td>'
+        + '<td>' + outcome + '</td>'
+        + '<td onclick="event.stopPropagation();">' + docCell + '</td>'
+        + '<td>' + milestoneCell + '</td>'
+        + '<td onclick="event.stopPropagation();" style="white-space:nowrap;">'
+        + '<button class="btn btn-primary btn-sm" id="gq-done-' + _esc(r.thesisId) + '" '
+        + 'onclick="ThesisUI.advisorComplete(\'' + _esc(r.thesisId) + '\', ' + approved + ', \'gq\')">'
+        + '<i class="ti ti-check"></i> ' + doneLabel + '</button> '
+        + '<button class="btn btn-secondary btn-sm" onclick="ThesisUI.returnToSponsor(\'' + _esc(r.thesisId) + '\')">'
+        + '<i class="ti ti-arrow-back-up"></i> Return</button>'
+        + '</td>'
+        + '</tr>';
+    }).join('');
+    return '<div class="table-wrap"><table class="data-table"><thead><tr>'
+      + '<th>Term</th><th>Student</th><th>Title</th><th>Outcome</th><th>Document</th><th>Degree Progress</th><th></th>'
+      + '</tr></thead><tbody>' + body + '</tbody></table></div>';
+  }
+
+  /** Records that the advisor opened a thesis PDF this session, and
+   *  enables the matching milestone checkbox(es) in the queue and modal. */
+  function markDocViewed(thesisId) {
+    _viewedDocs[thesisId] = true;
+    ['gq-ms-' + thesisId, 'ad-ms-' + thesisId].forEach(id => {
+      const box = document.getElementById(id);
+      if (box) { box.disabled = false; box.removeAttribute('title'); }
+    });
+  }
+
+  function deleteThesis(info) {
+    info = info || {};
+    const label = (info.title || info.id) + (info.student ? ' (' + info.student + ')' : '');
+    if (!window.confirm('Permanently delete "' + label + '"?\n\nThis removes the record, clears its tasks, and trashes its PDF. It cannot be undone.')) return;
+    _busy('Deleting thesis…');
+    App.call('thesis', 'deleteThesis', { thesisId: info.id }, () => {
+      _idle();
+      Toast.show('Thesis deleted.', 'success');
+      closeModal();
+      _afterAction();
+    }, () => _idle());
+  }
+
+  function _renderList(rows, context) {
+    // Students ('mine') see their sponsor; reviewers ('queue','sponsored')
+    // see the student. Advisors get a Remind action in the queue view.
+    const showStudent = context !== 'mine';
+    const showRemind = context === 'queue' && _isAdvisorUser;
+    const body = rows.map(r => {
+      const m = STAGE_META[r.stage] || { cls: 'badge-neutral', label: r.stage };
+      const who = showStudent ? _esc(r.studentName) : _esc(r.sponsorName);
+      const whoLabel = showStudent ? 'Student' : 'Sponsor';
+      const remindCell = showRemind
+        ? (r.stage !== 'PENDING_ADVISOR'
+            ? '<td onclick="event.stopPropagation();"><button class="btn btn-secondary btn-sm" '
+              + 'onclick="ThesisUI.remind(\'' + _esc(r.thesisId) + '\')" title="Email whoever this thesis is waiting on">'
+              + '<i class="ti ti-bell"></i> Remind</button></td>'
+            : '<td><span class="text-muted" style="font-size:12px;">Waiting on you</span></td>')
+        : '';
+      return '<tr onclick="ThesisUI.open(\'' + _esc(r.thesisId) + '\')" style="cursor:pointer;">'
+        + '<td>' + _esc(r.term) + '</td>'
+        + '<td>' + _esc(r.title) + '</td>'
+        + '<td><span class="text-muted" style="font-size:11px;">' + whoLabel + '</span><br>' + who + '</td>'
+        + '<td><span class="badge ' + m.cls + ' th-stage">' + m.label + '</span></td>'
+        + remindCell
+        + '<td><i class="ti ti-chevron-right text-muted"></i></td>'
+        + '</tr>';
+    }).join('');
+    return '<div class="table-wrap"><table class="data-table"><thead><tr>'
+      + '<th>Term</th><th>Title</th><th>' + (showStudent ? 'Student' : 'Sponsor') + '</th><th>Stage</th>'
+      + (showRemind ? '<th></th>' : '') + '<th></th>'
+      + '</tr></thead><tbody>' + body + '</tbody></table></div>';
+  }
+
+  function remind(thesisId) {
+    _busy('Sending reminder…');
+    App.call('thesis', 'remindResponsible', { thesisId }, res => {
+      _idle();
+      Toast.show('Reminder sent' + (res && res.remindedTo ? ' to ' + res.remindedTo : '') + '.', 'success');
+    }, () => _idle());
+  }
+
+  // ── Detail + actions ─────────────────────────────────
+  function open(thesisId) {
+    _busy('Loading thesis…');
+    App.call('thesis', 'get', { thesisId }, rec => { _idle(); _openDetail(rec); }, () => _idle());
+  }
+
+  function _openDetail(rec) {
+    const m = STAGE_META[rec.stage] || { cls: 'badge-neutral', label: rec.stage };
+    document.getElementById('th-modal-title').textContent = rec.title || 'Thesis';
+
+    let html = '<dl class="th-detail-grid">'
+      + _row('Stage', '<span class="badge ' + m.cls + '">' + m.label + '</span>')
+      + _row('Student', _esc(rec.studentName))
+      + _row('Term', _esc(rec.term))
+      + (rec.abstract ? _row('Abstract', _esc(rec.abstract)) : '')
+      + (rec.regions && rec.regions.length ? _row('Regions', _esc(_regionsText(rec.regions))) : '')
+      + _row('Sponsor', _esc(rec.sponsorName))
+      + _row('Public availability', rec.shareConsent ? 'Yes — may be made public' : 'No — department only')
+      + (rec.readerName ? _row('Honors reader', _esc(rec.readerName)) : '')
+      + (rec.documentLink ? _row('Document', '<a href="' + _esc(rec.documentLink) + '" target="_blank" rel="noopener">Open PDF <i class="ti ti-external-link"></i></a>') : '')
+      + (rec.sponsorDecision ? _row('Sponsor decision', _esc(rec.sponsorDecision) + (rec.sponsorDecidedAt ? ' · ' + _esc(rec.sponsorDecidedAt) : '')) : '')
+      + (rec.sponsorComments ? _row('Sponsor comments', _esc(rec.sponsorComments)) : '')
+      + (rec.honorsDecision ? _row('Honors decision', _esc(rec.honorsDecision) + (rec.readerDecidedAt ? ' · ' + _esc(rec.readerDecidedAt) : '')) : '')
+      + (rec.readerComments ? _row('Reader comments', _esc(rec.readerComments)) : '')
+      + (rec.returnNote ? _row('Return note', _esc(rec.returnNote)) : '')
+      + (rec.milestoneEntered ? _row('Degree Progress Report', 'Milestone entered') : '')
+      + '</dl>';
+
+    html += _actionsFor(rec);
+    document.getElementById('th-modal-body').innerHTML = html;
+    document.getElementById('th-modal').style.display = 'flex';
+  }
+
+  // Stage- and viewer-aware actions. The server re-checks every one of
+  // these, so showing an action the viewer can't perform is harmless —
+  // we still scope by email/role to keep the UI honest.
+  function _actionsFor(rec) {
+    const me = <?!= JSON.stringify(currentUser) ?>;
+    const isMe   = (a, b) => String(a||'').toLowerCase() === String(b||'').toLowerCase();
+    const isSuper = _roles.indexOf('super_admin') !== -1;
+    const out = [];
+
+    // Student revising a returned thesis.
+    if (rec.stage === 'RETURNED' && isMe(rec.studentEmail, me)) {
+      out.push('<button class="btn btn-primary" onclick=\'ThesisUI.startResubmit(' + _json(rec) + ')\'><i class="ti ti-refresh"></i> Revise & resubmit</button>');
+    }
+
+    // Sponsor acting on a submitted thesis.
+    if (rec.stage === 'SUBMITTED' && (isMe(rec.sponsorEmail, me) || isSuper)) {
+      out.push(_sponsorPanel(rec));
+    }
+
+    // Reader acting on an honors review.
+    if (rec.stage === 'PENDING_HONORS' && (isMe(rec.readerEmail, me) || isSuper)) {
+      out.push(_readerPanel(rec));
+    }
+
+    // Advisor finishing, or returning, a thesis at final processing.
+    // Gated by viewer like the other panels — the advisor is identified by
+    // role (not an email on the record), so use the client role constant.
+    // The server independently enforces this on every action.
+    if (rec.stage === 'PENDING_ADVISOR' && _isAdvisorUser) {
+      out.push(_advisorPanel(rec));
+    }
+
+    // super_admin test cleanup: delete at any stage. Server-enforced too.
+    if (isSuper) {
+      out.push('<div style="margin-top:16px;border-top:1px solid var(--color-border);padding-top:12px;">'
+        + '<button class="btn btn-danger btn-sm" onclick=\'ThesisUI.deleteThesis(' + _json({ id: rec.thesisId, title: rec.title, student: rec.studentName }) + ')\'>'
+        + '<i class="ti ti-trash"></i> Delete thesis</button>'
+        + ' <span class="text-muted" style="font-size:12px;">Removes the record, its tasks, and its PDF. Irreversible.</span>'
+        + '</div>');
+    }
+
+    return out.length ? '<div id="th-action-panel">' + out.join('') + '</div>' : '';
+  }
+
+  function _sponsorPanel(rec) {
+    return '<div class="card" style="margin-top:8px;">'
+      + '<div class="card-title" style="font-size:14px;"><i class="ti ti-gavel"></i> Sponsor decision</div>'
+      + '<div class="form-group"><label class="form-label">Decision</label>'
+      + '<select class="form-select" id="sp-decision" onchange="ThesisUI._toggleReader()">'
+      + '<option value="">— Select —</option><option>Pass</option><option>No Pass</option><option>Review for Honors</option>'
+      + '</select></div>'
+      + '<div class="form-group" id="sp-reader-group" style="display:none;">'
+      + '<label class="form-label">Faculty reader (honors)</label>'
+      + '<select class="form-select" id="sp-reader"></select></div>'
+      + '<div class="form-group"><label class="form-label">Comments <span class="required">*</span></label>'
+      + '<textarea class="form-textarea" id="sp-comments"></textarea></div>'
+      + '<div class="form-actions">'
+      + '<button class="btn btn-primary" id="sp-save" onclick="ThesisUI.submitSponsor(\'' + _esc(rec.thesisId) + '\')"><i class="ti ti-check"></i> Record decision</button>'
+      + '<button class="btn btn-danger" onclick="ThesisUI.returnThesis(\'' + _esc(rec.thesisId) + '\')"><i class="ti ti-arrow-back-up"></i> Return to student</button>'
+      + '</div></div>';
+  }
+
+  function _readerPanel(rec) {
+    return '<div class="card" style="margin-top:8px;">'
+      + '<div class="card-title" style="font-size:14px;"><i class="ti ti-award"></i> Honors decision</div>'
+      + '<div class="form-group"><label class="form-label">Decision</label>'
+      + '<select class="form-select" id="rd-decision"><option value="">— Select —</option><option>Honors approved</option><option>Honors denied</option></select></div>'
+      + '<div class="form-group"><label class="form-label">Comments <span class="required">*</span></label>'
+      + '<textarea class="form-textarea" id="rd-comments"></textarea></div>'
+      + '<div class="form-actions">'
+      + '<button class="btn btn-primary" id="rd-save" onclick="ThesisUI.submitReader(\'' + _esc(rec.thesisId) + '\')"><i class="ti ti-check"></i> Record honors decision</button>'
+      + '<button class="btn btn-secondary" onclick="ThesisUI.returnToSponsor(\'' + _esc(rec.thesisId) + '\')"><i class="ti ti-arrow-back-up"></i> Return to sponsor</button>'
+      + '</div>'
+      + '</div>';
+  }
+
+  function _advisorPanel(rec) {
+    const approved = !!rec.sponsorDecision && rec.sponsorDecision !== 'No Pass';
+    const viewed = !!_viewedDocs[rec.thesisId];
+    const docStep = rec.documentLink
+      ? '<p style="margin:0 0 12px;"><a class="btn btn-secondary btn-sm" href="' + _esc(rec.documentLink) + '" target="_blank" rel="noopener" '
+        + 'onclick="ThesisUI.markDocViewed(\'' + _esc(rec.thesisId) + '\')">'
+        + '<i class="ti ti-file-text"></i> Open the thesis PDF</a>'
+        + ' <span class="text-muted" style="font-size:12px;">(required before completing)</span></p>'
+      : '<p class="text-muted" style="font-size:13px;">No document link on record.</p>';
+    const milestoneStep = approved
+      ? '<div class="form-group"><label style="display:flex;align-items:center;gap:8px;font-weight:normal;cursor:pointer;">'
+        + '<input type="checkbox" id="ad-ms-' + _esc(rec.thesisId) + '"' + (viewed ? '' : ' disabled title="Open the PDF first"') + '>'
+        + ' Milestone entered into Degree Progress Report <span class="required">*</span>'
+        + '</label></div>'
+      : '<p class="text-muted" style="font-size:13px;">No Pass — closed out without a Degree Progress milestone.</p>';
+    return '<div class="card" style="margin-top:8px;">'
+      + '<div class="card-title" style="font-size:14px;"><i class="ti ti-clipboard-check"></i> Final processing</div>'
+      + '<p class="text-muted" style="font-size:13px;margin-top:0;">Recorded outcome: <strong>' + _esc(rec.sponsorDecision || '—') + (rec.honorsDecision ? ' → ' + _esc(rec.honorsDecision) : '') + '</strong></p>'
+      + docStep
+      + milestoneStep
+      + '<div class="form-actions">'
+      + '<button class="btn btn-primary" id="ad-done-' + _esc(rec.thesisId) + '" onclick="ThesisUI.advisorComplete(\'' + _esc(rec.thesisId) + '\', ' + approved + ', \'ad\')">'
+      + '<i class="ti ti-check"></i> ' + (approved ? 'Mark complete' : 'Close out (No Pass)') + '</button>'
+      + '<button class="btn btn-secondary" onclick="ThesisUI.returnToSponsor(\'' + _esc(rec.thesisId) + '\')"><i class="ti ti-arrow-back-up"></i> Return to sponsor</button>'
+      + '</div></div>';
+  }
+
+  function _toggleReader() {
+    const dec = document.getElementById('sp-decision').value;
+    const group = document.getElementById('sp-reader-group');
+    const sel = document.getElementById('sp-reader');
+    if (dec === 'Review for Honors') {
+      sel.innerHTML = '<option value="">— Select reader —</option>'
+        + _readers.map(f => '<option value="' + _esc(f.email) + '">' + _esc(f.name) + '</option>').join('');
+      group.style.display = 'block';
+    } else {
+      group.style.display = 'none';
+    }
+  }
+
+  function submitSponsor(thesisId) {
+    const decision = document.getElementById('sp-decision').value;
+    if (!decision) { Toast.show('Choose a decision.', 'error'); return; }
+    const comments = document.getElementById('sp-comments').value.trim();
+    if (!comments) { Toast.show('Comments are required with your decision.', 'error'); return; }
+    const payload = { thesisId, decision, comments };
+    if (decision === 'Review for Honors') {
+      payload.readerEmail = document.getElementById('sp-reader').value;
+      if (!payload.readerEmail) { Toast.show('Select a faculty reader.', 'error'); return; }
+    }
+    FormHelper.setLoading('sp-save', true, 'Saving…');
+    App.call('thesis', 'sponsorDecision', payload, () => {
+      Toast.show('Decision recorded.', 'success'); closeModal(); _afterAction();
+    }, () => FormHelper.setLoading('sp-save', false));
+  }
+
+  function submitReader(thesisId) {
+    const decision = document.getElementById('rd-decision').value;
+    if (!decision) { Toast.show('Choose a decision.', 'error'); return; }
+    const comments = document.getElementById('rd-comments').value.trim();
+    if (!comments) { Toast.show('Comments are required with your honors decision.', 'error'); return; }
+    FormHelper.setLoading('rd-save', true, 'Saving…');
+    App.call('thesis', 'readerDecision', { thesisId, decision, comments }, () => {
+      Toast.show('Honors decision recorded.', 'success'); closeModal(); _afterAction();
+    }, () => FormHelper.setLoading('rd-save', false));
+  }
+
+  /**
+   * Completes (or closes out) a thesis from either the graduation queue
+   * row (src 'gq') or the detail modal (src 'ad'). Requires the PDF to
+   * have been opened this session; approved theses also require the
+   * milestone checkbox.
+   */
+  function advisorComplete(thesisId, approved, src) {
+    if (!_viewedDocs[thesisId]) {
+      Toast.show('Open the thesis document before completing.', 'error');
+      return;
+    }
+    const payload = { thesisId, documentViewed: true, milestoneEntered: false };
+    if (approved) {
+      const box = document.getElementById(src + '-ms-' + thesisId);
+      if (!box || !box.checked) {
+        Toast.show('Confirm the milestone has been entered into the Degree Progress Report.', 'error');
+        return;
+      }
+      payload.milestoneEntered = true;
+    }
+    FormHelper.setLoading(src + '-done-' + thesisId, true, 'Saving…');
+    App.call('thesis', 'advisorComplete', payload, () => {
+      Toast.show(approved ? 'Thesis marked complete.' : 'No Pass closed out.', 'success');
+      closeModal(); _afterAction();
+    }, () => FormHelper.setLoading(src + '-done-' + thesisId, false));
+  }
+
+  function returnThesis(thesisId) {
+    const note = window.prompt('Add a note telling the student what to fix:');
+    if (note === null) return;
+    if (!note.trim()) { Toast.show('A return note is required.', 'error'); return; }
+    _busy('Returning thesis…');
+    App.call('thesis', 'returnToStudent', { thesisId, note: note.trim() }, () => {
+      _idle(); Toast.show('Returned to student.', 'success'); closeModal(); _afterAction();
+    }, () => _idle());
+  }
+
+  function returnToSponsor(thesisId) {
+    const note = window.prompt('Add a note telling the sponsor what needs another look:\n\n(Their previous decision will be cleared for re-review.)');
+    if (note === null) return;
+    if (!note.trim()) { Toast.show('A note to the sponsor is required.', 'error'); return; }
+    _busy('Returning to sponsor…');
+    App.call('thesis', 'returnToSponsor', { thesisId, note: note.trim() }, () => {
+      _idle(); Toast.show('Returned to the sponsor for re-review.', 'success'); closeModal(); _afterAction();
+    }, () => _idle());
+  }
+
+  function _afterAction() {
+    // Refresh whichever lists are visible.
+    if (document.getElementById('tab-queue').style.display !== 'none') loadQueue();
+    if (document.getElementById('tab-mine').style.display !== 'none')  loadMine();
+    if (document.getElementById('tab-sponsored').style.display !== 'none') loadSponsored();
+    if (document.getElementById('tab-grad').style.display !== 'none') loadGradQueue();
+  }
+
+  function closeModal() { document.getElementById('th-modal').style.display = 'none'; }
+
+  // ── Busy overlay (slow round-trips: upload, record loads) ──
+  function _busy(msg) {
+    document.getElementById('th-busy-msg').textContent = msg || 'Working…';
+    document.getElementById('th-busy').style.display = 'flex';
+  }
+  function _idle() { document.getElementById('th-busy').style.display = 'none'; }
+
+  // ── helpers ──────────────────────────────────────────
+  function _row(dt, dd) { return '<dt>' + dt + '</dt><dd>' + dd + '</dd>'; }
+  function _regionsText(regions) {
+    return (regions || []).map(r => {
+      const loc = r.locality ? r.locality + ', ' : '';
+      const cont = r.continent ? ' (' + r.continent + ')' : '';
+      return loc + r.country + cont;
+    }).join('  ·  ');
+  }
+  function _json(obj) { return JSON.stringify(obj).replace(/'/g, '&#39;'); }
+  function _esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  }
+
+  return {
+    init, switchTab, submit, cancelResubmit, startResubmit,
+    addRegion, removeRegion,
+    loadMine, loadQueue, loadSponsored, loadGradQueue, markDocViewed, remind, deleteThesis, open, closeModal,
+    submitSponsor, submitReader, advisorComplete, returnThesis, returnToSponsor,
+    _toggleReader,
+  };
+
+})();
+
+ThesisUI.init();
+</script>

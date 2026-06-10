@@ -29,6 +29,23 @@ function doGet(e) {
     const roles   = Auth.getRoles(user);
     const modules = Auth.getAuthorizedModules(roles);
 
+    // Optional deep-link focus: a module key in `page` plus a record id in
+    // `focus` (e.g. ?page=thesis&focus=THES_123) opens that module already
+    // focused on the record. Generic — any module that reads window.__focus
+    // can use it. sourceType is optional context for the module.
+    const focus = e.parameter.focus
+      ? { sourceType: e.parameter.focusType || '', sourceId: e.parameter.focus, taskId: '' }
+      : null;
+
+    // Tasks needing this user's attention, surfaced on the dashboard at
+    // login. Failure here must never block login, so fall back to [].
+    let tasks = [];
+    try {
+      tasks = Tasks.forUser(user, roles);
+    } catch (taskErr) {
+      Logger.log('doGet: Tasks.forUser failed (continuing with none): ' + taskErr);
+    }
+
     const tmpl = HtmlService.createTemplateFromFile('Index');
     tmpl.appTitle   = CONFIG.APP_TITLE;
     tmpl.brandNavy  = CONFIG.BRAND.NAVY;
@@ -37,7 +54,9 @@ function doGet(e) {
     tmpl.userName   = profile.name || user;
     tmpl.userRoles  = JSON.stringify(roles);
     tmpl.modules    = modules;
+    tmpl.tasks      = JSON.stringify(tasks);
     tmpl.activePage = page;
+    tmpl.initialFocus = JSON.stringify(focus);
 
     return tmpl.evaluate()
       .setTitle(CONFIG.APP_TITLE)
@@ -99,8 +118,27 @@ function submitAccessRequest(payload) {
 }
 
 
-function getModuleHTML(moduleKey) {
-  const user     = Session.getActiveUser().getEmail();
+/**
+ * Returns the current user's open tasks (urgency-sorted), for the
+ * dashboard to refresh in place without a full page reload. Resolves
+ * the user from the session, like submitAccessRequest — it is NOT a
+ * module action and does not go through dispatch (the dashboard is part
+ * of the shell, not a registry module). Returns [] on any failure so the
+ * dashboard degrades to "no tasks" rather than erroring.
+ */
+function getMyTasks() {
+  try {
+    const user  = Session.getActiveUser().getEmail();
+    const roles = Auth.getRoles(user);
+    return Tasks.forUser(user, roles);
+  } catch (err) {
+    Logger.log('getMyTasks failed: ' + err);
+    return [];
+  }
+}
+
+
+function getModuleHTML(moduleKey) {  const user     = Session.getActiveUser().getEmail();
   const roles    = Auth.getRoles(user);
   const registry = getModuleRegistry();
 
@@ -128,7 +166,7 @@ function getModuleHandler(name) {
     AdminModule:       AdminModule,
     SubmissionsModule: SubmissionsModule,
     UserManagerModule: UserManagerModule,
-    // ThesisModule:   ThesisModule,   // add back when ThesisModule.gs is deployed
+    ThesisModule:      ThesisModule,
     // HRModule:       HRModule,
   };
   if (!handlers[name]) throw new Error('Handler not found: ' + name);
@@ -141,5 +179,44 @@ function getModuleHandler(name) {
  * Used by the Module Manager to validate sheet entries.
  */
 function getRegisteredHandlers() {
-  return ['AdminModule', 'SubmissionsModule', 'UserManagerModule'];  // add 'ThesisModule' when its file is deployed
+  return ['AdminModule', 'SubmissionsModule', 'UserManagerModule', 'ThesisModule'];
+}
+
+
+/**
+ * EVENT LISTENER REGISTRY — append-only, mirrors getRegisteredHandlers().
+ *
+ * Maps an event name to the listeners that should run when EventBus.emit()
+ * fires it. This is the ONE place listeners are wired. A new module reacts
+ * to an existing event by ADDING an entry here — never by modifying the
+ * module that emits the event. That is the loose-coupling contract.
+ *
+ * Shape:
+ *   { 'event.name': [ { name: 'LabelForLogs', fn: SomeModule.someHandler }, ... ] }
+ *
+ * Each listener fn is called as fn(data, eventName, context), where context
+ * carries { user } (the acting user) plus any ambient info the emitter added.
+ * A listener that throws is logged and audited by EventBus, then skipped —
+ * it can never break the action that emitted the event.
+ *
+ * Read lazily by EventBus on the first emit() of a request, so the order in
+ * which .gs files are evaluated at load does not matter; every handler object
+ * referenced below is fully defined by the time an emit() actually runs.
+ *
+ * The Thesis module now EMITS events (thesis.submitted, thesis.resubmitted,
+ * thesis.sponsor_decided, thesis.honors_decided, thesis.returned,
+ * thesis.completed), but nothing LISTENS yet — Thesis calls Tasks and Notify
+ * directly. Add listener entries here when a future module needs to react to
+ * a thesis event, without modifying the Thesis module. Examples:
+ *
+ *   return {
+ *     'thesis.submitted': [
+ *       { name: 'SomeModule:onThesisSubmitted', fn: SomeModule.onThesisSubmitted },
+ *     ],
+ *   };
+ */
+function getEventListeners() {
+  return {
+    // (append event -> listener entries here as modules ship)
+  };
 }

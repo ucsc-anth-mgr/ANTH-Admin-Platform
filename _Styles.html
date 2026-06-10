@@ -237,4 +237,42 @@ table.data-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
   #content { padding: 20px 16px; }
   .card { padding: 22px 18px; }
 }
+/* ── Dashboard: task list + urgency badges ───────────────── */
+.dashboard { display: flex; flex-direction: column; gap: 18px; max-width: 1080px; }
+.task-list { list-style: none; margin: 0; padding: 0; }
+.task-item {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 14px; border: 1px solid var(--color-border); border-radius: var(--radius);
+  margin-bottom: 8px; cursor: pointer; background: var(--color-surface);
+  transition: border-color var(--transition), box-shadow var(--transition), transform var(--transition);
+}
+.task-item:last-child { margin-bottom: 0; }
+.task-item:hover { border-color: var(--ucsc-navy); box-shadow: var(--shadow-pop); transform: translateX(2px); }
+.task-item:focus { outline: 2px solid var(--ucsc-gold); outline-offset: 1px; }
+/* Left accent stripe by urgency */
+.task-item.urgency-overdue  { border-left: 3px solid var(--color-danger); }
+.task-item.urgency-due_soon { border-left: 3px solid var(--color-warning); }
+.task-item.urgency-stale    { border-left: 3px solid var(--color-muted); }
+.task-item.urgency-normal   { border-left: 3px solid var(--color-border); }
+
+.task-badge {
+  display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0;
+  font-size: 11.5px; font-weight: 600; padding: 3px 9px; border-radius: 999px;
+  white-space: nowrap;
+}
+.task-badge .ti { font-size: 13px; }
+.badge-danger  { background: #fbeae8; color: var(--color-danger); }
+.badge-warning { background: #fbf1e0; color: var(--color-warning); }
+.badge-muted   { background: var(--color-bg); color: var(--color-muted); }
+.badge-normal  { background: var(--color-bg); color: var(--color-muted); }
+
+.task-label { flex: 1 1 auto; font-size: 14px; color: var(--color-text); min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-when { flex-shrink: 0; font-size: 12px; }
+.task-chev { color: var(--color-muted); flex-shrink: 0; font-size: 16px; }
+
+@media (max-width: 720px) {
+  .task-when { display: none; }
+  .task-item { flex-wrap: wrap; }
+}
 </style>

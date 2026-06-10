@@ -54,6 +54,16 @@ const AdminModule = (() => {
   function listNotifyRules()         { return NotifyRules.list(); }
   function upsertNotifyRule(p)       { return NotifyRules.upsert(p); }
   function removeNotifyRule(p)       { return NotifyRules.remove(p); }
+  function getNotifySettings()       { return NotifyRules.getSettings(); }
+  function saveNotifySettings(p)     { return NotifyRules.saveSettings(p); }
+
+  // ── Thesis sponsor/reader eligibility (faculty roster) ─────
+  function thesisRoster()            { return ThesisEligibility.roster(); }
+  function setThesisToggle(p)        { return ThesisEligibility.setToggle(p); }
+
+  // ── Thesis operational settings ────────────────────────────
+  function getThesisSettings()       { return ThesisSettings.get(); }
+  function saveThesisSettings(p)     { return ThesisSettings.save(p); }
 
   // Icons offered in the picker (Tabler outline names)
   function iconChoices() {
@@ -72,6 +82,9 @@ const AdminModule = (() => {
     listPendingRequests, listAllRequests, approveRequest, rejectRequest,
     listImportPolicy, upsertImportPolicy, removeImportPolicy,
     listNotifyRules, upsertNotifyRule, removeNotifyRule,
+    getNotifySettings, saveNotifySettings,
+    thesisRoster, setThesisToggle,
+    getThesisSettings, saveThesisSettings,
   };
 
 })();

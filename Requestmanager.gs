@@ -175,41 +175,48 @@ const RequestManager = (() => {
   }
 
   function _notifyAdmins(email, name, requestedRole) {
-    try {
-      // Recipients = super admins + anyone the NotifyRules tab lists
-      // for the requested role (e.g. the undergraduate/graduate advisors).
-      const seen = {};
-      const recipients = [];
-      (CONFIG.SUPER_ADMINS || []).concat(NotifyRules.recipientsFor(requestedRole)).forEach(a => {
-        const key = String(a).trim().toLowerCase();
-        if (key && !seen[key]) { seen[key] = true; recipients.push(String(a).trim()); }
-      });
-      if (!recipients.length) return;
-      const body = 'A new access request is awaiting review.\n\n'
-        + 'Name: ' + name + '\n'
-        + 'Email: ' + email + '\n'
-        + 'Requested role: ' + (requestedRole || '(none specified)') + '\n\n'
-        + 'Open the portal (User Management → Requests, or Admin → Requests) to approve or reject it.';
-      Utils.sendEmail({ to: recipients.join(','), subject: '[Portal] New access request from ' + name, body: body });
-    } catch (e) {
-      Logger.log('Request admin-notify failed: ' + e);
-    }
+    // Recipients = super admins + anyone the NotifyRules tab lists for the
+    // requested role (e.g. the undergraduate/graduate advisors). Recipient
+    // resolution + dedup now lives in the platform Notify service.
+    const recipients = Notify.resolveRecipients({
+      superAdmins: CONFIG.SUPER_ADMINS || [],
+      roleRules:   NotifyRules.recipientsFor(requestedRole),
+    });
+    if (!recipients.length) return;
+
+    // Wording stays here — RequestManager owns its own message content.
+    const body = 'A new access request is awaiting review.\n\n'
+      + 'Name: ' + name + '\n'
+      + 'Email: ' + email + '\n'
+      + 'Requested role: ' + (requestedRole || '(none specified)') + '\n\n'
+      + 'Open the portal (User Management → Requests, or Admin → Requests) to approve or reject it.';
+
+    // Notify handles delivery + log-and-continue; no try/catch needed here.
+    Notify.send({
+      to:      recipients,
+      subject: 'New access request from ' + name,
+      body:    body,
+    });
   }
 
   function _notifyRequester(email, approved, note, roles) {
-    try {
-      const body = approved
-        ? 'Your access request has been approved.\n\n'
-          + 'Roles granted: ' + roles.join(', ') + '\n'
-          + (note ? '\nNote: ' + note + '\n' : '')
-          + '\nReload the portal to begin.'
-        : 'Your access request was not approved at this time.\n'
-          + (note ? '\nReason: ' + note + '\n' : '')
-          + '\nIf you believe this is a mistake, contact the department office.';
-      Utils.sendEmail({ to: email, subject: '[Portal] Access request ' + (approved ? 'approved' : 'update'), body: body });
-    } catch (e) {
-      Logger.log('Request requester-notify failed: ' + e);
-    }
+    // Wording stays here — RequestManager owns its own message content.
+    const body = approved
+      ? 'Your access request has been approved.\n\n'
+        + 'Roles granted: ' + roles.join(', ') + '\n'
+        + (note ? '\nNote: ' + note + '\n' : '')
+        + '\nReload the portal to begin.'
+      : 'Your access request was not approved at this time.\n'
+        + (note ? '\nReason: ' + note + '\n' : '')
+        + '\nIf you believe this is a mistake, contact the department office.';
+
+    // Notify handles delivery + log-and-continue. Subject prefix is added
+    // by Notify, so it is omitted from the subject text here.
+    Notify.send({
+      to:      email,
+      subject: 'Access request ' + (approved ? 'approved' : 'update'),
+      body:    body,
+    });
   }
 
   function _ensureSheet() {

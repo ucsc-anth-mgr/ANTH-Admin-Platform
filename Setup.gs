@@ -79,6 +79,63 @@ const SETUP_SCHEMA = {
       ['visitor', '', ''],
     ],
   },
+  THESIS_ELIGIBILITY: {
+    tab: 'ThesisEligibility',
+    // Who may sponsor / read senior theses. Roles is the base set; the
+    // per-person Allow/Deny lists are exceptions managed via the Admin
+    // faculty roster. super_admin is always eligible regardless.
+    headers: ['Capability', 'Roles', 'AllowEmails', 'DenyEmails'],
+    seed: [
+      ['sponsor', 'senate_faculty, lecturer', '', ''],
+      ['reader',  'senate_faculty, lecturer', '', ''],
+    ],
+  },
+  THESIS_SETTINGS: {
+    tab: 'ThesisSettings',
+    // UI-managed operational settings (key/value). Seeded from the
+    // CONFIG.THESIS defaults; the sheet overrides them once saved.
+    headers: ['Key', 'Value'],
+    seed: [
+      ['NOTIFY_ON_HANDOFF', 'TRUE'],
+    ],
+  },
+  TASKS: {
+    tab: 'Tasks',
+    // Pointer-only "needs attention" queue. SourceID references the
+    // authoritative record in the owning module's own sheet; no business
+    // data is stored here. Created/Resolved/Updated meta columns are
+    // written by DataService and the Tasks service.
+    //
+    // Time fields:
+    //   DueAt          — hard deadline, supplied by the module/workflow
+    //                    (domain knowledge). Blank = no deadline.
+    //   StaleAfterDays — neglect threshold in days, supplied by the
+    //                    module/workflow. Blank = never flagged stale.
+    //   LastActivityAt — owned by the Tasks service; stamped on create
+    //                    and bumped on resolve/update/touch. Drives the
+    //                    staleness computation. NOT a workflow field.
+    headers: ['TaskID', 'Module', 'SourceType', 'SourceID', 'Label',
+              'AssignedTo', 'AssignedRole', 'Status', 'Note',
+              'DueAt', 'StaleAfterDays', 'LastActivityAt',
+              'CreatedAt', 'CreatedBy', 'ResolvedAt', 'ResolvedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
+  THESIS: {
+    tab: 'Thesis',
+    // Senior thesis records (one per student per term). Identity is NOT
+    // copied here — StudentEmail/SponsorEmail/ReaderEmail are routing keys;
+    // names and Student ID are read from Auth at display time. DriveFileID
+    // is the stored PDF (replaced in place on resubmission); DocumentLink is
+    // its viewable URL, captured automatically at upload.
+    headers: ['ThesisID', 'StudentEmail', 'Quarter', 'Year', 'ShareConsent',
+              'Title', 'Abstract', 'Regions', 'SponsorEmail', 'DriveFileID', 'FileName', 'DocumentLink',
+              'Stage',
+              'SponsorDecision', 'SponsorComments', 'SponsorDecidedBy', 'SponsorDecidedAt',
+              'ReaderEmail', 'HonorsDecision', 'ReaderComments', 'ReaderDecidedBy', 'ReaderDecidedAt',
+              'AdvisorProcessedBy', 'AdvisorProcessedAt', 'MilestoneEntered', 'ReturnNote',
+              'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
 };
 
 
@@ -88,10 +145,12 @@ const SETUP_SCHEMA = {
 function setUp() {
   Logger.log('=== UCSC Anthropology Portal — Sheet setup ===');
 
-  // Resolve (or create) the three spreadsheets
+  // Resolve (or create) the spreadsheets
   const usersSS  = _resolveSpreadsheet(CONFIG.SHEETS.USERS_CONFIG,  'Portal Config (Users, Roles, Modules)', 'USERS_CONFIG');
   const auditSS  = _resolveSpreadsheet(CONFIG.SHEETS.AUDIT_LOG,     'Portal Audit Log',                      'AUDIT_LOG');
   const submitSS = _resolveSpreadsheet(CONFIG.SHEETS.SUBMISSIONS,   'Portal Submissions',                    'SUBMISSIONS');
+  const platformSS = _resolveSpreadsheet(CONFIG.SHEETS.PLATFORM,    'Portal Platform Services',              'PLATFORM');
+  const thesisSS = _resolveSpreadsheet(CONFIG.SHEETS.THESIS,        'Portal Senior Thesis',                  'THESIS');
 
   // Config spreadsheet gets Users, Roles, Modules, Requests tabs
   _setupTab(usersSS, SETUP_SCHEMA.USERS);
@@ -100,9 +159,18 @@ function setUp() {
   _setupTab(usersSS, SETUP_SCHEMA.REQUESTS);
   _setupTab(usersSS, SETUP_SCHEMA.IMPORT_POLICY);
   _setupTab(usersSS, SETUP_SCHEMA.NOTIFY_RULES);
+  _setupTab(usersSS, SETUP_SCHEMA.THESIS_ELIGIBILITY);
+  _setupTab(usersSS, SETUP_SCHEMA.THESIS_SETTINGS);
 
   // Audit spreadsheet gets the AuditLog tab
   _setupTab(auditSS, SETUP_SCHEMA.AUDIT);
+
+  // Platform-services spreadsheet gets the Tasks tab (its first tenant)
+  _setupTab(platformSS, SETUP_SCHEMA.TASKS);
+
+  // Senior Thesis spreadsheet gets the Thesis tab
+  _setupTab(thesisSS, SETUP_SCHEMA.THESIS);
+  _tidyDefaultSheet(thesisSS);
 
   // Submissions spreadsheet: tabs are created per form type on demand,
   // so we just ensure the spreadsheet exists and remove the default
@@ -208,8 +276,17 @@ function _setupTab(ss, def) {
                + (created ? ' (tab was just created)' : ''));
   }
 
-  // Auto-size columns for readability
-  sheet.autoResizeColumns(1, def.headers.length);
+  // Auto-size columns for readability. Only resize columns that actually
+  // exist on the sheet: an existing tab may have FEWER physical columns
+  // than def.headers (e.g. the schema gained columns since the tab was
+  // first created). Resizing beyond the sheet's width throws
+  // "Those columns are out of bounds." Missing columns are added later by
+  // addMissingColumns(), not here — setUp never modifies an existing tab.
+  const physicalCols = sheet.getLastColumn();
+  const resizeCount = Math.min(def.headers.length, physicalCols);
+  if (resizeCount > 0) {
+    sheet.autoResizeColumns(1, resizeCount);
+  }
 }
 
 
@@ -258,6 +335,8 @@ function checkSetup() {
     ['USERS_CONFIG', CONFIG.SHEETS.USERS_CONFIG, [SETUP_SCHEMA.USERS.tab, SETUP_SCHEMA.ROLES.tab, SETUP_SCHEMA.MODULES.tab]],
     ['AUDIT_LOG',    CONFIG.SHEETS.AUDIT_LOG,    [SETUP_SCHEMA.AUDIT.tab]],
     ['SUBMISSIONS',  CONFIG.SHEETS.SUBMISSIONS,  []],
+    ['PLATFORM',     CONFIG.SHEETS.PLATFORM,     [SETUP_SCHEMA.TASKS.tab]],
+    ['THESIS',       CONFIG.SHEETS.THESIS,       [SETUP_SCHEMA.THESIS.tab]],
   ];
   Logger.log('=== Config check ===');
   checks.forEach(([key, id, tabs]) => {
@@ -271,4 +350,104 @@ function checkSetup() {
       Logger.log('• ' + key + ': CANNOT OPEN id="' + id + '" — ' + e.message);
     }
   });
+}
+
+
+/**
+ * Maps each schema tab to the CONFIG.SHEETS key whose spreadsheet holds
+ * it. Single source of truth for "which tab lives in which spreadsheet,"
+ * used by the non-destructive migration helper below. Mirrors the
+ * placement that setUp() performs.
+ */
+function _schemaPlacement() {
+  return [
+    { sheetKey: 'USERS_CONFIG', def: SETUP_SCHEMA.USERS },
+    { sheetKey: 'USERS_CONFIG', def: SETUP_SCHEMA.ROLES },
+    { sheetKey: 'USERS_CONFIG', def: SETUP_SCHEMA.MODULES },
+    { sheetKey: 'USERS_CONFIG', def: SETUP_SCHEMA.REQUESTS },
+    { sheetKey: 'USERS_CONFIG', def: SETUP_SCHEMA.IMPORT_POLICY },
+    { sheetKey: 'USERS_CONFIG', def: SETUP_SCHEMA.NOTIFY_RULES },
+    { sheetKey: 'USERS_CONFIG', def: SETUP_SCHEMA.THESIS_ELIGIBILITY },
+    { sheetKey: 'USERS_CONFIG', def: SETUP_SCHEMA.THESIS_SETTINGS },
+    { sheetKey: 'AUDIT_LOG',    def: SETUP_SCHEMA.AUDIT },
+    { sheetKey: 'PLATFORM',     def: SETUP_SCHEMA.TASKS },
+    { sheetKey: 'THESIS',       def: SETUP_SCHEMA.THESIS },
+  ];
+}
+
+
+/**
+ * Non-destructive schema migration: for every existing tab, appends any
+ * header columns present in SETUP_SCHEMA but missing from the live sheet.
+ *
+ * SAFETY — this ONLY ever ADDS columns to the right:
+ *   - never deletes a column, never renames one, never reorders;
+ *   - never touches data rows;
+ *   - skips tabs that don't exist yet (that's setUp()'s job);
+ *   - skips a spreadsheet whose CONFIG id is blank/unopenable.
+ * Because the platform reads columns BY HEADER NAME, appending at the end
+ * is fully sufficient — position never matters to the code.
+ *
+ * Run this from the editor after adding fields to a SETUP_SCHEMA tab
+ * (e.g. the Tasks time columns) instead of deleting and recreating a tab.
+ * Safe to re-run: a tab already matching the schema is left untouched.
+ */
+function addMissingColumns() {
+  Logger.log('=== addMissingColumns (non-destructive) ===');
+  let totalAdded = 0;
+
+  _schemaPlacement().forEach(({ sheetKey, def }) => {
+    const id = CONFIG.SHEETS[sheetKey];
+    if (!id) {
+      Logger.log('• ' + def.tab + ': skipped — CONFIG.SHEETS.' + sheetKey + ' is blank.');
+      return;
+    }
+
+    let ss;
+    try {
+      ss = SpreadsheetApp.openById(id);
+    } catch (e) {
+      Logger.log('• ' + def.tab + ': skipped — cannot open ' + sheetKey + ' (' + e.message + ').');
+      return;
+    }
+
+    const sheet = ss.getSheetByName(def.tab);
+    if (!sheet) {
+      Logger.log('• ' + def.tab + ': skipped — tab does not exist yet (run setUp to create it).');
+      return;
+    }
+
+    // Read the current header row. An empty tab has no headers to compare;
+    // leave it for setUp() rather than half-populating it here.
+    const lastCol = sheet.getLastColumn();
+    if (sheet.getLastRow() === 0 || lastCol === 0) {
+      Logger.log('• ' + def.tab + ': skipped — tab is empty (run setUp to add headers).');
+      return;
+    }
+
+    const liveHeaders = sheet.getRange(1, 1, 1, lastCol).getValues()[0]
+      .map(h => String(h).trim());
+    const missing = def.headers.filter(h => liveHeaders.indexOf(h) === -1);
+
+    if (!missing.length) {
+      Logger.log('• ' + def.tab + ': up to date (' + liveHeaders.length + ' columns).');
+      return;
+    }
+
+    // Append missing headers to the right of the existing ones.
+    const startCol = lastCol + 1;
+    sheet.getRange(1, startCol, 1, missing.length).setValues([missing]);
+    sheet.getRange(1, startCol, 1, missing.length)
+         .setFontWeight('bold').setBackground('#003C6C').setFontColor('#FFFFFF');
+    sheet.autoResizeColumns(1, startCol + missing.length - 1);
+
+    totalAdded += missing.length;
+    Logger.log('    ✓ ' + def.tab + ': added ' + missing.length
+               + ' column(s) → ' + missing.join(', '));
+  });
+
+  Logger.log('');
+  Logger.log(totalAdded === 0
+    ? '=== All tabs already match the schema. ==='
+    : '=== Done: added ' + totalAdded + ' column(s) total. ===');
 }

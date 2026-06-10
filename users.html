@@ -3,6 +3,7 @@
 
   <div class="module-tabs">
     <button class="module-tab active" data-tab="people" onclick="UsersUI.switchTab('people')"><i class="ti ti-users"></i> People</button>
+    <button class="module-tab" data-tab="add" onclick="UsersUI.switchTab('add')"><i class="ti ti-user-plus"></i> Add / edit</button>
     <button class="module-tab" data-tab="requests" onclick="UsersUI.switchTab('requests')"><i class="ti ti-inbox"></i> Requests <span id="um-req-badge" class="badge badge-warning" style="display:none;margin-left:4px;"></span></button>
     <button class="module-tab" data-tab="batch" onclick="UsersUI.switchTab('batch')"><i class="ti ti-file-upload"></i> Batch import</button>
   </div>
@@ -13,11 +14,39 @@
       <div class="card-title between"><span><i class="ti ti-users"></i> Users</span>
         <button class="btn btn-secondary btn-sm" onclick="UsersUI.load()"><i class="ti ti-refresh"></i> Refresh</button>
       </div>
+
+      <!-- search / filter controls -->
+      <div id="um-controls" style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:14px;">
+        <div class="form-group" style="flex:1 1 240px;margin:0;">
+          <label class="form-label" for="um-search">Search</label>
+          <input class="form-input" type="text" id="um-search" placeholder="Name, email, or ID" oninput="UsersUI.onFilterChange()">
+        </div>
+        <div class="form-group" style="flex:0 1 200px;margin:0;">
+          <label class="form-label" for="um-filter-role">Role</label>
+          <select class="form-select" id="um-filter-role" onchange="UsersUI.onFilterChange()">
+            <option value="">All roles</option>
+          </select>
+        </div>
+        <div class="form-group" style="flex:0 1 160px;margin:0;">
+          <label class="form-label" for="um-filter-status">Status</label>
+          <select class="form-select" id="um-filter-status" onchange="UsersUI.onFilterChange()">
+            <option value="active">Active only</option>
+            <option value="inactive">Inactive only</option>
+            <option value="all">All statuses</option>
+          </select>
+        </div>
+        <button class="btn btn-secondary" id="um-clear-filters" onclick="UsersUI.clearFilters()" style="margin-bottom:0;"><i class="ti ti-filter-off"></i> Clear</button>
+      </div>
+      <div id="um-count" class="text-sm text-muted" style="margin-bottom:10px;"></div>
+
       <div id="um-table"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
     </div>
+  </div>
 
-    <div class="card" style="max-width:560px;">
-      <div class="card-title"><i class="ti ti-user-plus"></i> Add or update a user</div>
+  <!-- ══ ADD / EDIT: single user ══════════════════════════ -->
+  <div id="utab-add" class="tab-panel" style="display:none;">
+    <div class="card" style="max-width:560px;margin-top:20px;">
+      <div class="card-title between"><span id="um-form-title"><i class="ti ti-user-plus"></i> Add a user</span></div>
       <div class="form-group">
         <label class="form-label" for="um-email">Email address <span class="required">*</span></label>
         <input class="form-input" type="email" id="um-email" required placeholder="user@ucsc.edu">
@@ -60,6 +89,7 @@
       <div class="form-actions">
         <button class="btn btn-primary" id="um-save-btn" onclick="UsersUI.save()"><i class="ti ti-device-floppy"></i> Save user</button>
         <button class="btn btn-secondary" onclick="UsersUI.clear()">Clear</button>
+        <button class="btn btn-secondary" onclick="UsersUI.switchTab('people')"><i class="ti ti-arrow-left"></i> Back to list</button>
       </div>
     </div>
   </div>
@@ -169,6 +199,10 @@ window.UsersUI = (() => {
   let _idTypeDefaults = {};
   let _csv = null;
 
+  // people-list state
+  let _users = [];                                  // last fetched list (cache)
+  let _sort = { key: 'name', dir: 'asc' };          // current sort
+
   function init() {
     App.call('users', 'options', {}, res => {
       const chips = document.getElementById('um-role-chips');
@@ -215,32 +249,164 @@ window.UsersUI = (() => {
     el.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
     App.call('users', 'listUsers', {}, users => {
       if (!document.getElementById('um-table')) return;
-      if (!users.length) { el.innerHTML = '<div class="empty-state">No users yet.</div>'; return; }
-      const rows = users.map(u => {
-        const roleBadges = (u.roles || []).map(r => `<span class="badge badge-navy" style="margin:1px;">${r}</span>`).join(' ');
-        const ids = [];
-        if (u.studentId) ids.push(`${u.studentId} <span class="text-muted text-sm">(student)</span>`);
-        if (u.employeeId) ids.push(`${u.employeeId} <span class="text-muted text-sm">(employee)</span>`);
-        const edit = u.editable
-          ? `<a class="edit-link" onclick='UsersUI.edit(${JSON.stringify(u).replace(/'/g,"&#39;")})'><i class="ti ti-pencil"></i> Edit</a>
-             <a class="edit-link ${u.active?'danger':''}" onclick="UsersUI.toggleActive('${u.email}', ${u.active?'false':'true'})">
-               <i class="ti ${u.active?'ti-user-off':'ti-user-check'}"></i> ${u.active?'Deactivate':'Reactivate'}</a>`
-          : '<span class="text-muted text-sm">—</span>';
-        return `
-          <tr>
-            <td>${u.nameLastFirst || '<span class="text-muted">—</span>'}<div class="text-sm text-muted">${u.email}</div></td>
-            <td>${roleBadges}</td>
-            <td>${ids.join('<br>') || '<span class="text-muted">—</span>'}</td>
-            <td><span class="badge ${u.active?'badge-success':'badge-neutral'}">${u.active?'Active':'Inactive'}</span></td>
-            <td>${edit}</td>
-          </tr>`;
-      }).join('');
-      el.innerHTML = `<div class="table-wrap"><table class="data-table"><thead><tr><th>Name / Email</th><th>Roles</th><th>IDs</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+      _users = users || [];
+      _populateRoleFilter();
+      _render();
     });
   }
 
+  // Build the Role filter dropdown from roles actually present in the list,
+  // unioned with the assignable roles, preserving the current selection.
+  function _populateRoleFilter() {
+    const sel = document.getElementById('um-filter-role');
+    if (!sel) return;
+    const prev = sel.value;
+    const present = new Set();
+    _users.forEach(u => (u.roles || []).forEach(r => present.add(r)));
+    _assignable.forEach(r => present.add(r));
+    const roles = Array.from(present).sort();
+    sel.innerHTML = '<option value="">All roles</option>'
+      + roles.map(r => `<option value="${r.replace(/"/g,'&quot;')}">${r}</option>`).join('');
+    if (roles.includes(prev)) sel.value = prev;
+  }
+
+  function onFilterChange() { _render(); }
+
+  function clearFilters() {
+    const s = document.getElementById('um-search');     if (s) s.value = '';
+    const r = document.getElementById('um-filter-role');   if (r) r.value = '';
+    const st = document.getElementById('um-filter-status'); if (st) st.value = 'active';
+    _render();
+  }
+
+  function sortBy(key) {
+    if (_sort.key === key) {
+      _sort.dir = _sort.dir === 'asc' ? 'desc' : 'asc';
+    } else {
+      _sort.key = key;
+      _sort.dir = 'asc';
+    }
+    _render();
+  }
+
+  // Apply search + filters + sort to the cache and draw the table.
+  function _render() {
+    const el = document.getElementById('um-table');
+    if (!el) return;
+
+    if (!_users.length) {
+      el.innerHTML = '<div class="empty-state">No users yet.</div>';
+      _updateCount(0, 0);
+      return;
+    }
+
+    const q = (document.getElementById('um-search') || {}).value || '';
+    const roleFilter = (document.getElementById('um-filter-role') || {}).value || '';
+    const statusFilter = (document.getElementById('um-filter-status') || {}).value || 'active';
+    const needle = q.trim().toLowerCase();
+
+    let rows = _users.filter(u => {
+      // status
+      if (statusFilter === 'active' && !u.active) return false;
+      if (statusFilter === 'inactive' && u.active) return false;
+      // role
+      if (roleFilter && !(u.roles || []).includes(roleFilter)) return false;
+      // search: name, email, IDs, alt-name spellings
+      if (needle) {
+        const hay = [
+          u.nameLastFirst, u.name, u.firstName, u.lastName, u.email,
+          u.studentId, u.employeeId,
+        ].concat((u.altNames || []).reduce((acc, a) => acc.concat([a.first, a.last]), []))
+         .filter(Boolean).join(' ').toLowerCase();
+        if (hay.indexOf(needle) === -1) return false;
+      }
+      return true;
+    });
+
+    rows = _sortRows(rows);
+    _updateCount(rows.length, _users.length);
+
+    if (!rows.length) {
+      el.innerHTML = '<div class="empty-state"><i class="ti ti-search-off" style="font-size:28px;display:block;margin-bottom:8px;"></i>No users match your filters.</div>';
+      return;
+    }
+
+    const body = rows.map(u => _rowHtml(u)).join('');
+    el.innerHTML =
+      '<div class="table-wrap"><table class="data-table"><thead><tr>'
+      + _th('Name / Email', 'name')
+      + _th('Roles', 'roles')
+      + _th('IDs', 'ids')
+      + _th('Status', 'status')
+      + '<th></th>'
+      + '</tr></thead><tbody>' + body + '</tbody></table></div>';
+  }
+
+  // Sortable header cell with direction indicator.
+  function _th(label, key) {
+    const active = _sort.key === key;
+    const arrow = active ? (_sort.dir === 'asc' ? ' ▲' : ' ▼') : '';
+    return `<th class="um-sortable" style="cursor:pointer;user-select:none;white-space:nowrap;" onclick="UsersUI.sortBy('${key}')">${label}<span class="text-muted">${arrow}</span></th>`;
+  }
+
+  function _sortRows(rows) {
+    const dir = _sort.dir === 'asc' ? 1 : -1;
+    const key = _sort.key;
+    const val = u => {
+      switch (key) {
+        case 'roles':  return (u.roles || []).slice().sort().join(',').toLowerCase();
+        case 'ids':    return (u.studentId || u.employeeId || '').toString();
+        case 'status': return u.active ? '0' : '1';   // active first when asc
+        case 'name':
+        default:       return (u.nameLastFirst || u.email || '').toLowerCase();
+      }
+    };
+    // copy before sort so the cache order is untouched
+    return rows.slice().sort((a, b) => {
+      const av = val(a), bv = val(b);
+      if (av < bv) return -1 * dir;
+      if (av > bv) return  1 * dir;
+      // stable tiebreak by email
+      const ae = (a.email || '').toLowerCase(), be = (b.email || '').toLowerCase();
+      return ae < be ? -1 : ae > be ? 1 : 0;
+    });
+  }
+
+  function _rowHtml(u) {
+    const roleBadges = (u.roles || []).map(r => `<span class="badge badge-navy" style="margin:1px;">${r}</span>`).join(' ');
+    const ids = [];
+    if (u.studentId) ids.push(`${u.studentId} <span class="text-muted text-sm">(student)</span>`);
+    if (u.employeeId) ids.push(`${u.employeeId} <span class="text-muted text-sm">(employee)</span>`);
+    // Don't repeat the email as the name when no real name is stored.
+    const nameCell = (u.nameLastFirst && u.nameLastFirst !== u.email)
+      ? u.nameLastFirst
+      : '<span class="text-muted">—</span>';
+    const edit = u.editable
+      ? `<a class="edit-link" onclick='UsersUI.edit(${JSON.stringify(u).replace(/'/g,"&#39;")})'><i class="ti ti-pencil"></i> Edit</a>
+         <a class="edit-link ${u.active?'danger':''}" onclick="UsersUI.toggleActive('${u.email}', ${u.active?'false':'true'})">
+           <i class="ti ${u.active?'ti-user-off':'ti-user-check'}"></i> ${u.active?'Deactivate':'Reactivate'}</a>`
+      : '<span class="text-muted text-sm">—</span>';
+    return `
+      <tr>
+        <td>${nameCell}<div class="text-sm text-muted">${u.email}</div></td>
+        <td>${roleBadges}</td>
+        <td>${ids.join('<br>') || '<span class="text-muted">—</span>'}</td>
+        <td><span class="badge ${u.active?'badge-success':'badge-neutral'}">${u.active?'Active':'Inactive'}</span></td>
+        <td>${edit}</td>
+      </tr>`;
+  }
+
+  function _updateCount(shown, total) {
+    const el = document.getElementById('um-count');
+    if (!el) return;
+    el.textContent = (shown === total)
+      ? `${total} user${total === 1 ? '' : 's'}`
+      : `Showing ${shown} of ${total} users`;
+  }
+
   function edit(u) {
-    switchTab('people');
+    switchTab('add');
+    document.getElementById('um-form-title').innerHTML = '<i class="ti ti-pencil"></i> Edit ' + (u.email || 'user');
     document.getElementById('um-email').value = u.email;
     document.getElementById('um-firstname').value = u.firstName || '';
     document.getElementById('um-lastname').value = u.lastName || '';
@@ -276,7 +442,8 @@ window.UsersUI = (() => {
     }, res => {
       FormHelper.setLoading('um-save-btn', false);
       Toast.show('User ' + res.status + ': ' + email, 'success');
-      clear(); load();
+      clear();
+      switchTab('people');
     }, () => FormHelper.setLoading('um-save-btn', false));
   }
 
@@ -284,6 +451,8 @@ window.UsersUI = (() => {
     ['um-email','um-firstname','um-lastname','um-studentid','um-employeeid','um-notes'].forEach(id => document.getElementById(id).value='');
     document.getElementById('um-active').value = 'TRUE';
     document.querySelectorAll('#um-role-chips input').forEach(i => { i.checked=false; document.getElementById('umchip-'+i.value).classList.remove('checked'); });
+    const t = document.getElementById('um-form-title');
+    if (t) t.innerHTML = '<i class="ti ti-user-plus"></i> Add a user';
   }
 
   // ── Batch import ────────────────────────────────────────
@@ -472,6 +641,7 @@ window.UsersUI = (() => {
   }
 
   return { init, switchTab, load, edit, save, clear, toggleActive,
+           onFilterChange, clearFilters, sortBy,
            loadRequests, approveRequest, rejectRequest,
            onRoleChange, detect, previewImport, commitImport, cancelImport };
 

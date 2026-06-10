@@ -24,6 +24,11 @@ const CONFIG = {
     USERS_CONFIG:  '1VdiwRD4Dp75a86jdqPid_XCrwGEOp3ix5c2wTisHwMs',       // Tabs: Users, Roles, Modules
     AUDIT_LOG:     '1Jog3zXwu5dpAuWuJ8I-VPjbqH4ybRlc3yl1zUzh1HxE',        // Tab: AuditLog
     SUBMISSIONS:   '1zacvd0FhWcjKldhKt9Fan3lWY0QkRAZ3Ol45wobBZl4',  // Tab per form type
+    // Senior Thesis module — its OWN spreadsheet (per-module storage tier).
+    THESIS:        '16MiWlHY0mTFuBioI5mc1nV3mmiIEbgBssG3h7jO4tBc',
+    // Platform-services operational data (owned by platform-wide services,
+    // not by any single module). First tenant: Tasks.
+    PLATFORM:      '1CyVapaV52tFWDGOC4fI7RNyVrcExevQeV7_gR_mpTNg',
   },
 
   // Optional: Drive folder where setUp() creates new spreadsheets.
@@ -40,7 +45,25 @@ const CONFIG = {
     REQUESTS:    'Requests',
     IMPORT_POLICY: 'ImportPolicy',
     NOTIFY_RULES: 'NotifyRules',
+    TASKS:       'Tasks',
+    THESIS_ELIGIBILITY: 'ThesisEligibility',
+    THESIS_SETTINGS: 'ThesisSettings',
   },
+
+  // ── Storage convention (three tiers) ───────────────────────
+  // 1. CONFIG sheet  (USERS_CONFIG): platform identity + registry —
+  //    Users, Roles, Modules, ImportPolicy, NotifyRules, Requests.
+  //    Stable, constantly read, small.
+  // 2. PLATFORM sheet: operational data owned by platform-wide services
+  //    (Tasks, and later anything cross-cutting). Hot / high-churn;
+  //    kept separate so it never contends with config reads.
+  // 3. PER-MODULE sheets: each module's own operational data in its own
+  //    spreadsheet (Submissions; Thesis when it ships). A module never
+  //    holds another module's spreadsheet ID — the data-layer expression
+  //    of loose coupling.
+  // AuditLog currently has its own dedicated sheet (AUDIT_LOG) and
+  // Requests lives in the config sheet; both may be consolidated into
+  // PLATFORM later as a deliberate, separate change — not required now.
 
   DEFAULT_ROLE: 'visitor',
 
@@ -49,12 +72,21 @@ const CONFIG = {
   ],
 
   // ── Thesis module settings ─────────────────────────────────
-  // The single designated undergraduate advisor who does final
-  // processing. Change this one value to reassign that role.
   THESIS: {
+    // The undergraduate advisor is whoever holds the 'staff_undergrad'
+    // role (assign in Admin → Users), not a fixed address. These two
+    // constants are retained only as a legacy reference and are no
+    // longer read by the module.
     UNDERGRAD_ADVISOR_EMAIL: 'advisor@ucsc.edu',
     UNDERGRAD_ADVISOR_NAME:  'Undergraduate Advisor',
-    NOTIFY_ON_HANDOFF: true,   // email the next party at each stage change
+    // Default for the UI-managed NOTIFY_ON_HANDOFF setting. ThesisSettings
+    // reads this only as a fallback until a value is saved in Admin.
+    NOTIFY_ON_HANDOFF: true,
+    // Drive folder where submitted thesis PDFs are stored. In-place
+    // resubmission (keeping the same file ID) also requires the Advanced
+    // Drive Service enabled: Apps Script editor → Services (+) → Drive API.
+    // Without it, resubmission still works but creates a new file ID.
+    DRIVE_FOLDER_ID: '1KZ62caXh6IO-fLghGzaPJAC1b-qI50he',
   },
 };
 
