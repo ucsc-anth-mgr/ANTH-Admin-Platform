@@ -1,0 +1,460 @@
+
+All projects
+USCC Anthropology Admin Platform
+This is the platform I'm developing to manage administrative processes in the UCSC Department of Anthropology.
+
+
+
+How can I help you today?
+
+
+Fable is the most capable model and draws down usage 2× faster than Opus
+
+Platform-wide notification service architecture
+Last message 28 minutes ago
+GitHub connection verification
+Last message 58 minutes ago
+Senior thesis module development
+Last message 6 hours ago
+User account page access
+Last message 2 days ago
+Adding filter and search to user list
+Last message 2 days ago
+Adding code modules through the UI
+Last message 6 days ago
+Disabling super admin notifications for access requests
+Last message 6 days ago
+Instructions
+This project is the UCSC Anthropology Portal — a Google Apps Script web app for administering department processes. TEST-ONLY deployment: no production data, no migration concerns. The Apps Script project is the source of truth; project knowledge files are a snapshot and may lag — ask me to confirm which version is current if it matters. ARCHITECTURE: Shell + pluggable modules. Index.html/_Scripts.html provide login, nav, and a single server gateway dispatch(module, action, payload) in Code.gs, which validates the module, checks roles, calls the handler, and writes the audit log. The module registry lives in the Modules sheet tab (key, label, icon, roles, handler, include, order, enabled), not in code. A handler name must appear in BOTH getModuleHandler() and getRegisteredHandlers() in Code.gs, and ONLY when its .gs file is actually in the project — otherwise "X is not defined" errors. Deploying code does not add the Modules sheet row; new modules are registered via Admin → Modules. The module key is the dispatch identifier and is permanent. ROLES & IDENTITY: Roles are identity categories (super_admin, staff, senate_faculty, lecturer, graduate_student, undergraduate_student, visitor), not permission levels — never a generic "admin" role. Access is module-centric: each module's Roles list controls entry; finer permissions are per-action checks in handlers, always including super_admin. Profiles are platform-level (Auth.gs): Email, FirstName, LastName, AltNames (JSON array of alternate spellings for matching, not display), Roles, StudentID (7 digits), EmployeeID (8 digits), Active, Notes. Display names are computed (name = "First Last", nameLastFirst = "Last, First"). PersonMatch.gs matches incoming records email-first, then either ID; fills empty ID slots and attaches alt names on certain matches; conflicts are flagged, never silently overwritten. The ImportPolicy allowlist (Admin → Roles) governs which roles a delegated manager/importer may assign — shared by batch import, individual user management, and request approval scoping. CONVENTIONS: Read sheet columns by header name, not position. Module UI objects are declared window.X = (...) (never const — module scripts re-execute on each load). In HTML templates: no bare < or > inside <? ?> scriptlets (use forEach/ includes); use <?!= ?> (force-print) when injecting JSON into <script>. Notes fields and altNames are preserved on update unless explicitly supplied. Syntax-check every .gs via node --check before delivery; verify every onclick handler is exported from its UI object. Configuration is UI-managed (Module Manager, Roles, Import permissions, Request notifications) — avoid telling the user to edit sheets directly except Config.gs constants. Functional/shared email addresses are used for notification destinations; humans always log in with personal accounts. setUp() in Setup.gs creates missing tabs/headers only — it never modifies existing tabs. /dev serves latest saved code; /exec requires a new deployment version (Deploy → Manage deployments → Edit → New version). OPEN THREADS: Thesis module — fully designed (multi-stage workflow: student → advisor → conditional honors review → undergraduate advisor; PDF upload to a configurable Drive folder; filename 2026-Spring_<StudentID>-THES_Last-First.pdf; separate clean database sheet; resubmission replaces in place keeping the Drive file ID) but NOT built — waiting on the user's PDF form to define fields. ThesisModule registration in Code.gs stays commented out until its file ships. Conflict review queue — PersonMatch conflicts currently skip-with-reason in import previews; a reviewable queue (workable by delegated importers) is planned.
+
+Files
+10% of project capacity used
+Search mode
+
+ucsc-anth-mgr/ANTH-Admin-Platform
+main
+
+GITHUB
+
+
+
+Readme module development
+280 lines
+
+text
+
+
+
+Rolesmanager.gs
+176 lines
+
+text
+
+
+
+submissions.html
+260 lines
+
+html
+
+
+
+Submissionmodule.gs
+147 lines
+
+text
+
+
+
+Services.gs
+115 lines
+
+text
+
+
+
+Dataservice.gs
+134 lines
+
+text
+
+
+
+admin.html
+822 lines
+
+html
+
+
+
+Adminmodule.gs
+80 lines
+
+text
+
+
+
+Modulemanager.gs
+154 lines
+
+text
+
+
+
+Tasks.gs
+343 lines
+
+text
+
+
+
+Setup.gs
+397 lines
+
+text
+
+
+
+Code.gs
+214 lines
+
+text
+
+
+
+_Styles.html
+278 lines
+
+html
+
+
+
+_Scripts.html
+244 lines
+
+html
+
+
+
+Requestmanager.gs
+237 lines
+
+text
+
+
+
+Config.gs
+177 lines
+
+text
+
+
+
+EventBus.gs
+128 lines
+
+text
+
+
+
+Auth.gs
+390 lines
+
+text
+
+
+
+Notify.gs
+203 lines
+
+text
+
+
+
+Index.html
+77 lines
+
+html
+
+
+Readme module development
+# Building a Platform-Compatible Module
+ 
+UCSC Anthropology Portal — developer guide.
+ 
+This document is the checklist for adding a new module so it plugs into the
+platform cleanly and never forces edits to other modules. It reflects the
+actual contracts in the code as of the platform-services build (EventBus,
+Notify, Tasks, the dashboard).
+ 
+The guiding principle behind every rule here: **modules talk to the platform,
+never to each other.** A new module should be addable without modifying any
+existing module. If you find yourself editing another module to make yours
+work, stop — the integration belongs in a platform service instead.
+ 
+---
+ 
+## 1. Anatomy of a module
+ 
+A module is three things:
+ 
+1. **A server handler** — a `.gs` file with an IIFE object of named actions.
+2. **A UI partial** — an `.html` file declaring a `window.X` controller.
+3. **A registry row** — a row in the **Modules** sheet tab (managed via
+   Admin → Modules), NOT code.
+ 
+All three must line up. The module **key** (the registry row's `Key`) is the
+permanent dispatch identifier and never changes.
+ 
+---
+ 
+## 2. The server handler (`.gs`)
+ 
+Follow the established pattern (see `Submissionmodule.gs` for a full example):
+ 
+```js
+const ThesisModule = (() => {
+ 
+  // Public actions — each is callable via dispatch(module, action, payload).
+  // Signature is ALWAYS (payload, user, roles).
+  function submit(payload, user, roles) {
+    // ... do work via platform services ...
+    return { ok: true };
+  }
+ 
+  function list(payload, user, roles) { /* ... */ }
+ 
+  return { submit, list };   // only these names are dispatchable
+})();
+```
+ 
+Rules:
+ 
+- **One IIFE, returning named actions.** Only returned names are reachable
+  through `dispatch`.
+- **Action signature is `(payload, user, roles)`.** `user` and `roles` are
+  injected by `dispatch` from the session — never trust an identity passed in
+  the payload.
+- **Per-action permission checks** go inside the action. Module-level access
+  (who can enter the module at all) is the registry `Roles` list; finer rules
+  are per-action. **Always include `super_admin`** in any privileged check.
+- **There is no generic `admin` role.** Roles are identity categories
+  (`super_admin`, `staff`, `senate_faculty`, `lecturer`, `graduate_student`,
+  `undergraduate_student`, `visitor`). Check `roles.includes('super_admin')`,
+  never `roles.includes('admin')`. (Some older code checks `'admin'` — do not
+  copy that; it is a latent bug.)
+- **Read sheet columns by header name, not position** (use DataService, which
+  does this for you). Never index a row by a hard-coded column number.
+- **Use platform services, never SpreadsheetApp directly** for cross-cutting
+  concerns: DataService for data, Notify for email, Tasks for the attention
+  queue, Auth for identity, AuditLog (written automatically by dispatch).
+ 
+---
+ 
+## 3. The UI partial (`.html`)
+ 
+```html
+<!-- markup uses onclick="ThesisUI.action()" -->
+<button class="btn btn-primary" onclick="ThesisUI.submit()">Submit</button>
+ 
+<script>
+window.ThesisUI = (() => {          // window.X — NEVER const
+  function submit() {
+    App.call('thesis', 'submit', payload, onSuccess, onError);
+  }
+  function init() { /* read window.__focus here — see §6 */ }
+  return { submit, init };          // every onclick handler must be exported
+})();
+ThesisUI.init();
+</script>
+```
+ 
+Rules:
+ 
+- **Declare the controller as `window.X = (...)`, never `const`.** Module
+  scripts are re-executed every time the module loads; `const` would throw
+  "already declared" on the second load. This is mandatory.
+- **Every `onclick`/`onkeypress` handler must be exported** from the controller
+  object, or the markup references an undefined function.
+- **Call the server via `App.call(module, action, payload, onSuccess, onError)`**
+  — this routes through `dispatch`, which enforces authorization and writes the
+  audit log. Do not call `google.script.run` directly for module actions.
+- **Reuse shell styles/tokens** (`.card`, `.btn`, `.btn-primary`,
+  `--ucsc-navy`, `--color-danger`, etc.) so the module looks native. Add new
+  CSS only when necessary.
+ 
+### HTML template scriptlet rules (server-rendered partials)
+ 
+- No bare `<` or `>` inside `<? ?>` scriptlets (use `forEach`, `includes`,
+  etc. rather than comparisons that need angle brackets).
+- Use `<?!= ?>` (force-print) when injecting JSON into a `<script>` block;
+  `<?= ?>` will HTML-escape and break the JSON.
+ 
+---
+ 
+## 4. Registering the module (two code spots + one sheet row)
+ 
+A handler name must appear in **BOTH** of these in `Code.gs`, and ONLY when the
+handler's `.gs` file is actually in the project (otherwise "X is not defined"):
+ 
+1. `getModuleHandler()` — maps the handler name string to the code object.
+2. `getRegisteredHandlers()` — lists the handler name for the Module Manager.
+ 
+Then add the **Modules sheet row** via Admin → Modules (Key, Label, Icon,
+Roles, Handler, Include, Order, Enabled). Deploying code does **not** create the
+row — registration is a separate, deliberate step. Keep a module's registration
+commented out in `Code.gs` until its `.gs` file ships.
+ 
+---
+ 
+## 5. Using platform services
+ 
+### Tasks — the "needs attention" queue (reporting only)
+ 
+Create a task when work needs a human; resolve it when the underlying record
+reaches a terminal state. A task is a **pointer**: it stores routing + a
+back-reference, never business data. The module's own sheet is the source of
+truth.
+ 
+```js
+// Create — assignedTo is a specific user (normal case);
+// dueAt / staleAfterDays are optional and DOMAIN-supplied.
+const { taskId } = Tasks.create({
+  module: 'thesis',
+  sourceType: 'thesis_submission',
+  sourceId: recordId,                 // id in YOUR module's sheet
+  label: 'Thesis awaiting sponsor review',
+  assignedTo: sponsorEmail,
+  dueAt: new Date('2026-04-15'),      // optional
+  staleAfterDays: 14,                 // optional
+});
+ 
+// Resolve when your record is done with this step:
+Tasks.resolve(taskId, { resolvedBy: user });
+// or, without having stored the id:
+Tasks.resolveForSource('thesis', recordId, { resolvedBy: user });
+```
+ 
+**Tasks reports and escalates visibility; it never owns workflow.** Advancing,
+returning, recalling, or reassigning a process is workflow logic and lives in
+the module (or a future Workflow layer) — never in Tasks. When the workflow
+moves a record, the module calls `Tasks.resolve` on the old task and
+`Tasks.create` for the next one.
+ 
+### Notify — email delivery (content stays in your module)
+ 
+Notify resolves recipients, dedupes, formats consistently, and log-and-continues
+so a mail failure never breaks your action. It does NOT know what your message
+says — you supply the wording.
+ 
+```js
+const to = Notify.resolveRecipients({
+  superAdmins: CONFIG.SUPER_ADMINS,
+  roleRules: NotifyRules.recipientsFor(someRole),
+  explicit: [sponsorEmail],
+});
+Notify.send({ to, subject: 'Thesis submitted', body: '...your wording...' });
+```
+ 
+Do not call `Utils.sendEmail` directly for module notifications; route through
+Notify so formatting/dedup/logging stay consistent.
+ 
+### EventBus — react to platform events without coupling
+ 
+If your module should react to something another module does, register a
+listener in `getEventListeners()` in `Code.gs` (append-only) — never edit the
+emitting module. Emit your own events so future modules can react to you:
+ 
+```js
+EventBus.emit('thesis.submitted', { recordId, sponsorEmail }, { user });
+```
+ 
+A listener that throws is logged/audited and skipped; it can't break the
+emitter.
+ 
+### Auth — identity (read, don't duplicate)
+ 
+Get names/IDs/roles via `Auth.getProfile(email)` / `Auth.getRoles(email)`.
+Never store your own copy of a person's name or ID. Email is the primary
+identity key; IDs are a backup match path (see PersonMatch).
+ 
+### DataService — sheet CRUD by header name
+ 
+`insert`, `update`, `query`, `getAll`, `generateId`. It fills
+`CreatedAt/CreatedBy/UpdatedAt/UpdatedBy` automatically when those columns
+exist. Always include those meta columns in your tab's headers.
+ 
+---
+ 
+## 6. Deep-linking from the dashboard
+ 
+When a user clicks a task on the dashboard, the shell loads your module and sets
+`window.__focus = { sourceType, sourceId, taskId }` **before** your scripts run.
+A module that supports deep-linking reads it in `init`:
+ 
+```js
+function init() {
+  const f = window.__focus;
+  if (f && f.sourceId) openRecord(f.sourceId);   // focus that record
+}
+```
+ 
+Modules that don't implement focus simply ignore `window.__focus`. The shell
+never needs to know what you do with it. Fetch the focused record via your own
+`App.call` action — the shell does not pre-fetch it.
+ 
+---
+ 
+## 7. Storage tiers (where your data lives)
+ 
+Three tiers (see Config.gs):
+ 
+1. **Config sheet** (`USERS_CONFIG`) — platform identity + registry. Don't put
+   module data here.
+2. **Platform sheet** (`PLATFORM`) — platform-service operational data (Tasks).
+   Not for modules.
+3. **Per-module sheet** — your module gets its **own spreadsheet**, referenced
+   by a new `CONFIG.SHEETS.<YOURMODULE>` id. A module never holds another
+   module's spreadsheet id — that's loose coupling at the data layer.
+ 
+Add your tab(s) to `SETUP_SCHEMA` in `Setup.gs` so `setUp()` creates them.
+To add columns to an EXISTING tab later, run `addMissingColumns()` — it appends
+missing schema columns non-destructively (never deletes/reorders). `setUp()`
+only ever creates missing tabs; it never modifies an existing one.
+ 
+Configuration is UI-managed (Module Manager, Roles, Import permissions, Request
+notifications). Avoid telling users to edit sheets directly, except Config.gs
+constants.
+ 
+---
+ 
+## 8. Deploy & test
+ 
+- **`/dev`** serves the latest saved code — use it while developing.
+- **`/exec`** serves the last **deployed version** — to update it: Deploy →
+  Manage deployments → Edit → New version.
+- **Syntax-check every `.gs` with `node --check`** before delivery (copy to a
+  `.js` extension since Node won't check `.gs` directly).
+- **Verify every `onclick` handler is exported** from its UI controller.
+- A new top-level `const X` may appear **only once across the whole project**
+  (all `.gs` share one global scope) — duplicate declarations throw
+  "Identifier 'X' has already been declared."
+ 
+---
+ 
+## 9. Pre-flight checklist for a new module
+ 
+- [ ] Handler `.gs` is an IIFE returning `(payload, user, roles)` actions.
+- [ ] Privileged actions check roles and always allow `super_admin`.
+- [ ] No use of a generic `admin` role.
+- [ ] Columns read by header name (via DataService).
+- [ ] UI controller is `window.X`, not `const`; all handlers exported.
+- [ ] Server calls go through `App.call` → `dispatch`.
+- [ ] Handler registered in BOTH `getModuleHandler()` and
+      `getRegisteredHandlers()` — only after the file ships.
+- [ ] Modules sheet row added (Admin → Modules).
+- [ ] Own spreadsheet + `CONFIG.SHEETS` entry; tab(s) in `SETUP_SCHEMA`.
+- [ ] Tasks/Notify/EventBus used for cross-cutting concerns; no direct calls
+      into other modules.
+- [ ] `window.__focus` read in `init` if the module appears in tasks.
+- [ ] All `.gs` pass `node --check`; project loads with no duplicate-const error.
