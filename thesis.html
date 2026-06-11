@@ -12,7 +12,9 @@
     <? ['super_admin','senate_faculty','lecturer','staff','staff_undergrad'].forEach(function(r){ if (roles.includes(r)) canReview = true; }); ?>
     <? var isStudent = roles.includes('undergraduate_student'); ?>
     <? if (isStudent) { ?>
-    <button class="module-tab" data-tab="submit" id="tab-btn-submit" onclick="ThesisUI.switchTab('submit')">
+    <!-- Hidden by default: revealed by init() only when the student has no
+         existing thesis, so returning students never see it flash in. -->
+    <button class="module-tab" data-tab="submit" id="tab-btn-submit" style="display:none;" onclick="ThesisUI.switchTab('submit')">
       <i class="ti ti-file-upload"></i> Submit a thesis
     </button>
     <button class="module-tab" data-tab="mine" onclick="ThesisUI.switchTab('mine')">
@@ -283,18 +285,27 @@ window.ThesisUI = (() => {
     // Review queue.
     const _isAdvisorRole = _roles.indexOf('staff_undergrad') !== -1;
     if (_isStudent) {
+      // The Submit tab starts hidden; decide the layout from the student's
+      // data behind the busy overlay, then reveal the right tab. On a
+      // failed load, fail open to Submit — the server's per-term rule is
+      // the real duplicate guard.
+      _busy('Loading your theses…');
+      const showSubmit = () => {
+        const btn = document.getElementById('tab-btn-submit');
+        if (btn) btn.style.display = '';
+        switchTab('submit');
+      };
       App.call('thesis', 'mySubmissions', {}, rows => {
+        _idle();
         rows = rows || [];
         const el = document.getElementById('mine-list');
         if (el) el.innerHTML = rows.length ? _renderList(rows, 'mine') : '<div class="empty-state">No theses yet</div>';
         if (rows.length) {
-          const btn = document.getElementById('tab-btn-submit');
-          if (btn) btn.style.display = 'none';
           switchTab('mine');
         } else {
-          switchTab('submit');
+          showSubmit();
         }
-      });
+      }, () => { _idle(); showSubmit(); });
     } else {
       switchTab(_isAdvisorRole ? 'grad' : (_canReview ? 'queue' : 'submit'));
     }
@@ -526,7 +537,7 @@ window.ThesisUI = (() => {
         : '<span class="text-muted" style="font-size:12px;">No Pass — no milestone</span>';
 
       const doneLabel = approved ? 'Complete' : 'Close out';
-      return '<tr onclick="ThesisUI.open(\'' + _esc(r.thesisId) + '\')" style="cursor:pointer;">'
+      return '<tr onclick="ThesisUI.open(\'' + _esc(r.thesisId) + '\',\'' + _esc(r.stage) + '\')" style="cursor:pointer;">'
         + '<td>' + _esc(r.term) + '</td>'
         + '<td>' + _esc(r.studentName) + '<div class="text-muted" style="font-size:11px;">' + _esc(r.studentId) + '</div></td>'
         + '<td>' + _esc(r.title) + '</td>'
@@ -586,7 +597,7 @@ window.ThesisUI = (() => {
               + '<i class="ti ti-bell"></i> Remind</button></td>'
             : '<td><span class="text-muted" style="font-size:12px;">Waiting on you</span></td>')
         : '';
-      return '<tr onclick="ThesisUI.open(\'' + _esc(r.thesisId) + '\')" style="cursor:pointer;">'
+      return '<tr onclick="ThesisUI.open(\'' + _esc(r.thesisId) + '\',\'' + _esc(r.stage) + '\')" style="cursor:pointer;">'
         + '<td>' + _esc(r.term) + '</td>'
         + '<td>' + _esc(r.title) + '</td>'
         + '<td><span class="text-muted" style="font-size:11px;">' + whoLabel + '</span><br>' + who + '</td>'
@@ -610,9 +621,16 @@ window.ThesisUI = (() => {
   }
 
   // ── Detail + actions ─────────────────────────────────
-  function open(thesisId) {
+  function open(thesisId, listedStage) {
     _busy('Loading thesis…');
-    App.call('thesis', 'get', { thesisId }, rec => { _idle(); _openDetail(rec); }, () => _idle());
+    App.call('thesis', 'get', { thesisId }, rec => {
+      _idle();
+      // The row was a snapshot; if the record has moved on since the list
+      // loaded (someone else acted), silently refresh the visible lists so
+      // the view behind the modal matches reality.
+      if (listedStage && rec && rec.stage !== listedStage) _afterAction();
+      _openDetail(rec);
+    }, () => _idle());
   }
 
   function _openDetail(rec) {
