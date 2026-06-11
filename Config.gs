@@ -27,7 +27,7 @@ const CONFIG = {
     // Senior Thesis module — its OWN spreadsheet (per-module storage tier).
     THESIS:        '16MiWlHY0mTFuBioI5mc1nV3mmiIEbgBssG3h7jO4tBc',
     // Platform-services operational data (owned by platform-wide services,
-    // not by any single module). First tenant: Tasks.
+    // not by any single module). Tenants: Tasks, Reports.
     PLATFORM:      '1CyVapaV52tFWDGOC4fI7RNyVrcExevQeV7_gR_mpTNg',
   },
 
@@ -35,7 +35,21 @@ const CONFIG = {
   // Paste a folder ID from its Drive URL:
   //   https://drive.google.com/drive/folders/THIS_PART_IS_THE_ID
   // Leave blank ('') to create them in your My Drive root.
-  SETUP_FOLDER_ID: '',
+  SETUP_FOLDER_ID: '1JAT55kWeYmjM8i0DuRPh1m_vulOMR5d8',
+
+  // ── Report archive (ReportService) ─────────────────────────
+  // ARCHIVE_FOLDER_ID: Drive folder where generated reports are filed
+  //   (one auto-created subfolder per module). Required before the
+  //   first archived report — paste a folder ID, as above.
+  // LOGO_FILE_ID: Drive file id of the department logo (PNG with
+  //   transparency, ~600px wide prints crisply). Blank = reports render
+  //   without it; a broken id is logged and skipped, never fatal.
+  // ORG_LINE: second line of the letterhead band.
+  REPORTS: {
+    ARCHIVE_FOLDER_ID: '1BCWv3aBIYgPA5vBazU4DWki2XIV7-Wtu',
+    LOGO_FILE_ID:      '1dzrvLQYF8rUmNBF4j3N28UXg8wVpSrY3',
+    ORG_LINE:          'Department of Anthropology · UC Santa Cruz',
+  },
 
   TABS: {
     USERS:       'Users',
@@ -46,6 +60,7 @@ const CONFIG = {
     IMPORT_POLICY: 'ImportPolicy',
     NOTIFY_RULES: 'NotifyRules',
     TASKS:       'Tasks',
+    REPORTS:     'Reports',
     THESIS_ELIGIBILITY: 'ThesisEligibility',
     THESIS_SETTINGS: 'ThesisSettings',
   },
@@ -55,8 +70,8 @@ const CONFIG = {
   //    Users, Roles, Modules, ImportPolicy, NotifyRules, Requests.
   //    Stable, constantly read, small.
   // 2. PLATFORM sheet: operational data owned by platform-wide services
-  //    (Tasks, and later anything cross-cutting). Hot / high-churn;
-  //    kept separate so it never contends with config reads.
+  //    (Tasks, Reports, and later anything cross-cutting). Hot /
+  //    high-churn; kept separate so it never contends with config reads.
   // 3. PER-MODULE sheets: each module's own operational data in its own
   //    spreadsheet (Submissions; Thesis when it ships). A module never
   //    holds another module's spreadsheet ID — the data-layer expression
@@ -82,6 +97,12 @@ const CONFIG = {
     // Default for the UI-managed NOTIFY_ON_HANDOFF setting. ThesisSettings
     // reads this only as a fallback until a value is saved in Admin.
     NOTIFY_ON_HANDOFF: true,
+    // Default for the UI-managed SEND_CERTIFICATE setting: whether an
+    // acceptance certificate is automatically emailed to the student when
+    // a thesis routes to final processing with a passing outcome. The
+    // advisor's explicit "Resend certificate" action always works,
+    // regardless of this toggle.
+    SEND_CERTIFICATE: true,
     // Drive folder where submitted thesis PDFs are stored. In-place
     // resubmission (keeping the same file ID) also requires the Advanced
     // Drive Service enabled: Apps Script editor → Services (+) → Drive API.

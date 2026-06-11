@@ -97,6 +97,7 @@ const SETUP_SCHEMA = {
     headers: ['Key', 'Value'],
     seed: [
       ['NOTIFY_ON_HANDOFF', 'TRUE'],
+      ['SEND_CERTIFICATE',  'TRUE'],
     ],
   },
   TASKS: {
@@ -118,6 +119,22 @@ const SETUP_SCHEMA = {
               'AssignedTo', 'AssignedRole', 'Status', 'Note',
               'DueAt', 'StaleAfterDays', 'LastActivityAt',
               'CreatedAt', 'CreatedBy', 'ResolvedAt', 'ResolvedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
+  REPORTS: {
+    tab: 'Reports',
+    // Archived-report log (ReportService) — the PLATFORM sheet's second
+    // tenant after Tasks. One row per archived PDF: the queryable index
+    // that makes the report archive a real backup, and the lookup behind
+    // fetch-or-create (certificates re-send the SAME file, never a new
+    // one). SourceID references the documented record in the owning
+    // module's own sheet (e.g. a ThesisID); Params is the JSON of
+    // inputs/filters so any archived report is reproducible. GeneratedBy
+    // is written explicitly from the dispatch user; the CreatedAt/By
+    // meta pair is filled by DataService.insert as usual.
+    headers: ['ReportID', 'Module', 'ReportKey', 'SourceID', 'Title', 'Params',
+              'DriveFileID', 'URL', 'FileName', 'GeneratedBy',
+              'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
     seed: [],
   },
   THESIS: {
@@ -165,8 +182,10 @@ function setUp() {
   // Audit spreadsheet gets the AuditLog tab
   _setupTab(auditSS, SETUP_SCHEMA.AUDIT);
 
-  // Platform-services spreadsheet gets the Tasks tab (its first tenant)
+  // Platform-services spreadsheet: Tasks (first tenant) + Reports
+  // (ReportService's archive log, the second tenant)
   _setupTab(platformSS, SETUP_SCHEMA.TASKS);
+  _setupTab(platformSS, SETUP_SCHEMA.REPORTS);
 
   // Senior Thesis spreadsheet gets the Thesis tab
   _setupTab(thesisSS, SETUP_SCHEMA.THESIS);
@@ -335,7 +354,7 @@ function checkSetup() {
     ['USERS_CONFIG', CONFIG.SHEETS.USERS_CONFIG, [SETUP_SCHEMA.USERS.tab, SETUP_SCHEMA.ROLES.tab, SETUP_SCHEMA.MODULES.tab]],
     ['AUDIT_LOG',    CONFIG.SHEETS.AUDIT_LOG,    [SETUP_SCHEMA.AUDIT.tab]],
     ['SUBMISSIONS',  CONFIG.SHEETS.SUBMISSIONS,  []],
-    ['PLATFORM',     CONFIG.SHEETS.PLATFORM,     [SETUP_SCHEMA.TASKS.tab]],
+    ['PLATFORM',     CONFIG.SHEETS.PLATFORM,     [SETUP_SCHEMA.TASKS.tab, SETUP_SCHEMA.REPORTS.tab]],
     ['THESIS',       CONFIG.SHEETS.THESIS,       [SETUP_SCHEMA.THESIS.tab]],
   ];
   Logger.log('=== Config check ===');
@@ -371,6 +390,7 @@ function _schemaPlacement() {
     { sheetKey: 'USERS_CONFIG', def: SETUP_SCHEMA.THESIS_SETTINGS },
     { sheetKey: 'AUDIT_LOG',    def: SETUP_SCHEMA.AUDIT },
     { sheetKey: 'PLATFORM',     def: SETUP_SCHEMA.TASKS },
+    { sheetKey: 'PLATFORM',     def: SETUP_SCHEMA.REPORTS },
     { sheetKey: 'THESIS',       def: SETUP_SCHEMA.THESIS },
   ];
 }

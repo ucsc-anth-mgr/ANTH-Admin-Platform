@@ -220,3 +220,19 @@ function getEventListeners() {
     // (append event -> listener entries here as modules ship)
   };
 }
+
+function testCertificateRender() {
+  const me = Session.getActiveUser().getEmail();   // needs a Users profile
+  const out = ThesisReports.issueCertificate({
+    ThesisID:        'TEST-CERT-001',
+    StudentEmail:    me,                            // certificate comes to YOU
+    SponsorEmail:    me,
+    SponsorDecision: 'Pass',
+    SponsorDecidedBy: me,
+    SponsorDecidedAt: new Date(),
+    Quarter: 'Spring',
+    Year:    '2026',
+    Title:   'Ritual and memory in diaspora communities',
+  }, { force: true });                              // bypass the settings toggle
+  Logger.log(JSON.stringify(out));
+}

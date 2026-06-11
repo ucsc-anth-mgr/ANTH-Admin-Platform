@@ -45,6 +45,13 @@ const Notify = (() => {
    *   @param {string}          p.body      - plain-text body (module-owned)
    *   @param {string}          [p.htmlBody]- optional HTML body (module-owned)
    *   @param {boolean}         [p.prefixSubject=true] - apply SUBJECT_PREFIX
+   *   @param {Blob|Blob[]}     [p.attachments] - file attachment(s), e.g. a
+   *                            certificate PDF from ReportService.generate().blob
+   *   @param {string|string[]} [p.replyTo] - reply-to address(es); normalized
+   *                            and deduped like to/cc
+   *   @param {string}          [p.senderName] - inbox DISPLAY name only; the
+   *                            sending ADDRESS is always the deploying account
+   *                            (GmailApp cannot send from another account)
    * @returns {{ sent: boolean, recipients: string[], reason?: string }}
    */
   function send(p) {
@@ -62,14 +69,19 @@ const Notify = (() => {
         ? subjectText
         : subjectLine(subjectText);
 
-      const opts = {};
-      if (p.htmlBody) opts.htmlBody = p.htmlBody;
-      if (cc.length)  opts.cc = cc.join(',');
-
-      // Route through Utils.sendEmail (the single low-level mailer).
-      // Utils.sendEmail currently accepts { to, subject, body, htmlBody };
-      // cc is passed via the extended signature below.
-      _deliver({ to: to.join(','), subject: subject, body: p.body || '', htmlBody: p.htmlBody, cc: opts.cc });
+      // Route through Utils.sendEmail (the single low-level mailer)
+      // when only the basic fields are in play; _deliver upgrades to
+      // GmailApp directly whenever extended options are present.
+      _deliver({
+        to: to.join(','),
+        subject: subject,
+        body: p.body || '',
+        htmlBody: p.htmlBody,
+        cc: cc.length ? cc.join(',') : '',
+        attachments: _collectBlobs(p.attachments),
+        replyTo: _dedupeEmails(_collect(p.replyTo)).join(','),
+        senderName: String(p.senderName || '').trim(),
+      });
 
       return { sent: true, recipients: to };
 
@@ -136,20 +148,37 @@ const Notify = (() => {
   // ── Private ──────────────────────────────────────────────────
 
   /**
-   * Low-level send. Prefers an extended Utils.sendEmail that understands
-   * cc; falls back to GmailApp directly if cc is present (Utils.sendEmail
-   * in the current snapshot ignores unknown keys, so cc would be dropped).
+   * Low-level send. Goes straight to GmailApp whenever cc, attachments,
+   * replyTo, or senderName are present (Utils.sendEmail's signature
+   * doesn't carry them); otherwise routes through Utils.sendEmail.
+   *
+   * NOTE on senderName: GmailApp cannot send FROM another account — the
+   * sending address is always the deploying/portal account. The `name`
+   * option only changes the DISPLAY name shown in the inbox (e.g.
+   * "Prof. Lucia Navarro (UCSC Anthropology)"). replyTo controls where
+   * a reply actually goes.
    */
   function _deliver(msg) {
-    if (msg.cc) {
-      // Send with cc explicitly to guarantee it is honored regardless of
-      // the Utils.sendEmail signature.
-      const opts = { cc: msg.cc };
-      if (msg.htmlBody) opts.htmlBody = msg.htmlBody;
+    const hasExtras = !!msg.cc || !!msg.replyTo || !!msg.senderName ||
+                      (msg.attachments && msg.attachments.length);
+    if (hasExtras) {
+      const opts = {};
+      if (msg.htmlBody)   opts.htmlBody = msg.htmlBody;
+      if (msg.cc)         opts.cc = msg.cc;
+      if (msg.replyTo)    opts.replyTo = msg.replyTo;
+      if (msg.senderName) opts.name = msg.senderName;
+      if (msg.attachments && msg.attachments.length) opts.attachments = msg.attachments;
       GmailApp.sendEmail(msg.to, msg.subject, msg.body || '', opts);
     } else {
       Utils.sendEmail({ to: msg.to, subject: msg.subject, body: msg.body, htmlBody: msg.htmlBody });
     }
+  }
+
+  /** Normalizes attachments input into an array of blobs (or []). */
+  function _collectBlobs(v) {
+    if (!v) return [];
+    const arr = Array.isArray(v) ? v : [v];
+    return arr.filter(b => b && typeof b.getBytes === 'function');
   }
 
   /** Normalizes a string|array|falsy input into an array of trimmed strings. */
