@@ -8,8 +8,7 @@
 //                        ├─ No Pass ───────────► PENDING_ADVISOR (failed)
 //                        ├─ Review for Honors ─► PENDING_HONORS
 //                        └─ Return ────────────► RETURNED
-//   PENDING_HONORS ─ reader ─┬─ Approved ──────► PENDING_ADVISOR
-//                            ├─ Denied ────────► PENDING_ADVISOR
+//   PENDING_HONORS ─ reader ─┬─ Approve honors ─► PENDING_ADVISOR
 //                            └─ Return to sponsor ─► SUBMITTED
 //   PENDING_ADVISOR ─ advisor ─┬─ Complete ─────► COMPLETE   (terminal)
 //                              └─ Return to sponsor ─► SUBMITTED
@@ -34,9 +33,6 @@
 //   - Cross-cutting concerns go through platform services: Tasks for the
 //     attention queue, Notify for email, EventBus for fan-out, Auth for
 //     identity, DataService for sheet CRUD. No SpreadsheetApp here.
-//   - Documents (acceptance certificate, completion record) are composed
-//     by ThesisReports and rendered/archived by ReportService. Hooks here
-//     are log-and-continue: a document failure never blocks a decision.
 //   - Every privileged action allows super_admin.
 // ============================================================
 
@@ -54,8 +50,11 @@ const ThesisModule = (() => {
 
   // Sponsor decision values (mirror the paper form's checkboxes).
   const SPONSOR = { PASS: 'Pass', NO_PASS: 'No Pass', HONORS: 'Review for Honors' };
-  // Reader (honors) decision values.
-  const HONORS  = { APPROVED: 'Honors approved', DENIED: 'Honors denied' };
+  // Reader (honors) outcome. There is deliberately NO "denied" value: a
+  // reader who is not convinced returns the thesis to the sponsor instead,
+  // and the sponsor records a plain Pass — so a negative honors outcome
+  // never exists on the record and the student's view needs no rewriting.
+  const HONORS  = { APPROVED: 'Honors approved' };
 
   // Faculty eligible to sponsor or read are resolved at runtime from the
   // ThesisEligibility config (Admin → Roles → faculty roster), not from a
@@ -96,7 +95,8 @@ const ThesisModule = (() => {
 
   /**
    * Submits a NEW thesis, or resubmits one currently in RETURNED.
-   * Prevents a second active record for the same student + term.
+   * A student may have ONE thesis, period — any existing record blocks a
+   * new submission regardless of term (the advisor handles exceptions).
    *
    * @param {Object} payload
    *   @param {string} payload.quarter      - one of QUARTERS
@@ -164,14 +164,23 @@ const ThesisModule = (() => {
       return { thesisId: existingId, stage: STAGE.SUBMITTED, resubmitted: true };
     }
 
-    // ── New submission: only one record per student per term ──
-    const blocking = _blockingForStudentTerm(user, quarter, year);
-    if (blocking) {
-      const msg = blocking.Stage === STAGE.COMPLETE
-        ? 'Your ' + quarter + ' ' + year + ' thesis has already been processed (' +
-          blocking.ThesisID + '). To submit a revised thesis after acceptance, contact the undergraduate advisor.'
-        : 'You already have a ' + quarter + ' ' + year + ' thesis in progress (' +
-          blocking.ThesisID + '). It must be returned before you can submit again.';
+    // ── New submission: ONE thesis per student, period ──
+    // Term is irrelevant: any existing record blocks a fresh submission.
+    // (Previously this only blocked the same Quarter+Year, which let a
+    // student file a second thesis under a different term.) A RETURNED
+    // thesis must be revised via resubmission, not replaced; anything
+    // else goes through the undergraduate advisor.
+    const existing = DataService.query(CONFIG.SHEETS.THESIS, TAB, 'StudentEmail', user);
+    if (existing.length) {
+      const b = existing[0];
+      const msg = b.Stage === STAGE.RETURNED
+        ? 'Your ' + b.Quarter + ' ' + b.Year + ' thesis was returned for revision — use ' +
+          '"Revise & resubmit" on it in My theses instead of submitting a new one.'
+        : b.Stage === STAGE.COMPLETE
+          ? 'Your ' + b.Quarter + ' ' + b.Year + ' thesis has already been processed. ' +
+            'To submit another thesis, contact the undergraduate advisor.'
+          : 'You already have a ' + b.Quarter + ' ' + b.Year + ' thesis under review. ' +
+            'Multiple submissions are not permitted — contact the undergraduate advisor if you believe this is an error.';
       throw new Error(msg);
     }
 
@@ -198,10 +207,12 @@ const ThesisModule = (() => {
   }
 
 
-  /** The caller's own theses, newest first, shaped for display. */
-  function mySubmissions(payload, user) {
+  /** The caller's own theses, newest first, in the student's masked view
+   *  (super_admin test accounts see truth). */
+  function mySubmissions(payload, user, roles) {
+    const isSuper = (roles || []).indexOf('super_admin') !== -1;
     return DataService.query(CONFIG.SHEETS.THESIS, TAB, 'StudentEmail', user)
-      .map(_publicRecord)
+      .map(r => isSuper ? _publicRecord(r) : _studentView(r))
       .sort(_byCreatedDesc);
   }
 
@@ -257,8 +268,14 @@ const ThesisModule = (() => {
       || _isUndergradAdvisor(user)
       || roles.indexOf('super_admin') !== -1;
     if (!allowed) throw new Error('You do not have access to this thesis.');
+    const isSuper = roles.indexOf('super_admin') !== -1;
+    // The student gets the masked view of their own record (honors
+    // referral invisible unless approved); privileged viewers see truth.
+    if (_norm(user) === _norm(rec.StudentEmail) && !isSuper && !_isUndergradAdvisor(user)) {
+      return _studentView(rec);
+    }
     const pub = _publicRecord(rec);
-    if (_isUndergradAdvisor(user) || roles.indexOf('super_admin') !== -1) {
+    if (_isUndergradAdvisor(user) || isSuper) {
       _withAdvisorFields(pub, rec);
     }
     return pub;
@@ -326,16 +343,20 @@ const ThesisModule = (() => {
     // Pass or No Pass — both flow to the advisor for final processing.
     updates.Stage = STAGE.PENDING_ADVISOR;
     DataService.update(CONFIG.SHEETS.THESIS, TAB, 'ThesisID', rec.ThesisID, updates);
-    _routeToAdvisor(rec.ThesisID, rec, user);
-    // Acceptance certificate — Pass ONLY, never No Pass. Fresh read so the
-    // record carries the decision just written. Log-and-continue: a
-    // certificate failure must never block the decision ("Resend
-    // certificate" is the recovery path).
+    const decidedRec = _byId(rec.ThesisID);  // reflects the decision just recorded
+    _routeToAdvisor(rec.ThesisID, decidedRec, user);
     if (decision === SPONSOR.PASS) {
-      try {
-        const cert = ThesisReports.issueCertificate(_byId(rec.ThesisID));
-        if (!cert.sent) Logger.log('Certificate not sent for ' + rec.ThesisID + ': ' + cert.reason);
-      } catch (e) { Logger.log('Certificate issue failed for ' + rec.ThesisID + ': ' + e); }
+      // The student learns of acceptance at the decision, not after the
+      // advisor's internal final processing. (No Pass is not announced
+      // here — the completion notice and the sponsor handle that.)
+      const acceptHeading = 'Congratulations — your senior thesis has been accepted by your faculty sponsor.';
+      const nextNote = 'The undergraduate advisor will now complete final processing; ' +
+        'you will receive confirmation once it is recorded.';
+      _notify(rec.StudentEmail, 'Your thesis has been accepted',
+        acceptHeading + '\n\n' + nextNote + _actionTextFallback(rec.ThesisID, 'View your thesis'),
+        _summaryHtml(decidedRec, { heading: acceptHeading, studentView: true }) +
+        '<p style="margin:0 0 16px;">' + _esc(nextNote) + '</p>' +
+        _actionButtonHtml(rec.ThesisID, 'View your thesis'));
     }
     EventBus.emit('thesis.sponsor_decided',
       { thesisId: rec.ThesisID, decision: decision }, { user: user });
@@ -348,32 +369,41 @@ const ThesisModule = (() => {
    * Either outcome advances to the advisor for final processing.
    * @param {Object} payload - { thesisId, decision, comments }
    */
+  /**
+   * Honors reader APPROVES a thesis for honors (with required comments).
+   * There is no denial: a reader who is not convinced uses returnToSponsor
+   * instead, and the sponsor re-decides (typically a plain Pass).
+   * @param {Object} payload - { thesisId, comments }
+   */
   function readerDecision(payload, user, roles) {
     payload = payload || {};
     const rec = _requireStage(payload.thesisId, STAGE.PENDING_HONORS);
     if (_norm(rec.ReaderEmail) !== _norm(user) && roles.indexOf('super_admin') === -1) {
       throw new Error('Only the assigned faculty reader can decide this honors review.');
     }
-    const decision = _requireOneOf(payload.decision, [HONORS.APPROVED, HONORS.DENIED], 'Honors decision');
     const comments = String(payload.comments || '').trim();
-    if (!comments) throw new Error('Comments are required with your honors decision.');
+    if (!comments) throw new Error('Comments are required to approve honors.');
 
     Tasks.resolveForSource('thesis', rec.ThesisID, { resolvedBy: user });
     DataService.update(CONFIG.SHEETS.THESIS, TAB, 'ThesisID', rec.ThesisID, {
-      HonorsDecision: decision, ReaderComments: comments,
+      HonorsDecision: HONORS.APPROVED, ReaderComments: comments,
       ReaderDecidedBy: user, ReaderDecidedAt: new Date(),
       Stage: STAGE.PENDING_ADVISOR,
     });
-    _routeToAdvisor(rec.ThesisID, rec, user);
-    // Acceptance certificate — both honors outcomes are a pass; the
-    // template handles the wording (denied → plain "Accepted", silent
-    // about the review). Log-and-continue as in sponsorDecision.
-    try {
-      const cert = ThesisReports.issueCertificate(_byId(rec.ThesisID));
-      if (!cert.sent) Logger.log('Certificate not sent for ' + rec.ThesisID + ': ' + cert.reason);
-    } catch (e) { Logger.log('Certificate issue failed for ' + rec.ThesisID + ': ' + e); }
+    const decidedRec = _byId(rec.ThesisID);  // reflects the honors approval
+    _routeToAdvisor(rec.ThesisID, decidedRec, user);
+
+    const acceptHeading = 'Congratulations — your senior thesis has been accepted and approved for honors.';
+    const nextNote = 'The undergraduate advisor will now complete final processing; ' +
+      'you will receive confirmation once it is recorded.';
+    _notify(rec.StudentEmail, 'Your thesis has been accepted with honors',
+      acceptHeading + '\n\n' + nextNote + _actionTextFallback(rec.ThesisID, 'View your thesis'),
+      _summaryHtml(decidedRec, { heading: acceptHeading, studentView: true }) +
+      '<p style="margin:0 0 16px;">' + _esc(nextNote) + '</p>' +
+      _actionButtonHtml(rec.ThesisID, 'View your thesis'));
+
     EventBus.emit('thesis.honors_decided',
-      { thesisId: rec.ThesisID, decision: decision }, { user: user });
+      { thesisId: rec.ThesisID, decision: HONORS.APPROVED }, { user: user });
     return { thesisId: rec.ThesisID, stage: STAGE.PENDING_ADVISOR };
   }
 
@@ -410,20 +440,16 @@ const ThesisModule = (() => {
     });
     const student = Auth.getProfile(rec.StudentEmail);
     const doneRec = _byId(rec.ThesisID);
-    // Internal completion record — approved path only (a No Pass close-out
-    // produces none, per department decision). doneRec is the post-update
-    // read, so the trail's final row (AdvisorProcessedBy/At) is populated.
-    // Append-only snapshot; log-and-continue so a report failure never
-    // blocks completion ("New completion-record snapshot" is the recovery).
-    if (approved) {
-      try { ThesisReports.archiveCompletionRecord(doneRec, user); }
-      catch (e) { Logger.log('Completion record failed for ' + rec.ThesisID + ': ' + e); }
-    }
+    // Outcome wording from the STUDENT's view — a denied honors referral
+    // reads as a plain Pass here too.
+    const sv = _studentView(doneRec);
+    const svOutcome = (sv.sponsorDecision || '(no decision)') +
+      (sv.honorsDecision ? ' → ' + sv.honorsDecision : '');
     const doneHeading = 'Your ' + rec.Quarter + ' ' + rec.Year + ' senior thesis "' + rec.Title +
-      '" has completed review. Outcome: ' + _outcomeSummary(rec) + '.';
+      '" has completed review. Outcome: ' + svOutcome + '.';
     _notify(rec.StudentEmail, 'Your senior thesis has been processed',
       doneHeading + _actionTextFallback(rec.ThesisID, 'View your thesis'),
-      _summaryHtml(doneRec, { heading: doneHeading }) +
+      _summaryHtml(doneRec, { heading: doneHeading, studentView: true }) +
       _actionButtonHtml(rec.ThesisID, 'View your thesis'));
     EventBus.emit('thesis.completed', { thesisId: rec.ThesisID }, { user: user });
     return { thesisId: rec.ThesisID, stage: STAGE.COMPLETE };
@@ -479,7 +505,7 @@ const ThesisModule = (() => {
     _notify(to, 'Reminder: senior thesis awaiting your action',
       heading + '\n\nTitle: ' + rec.Title +
       _actionTextFallback(rec.ThesisID, 'Open this thesis'),
-      _summaryHtml(rec, { heading: heading }) +
+      _summaryHtml(rec, { heading: heading, studentView: rec.Stage === STAGE.RETURNED }) +
       _actionButtonHtml(rec.ThesisID, 'Open this thesis'),
       /*force*/ true);
     EventBus.emit('thesis.reminded', { thesisId: rec.ThesisID, remindedTo: to }, { user: user });
@@ -517,9 +543,7 @@ const ThesisModule = (() => {
 
   /**
    * Permanently deletes a thesis: resolves its open tasks, trashes its
-   * Drive PDF and its archived report documents (acceptance certificate,
-   * completion-record snapshots — files and Reports log rows, via
-   * ReportService), and removes the sheet row. super_admin only.
+   * Drive PDF (best-effort), and removes the sheet row. super_admin only.
    * Built for cleaning up test submissions — irreversible, so the UI
    * confirms before calling. Audit-log entries are deliberately left
    * intact (append-only history).
@@ -540,18 +564,6 @@ const ThesisModule = (() => {
     if (fileId) {
       try { DriveApp.getFileById(fileId).setTrashed(true); }
       catch (err) { Logger.log('deleteThesis: could not trash file ' + fileId + ' (' + err + ')'); }
-    }
-
-    // Remove this thesis's archived documents (acceptance certificate and
-    // completion-record snapshots): Drive PDFs trashed, Reports log rows
-    // removed — via the platform service that owns the archive. Best-effort
-    // like the PDF above; a report-cleanup hiccup must not block deleting
-    // the record. Audit-log entries remain intact as ever.
-    try {
-      const n = ReportService.deleteArchived('thesis', rec.ThesisID);
-      if (n) Logger.log('deleteThesis: removed ' + n + ' archived report(s) for ' + rec.ThesisID);
-    } catch (err) {
-      Logger.log('deleteThesis: report cleanup failed for ' + rec.ThesisID + ' (' + err + ')');
     }
 
     const removed = DataService.remove(CONFIG.SHEETS.THESIS, TAB, 'ThesisID', rec.ThesisID);
@@ -599,7 +611,7 @@ const ThesisModule = (() => {
     _notify(rec.StudentEmail, 'Your senior thesis was returned for revision',
       returnHeading + '\n\nNote:\n' + note +
       _actionTextFallback(rec.ThesisID, 'Revise and resubmit'),
-      _summaryHtml(returnedRec, { heading: returnHeading }) +
+      _summaryHtml(returnedRec, { heading: returnHeading, studentView: true }) +
       '<p style="margin:0 0 16px;"><strong>Reviewer note:</strong><br>' + _esc(note) + '</p>' +
       _actionButtonHtml(rec.ThesisID, 'Revise and resubmit'));
     EventBus.emit('thesis.returned', { thesisId: rec.ThesisID }, { user: user });
@@ -663,45 +675,6 @@ const ThesisModule = (() => {
   }
 
 
-  /**
-   * Re-sends the acceptance certificate to the student. Reuses the
-   * archived PDF (fetch-or-create); regenerates only if the Drive file is
-   * gone. force:true — an explicit resend by the advisor outranks the
-   * SEND_CERTIFICATE automation toggle. ThesisReports itself rejects
-   * theses that haven't reached a passing outcome.
-   * @param {Object} payload - { thesisId }
-   */
-  function resendCertificate(payload, user, roles) {
-    if (!_isUndergradAdvisor(user) && roles.indexOf('super_admin') === -1) {
-      throw new Error('Only the undergraduate advisor can resend a certificate.');
-    }
-    const rec = _byId(String((payload || {}).thesisId || '').trim());
-    if (!rec) throw new Error('Thesis not found.');
-    const out = ThesisReports.issueCertificate(rec, { force: true });
-    if (!out.sent) throw new Error('Certificate not sent: ' + (out.reason || 'unknown'));
-    return { thesisId: rec.ThesisID, sent: true, reused: out.reused };
-  }
-
-
-  /**
-   * Archives a fresh completion-record snapshot (append-only; earlier
-   * snapshots remain in the archive). Completed, approved theses only —
-   * ThesisReports rejects non-passing outcomes.
-   * @param {Object} payload - { thesisId }
-   */
-  function regenerateRecord(payload, user, roles) {
-    if (!_isUndergradAdvisor(user) && roles.indexOf('super_admin') === -1) {
-      throw new Error('Only the undergraduate advisor can regenerate a completion record.');
-    }
-    const rec = _byId(String((payload || {}).thesisId || '').trim());
-    if (!rec) throw new Error('Thesis not found.');
-    if (rec.Stage !== STAGE.COMPLETE) {
-      throw new Error('Completion records exist for completed theses only.');
-    }
-    return ThesisReports.archiveCompletionRecord(rec, user);
-  }
-
-
   // ── Routing helpers (workflow lives in the module, not in Tasks) ──
 
   function _routeToSponsor(thesisId, sponsorEmail, studentProfile, title, user, resubmitted) {
@@ -720,6 +693,24 @@ const ThesisModule = (() => {
       _actionTextFallback(thesisId, 'Review this thesis'),
       _summaryHtml(sponsorRec, { heading: heading }) +
       _actionButtonHtml(thesisId, 'Review this thesis'));
+
+    // Receipt to the student: confirms the department has the thesis and
+    // points them at My theses for status. (`user` is the submitting
+    // student on both the fresh and resubmission paths.)
+    const receiptHeading = resubmitted
+      ? 'Your revised senior thesis has been received by the Anthropology Department and is back under review.'
+      : 'Your senior thesis has been received by the Anthropology Department.';
+    const statusNote = 'You can check its status anytime in the "My theses" tab of the Senior Thesis module — ' +
+      'you will also be notified when review is complete.';
+    _notify(user,
+      resubmitted ? 'Your revised thesis has been received' : 'Your thesis has been received',
+      receiptHeading + '\n\n' + statusNote +
+      '\n\nTitle: ' + title +
+      _actionTextFallback(thesisId, 'View your thesis'),
+      _summaryHtml(sponsorRec, { heading: receiptHeading, studentView: true }) +
+      '<p style="margin:0 0 16px;">' + _esc(statusNote) + '</p>' +
+      _actionButtonHtml(thesisId, 'View your thesis'));
+
     EventBus.emit(resubmitted ? 'thesis.resubmitted' : 'thesis.submitted',
       { thesisId: thesisId, sponsorEmail: sponsorEmail }, { user: user });
   }
@@ -864,19 +855,6 @@ const ThesisModule = (() => {
     return rec;
   }
 
-  /**
-   * Finds a record that should block a NEW submission for this student +
-   * term. Any prior record blocks EXCEPT one in RETURNED — a returned
-   * thesis is resubmitted in place (an update), not a new record. A
-   * COMPLETE thesis also blocks: re-submitting an accepted thesis is
-   * handled offline with the undergraduate advisor, not via a second row.
-   */
-  function _blockingForStudentTerm(email, quarter, year) {
-    return DataService.query(CONFIG.SHEETS.THESIS, TAB, 'StudentEmail', email)
-      .filter(r => String(r.Quarter) === String(quarter) && String(r.Year) === String(year))
-      .filter(r => r.Stage !== STAGE.RETURNED)[0] || null;
-  }
-
   /** Display shape: attaches computed student/faculty names without
    *  storing them. Heavy fields (DriveFileID) pass through for the UI. */
   function _publicRecord(r) {
@@ -911,6 +889,42 @@ const ThesisModule = (() => {
       createdAt:    r.CreatedAt ? Utils.formatDate(r.CreatedAt) : '',
       _created:     r.CreatedAt ? new Date(r.CreatedAt).getTime() : 0,
     };
+  }
+
+
+  /**
+   * The STUDENT's view of their own record: a coarse, honest status
+   * vocabulary instead of the internal workflow stage.
+   *   UNDER_REVIEW — submitted, in honors review, or a No Pass awaiting
+   *                  close-out (the sponsor addresses a No Pass outside
+   *                  the portal; the recorded outcome appears at COMPLETE)
+   *   RETURNED     — the student must revise and resubmit
+   *   ACCEPTED     — passed (or honors-approved), in final processing
+   *   COMPLETE     — done; the recorded outcome shows
+   * Decision details (sponsor decision/comments, reader identity and
+   * comments) are hidden until ACCEPTED/COMPLETE, and internal
+   * return-to-sponsor notes are hidden except on an actual RETURNED
+   * thesis. With no "honors denied" value in the system, nothing here
+   * rewrites data — this is purely a presentation vocabulary.
+   * Faculty/advisor/super_admin viewers never receive this view.
+   */
+  function _studentView(r) {
+    const pub = _publicRecord(r);
+    const settled = r.Stage === STAGE.COMPLETE ||
+      (r.Stage === STAGE.PENDING_ADVISOR && _isApproved(r));
+
+    if (r.Stage === STAGE.RETURNED)       pub.stage = STAGE.RETURNED;
+    else if (r.Stage === STAGE.COMPLETE)  pub.stage = STAGE.COMPLETE;
+    else if (settled)                     pub.stage = 'ACCEPTED';
+    else                                  pub.stage = 'UNDER_REVIEW';
+
+    if (!settled) {
+      pub.sponsorDecision = ''; pub.sponsorComments = ''; pub.sponsorDecidedAt = '';
+      pub.readerEmail = ''; pub.readerName = '';
+      pub.honorsDecision = ''; pub.readerComments = ''; pub.readerDecidedAt = '';
+    }
+    if (r.Stage !== STAGE.RETURNED) pub.returnNote = '';
+    return pub;
   }
 
   function _byCreatedDesc(a, b) { return (b._created || 0) - (a._created || 0); }
@@ -971,10 +985,12 @@ const ThesisModule = (() => {
   }
 
   /** A formatted HTML summary of the submission for embedding in emails.
-   *  `opts.heading` is the lead line; decisions render only once recorded. */
+   *  `opts.heading` is the lead line; decisions render only once recorded.
+   *  `opts.studentView` applies the student mask (use for every email
+   *  addressed to the student). */
   function _summaryHtml(rec, opts) {
     opts = opts || {};
-    const pub = _publicRecord(rec);
+    const pub = opts.studentView ? _studentView(rec) : _publicRecord(rec);
     const rows = [];
     const row = (k, v) => { if (v) rows.push(
       '<tr><td style="padding:4px 12px 4px 0;color:#666;vertical-align:top;white-space:nowrap;">' + k +
@@ -1110,7 +1126,6 @@ const ThesisModule = (() => {
     listEligible, listCountries, submit, mySubmissions, sponsored, queue, get,
     sponsorDecision, readerDecision, advisorComplete, returnToStudent, returnToSponsor,
     gradQueue, remindResponsible, repairAdvisorTasks, deleteThesis,
-    resendCertificate, regenerateRecord,
   };
 
 })();

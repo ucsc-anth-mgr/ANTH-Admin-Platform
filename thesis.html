@@ -247,6 +247,11 @@ window.ThesisUI = (() => {
     PENDING_ADVISOR: { cls: 'badge-gold',    label: 'Final processing' },
     RETURNED:        { cls: 'badge-danger',  label: 'Returned' },
     COMPLETE:        { cls: 'badge-success', label: 'Complete' },
+    // Student-facing coarse statuses (served by the server's student view;
+    // students never receive the internal stage names above except
+    // RETURNED and COMPLETE).
+    UNDER_REVIEW:    { cls: 'badge-warning', label: 'Under review' },
+    ACCEPTED:        { cls: 'badge-success', label: 'Accepted — final processing' },
   };
 
   let _sponsors = [];          // eligible sponsors
@@ -445,13 +450,11 @@ window.ThesisUI = (() => {
       _idle();
       Toast.show(res.resubmitted ? 'Thesis resubmitted.' : 'Thesis submitted to your sponsor.', 'success');
       _resetForm();
-      // The student now has a thesis on record, so the Submit tab is no
-      // longer offered — re-hide it, mirroring init()'s rule. (A RETURNED
-      // thesis re-opens the form via Revise & resubmit, which shows the
-      // panel directly; the server's per-term check remains the real
-      // duplicate guard either way.)
-      const submitBtn = document.getElementById('tab-btn-submit');
-      if (submitBtn) submitBtn.style.display = 'none';
+      // The student now has a thesis on record — re-hide the Submit tab
+      // so the same session can't reach the form for a second one (the
+      // server independently rejects it, but the tab shouldn't invite it).
+      const btn = document.getElementById('tab-btn-submit');
+      if (btn) btn.style.display = 'none';
       switchTab('mine');
     }, () => { FormHelper.setLoading('th-submit-btn', false); _idle(); });
   }
@@ -578,7 +581,7 @@ window.ThesisUI = (() => {
   function deleteThesis(info) {
     info = info || {};
     const label = (info.title || info.id) + (info.student ? ' (' + info.student + ')' : '');
-    if (!window.confirm('Permanently delete "' + label + '"?\n\nThis removes the record, clears its tasks, and trashes its PDF and any archived reports (certificate, completion records). It cannot be undone.')) return;
+    if (!window.confirm('Permanently delete "' + label + '"?\n\nThis removes the record, clears its tasks, and trashes its PDF. It cannot be undone.')) return;
     _busy('Deleting thesis…');
     App.call('thesis', 'deleteThesis', { thesisId: info.id }, () => {
       _idle();
@@ -597,11 +600,14 @@ window.ThesisUI = (() => {
       const m = STAGE_META[r.stage] || { cls: 'badge-neutral', label: r.stage };
       const who = showStudent ? _esc(r.studentName) : _esc(r.sponsorName);
       const whoLabel = showStudent ? 'Student' : 'Sponsor';
+      const remindTarget = r.stage === 'SUBMITTED' ? 'sponsor'
+        : r.stage === 'PENDING_HONORS' ? 'reader'
+        : r.stage === 'RETURNED' ? 'student' : '';
       const remindCell = showRemind
-        ? (r.stage !== 'PENDING_ADVISOR'
+        ? (remindTarget
             ? '<td onclick="event.stopPropagation();"><button class="btn btn-secondary btn-sm" '
-              + 'onclick="ThesisUI.remind(\'' + _esc(r.thesisId) + '\')" title="Email whoever this thesis is waiting on">'
-              + '<i class="ti ti-bell"></i> Remind</button></td>'
+              + 'onclick="ThesisUI.remind(\'' + _esc(r.thesisId) + '\')" title="Email the ' + remindTarget + ' that this thesis awaits them">'
+              + '<i class="ti ti-bell"></i> Remind ' + remindTarget + '</button></td>'
             : '<td><span class="text-muted" style="font-size:12px;">Waiting on you</span></td>')
         : '';
       return '<tr onclick="ThesisUI.open(\'' + _esc(r.thesisId) + '\',\'' + _esc(r.stage) + '\')" style="cursor:pointer;">'
@@ -624,27 +630,6 @@ window.ThesisUI = (() => {
     App.call('thesis', 'remindResponsible', { thesisId }, res => {
       _idle();
       Toast.show('Reminder sent' + (res && res.remindedTo ? ' to ' + res.remindedTo : '') + '.', 'success');
-    }, () => _idle());
-  }
-
-  /** Re-sends the acceptance certificate (reuses the archived PDF;
-   *  regenerates only if the Drive file is gone). Advisor/super only —
-   *  server-enforced. */
-  function resendCertificate(thesisId) {
-    _busy('Sending certificate…');
-    App.call('thesis', 'resendCertificate', { thesisId }, res => {
-      _idle();
-      Toast.show(res && res.reused ? 'Certificate re-sent (existing PDF).' : 'Certificate regenerated and sent.', 'success');
-    }, () => _idle());
-  }
-
-  /** Archives a fresh completion-record snapshot (append-only; earlier
-   *  snapshots remain in the archive). Advisor/super only — server-enforced. */
-  function regenerateRecord(thesisId) {
-    _busy('Archiving snapshot…');
-    App.call('thesis', 'regenerateRecord', { thesisId }, () => {
-      _idle();
-      Toast.show('Completion-record snapshot archived.', 'success');
     }, () => _idle());
   }
 
@@ -720,24 +705,12 @@ window.ThesisUI = (() => {
       out.push(_advisorPanel(rec));
     }
 
-    // Post-completion document actions (advisor or super_admin): re-send
-    // the acceptance certificate (reuses the archived PDF) or archive a
-    // fresh completion-record snapshot. Server-enforced like everything.
-    if (rec.stage === 'COMPLETE' && (_isAdvisorUser || isSuper)) {
-      out.push('<div style="margin-top:16px;border-top:1px solid var(--color-border);padding-top:12px;">'
-        + '<button class="btn btn-secondary btn-sm" onclick="ThesisUI.resendCertificate(\'' + _esc(rec.thesisId) + '\')">'
-        + '<i class="ti ti-certificate"></i> Resend certificate</button> '
-        + '<button class="btn btn-secondary btn-sm" onclick="ThesisUI.regenerateRecord(\'' + _esc(rec.thesisId) + '\')">'
-        + '<i class="ti ti-file-certificate"></i> New completion-record snapshot</button>'
-        + '</div>');
-    }
-
     // super_admin test cleanup: delete at any stage. Server-enforced too.
     if (isSuper) {
       out.push('<div style="margin-top:16px;border-top:1px solid var(--color-border);padding-top:12px;">'
         + '<button class="btn btn-danger btn-sm" onclick=\'ThesisUI.deleteThesis(' + _json({ id: rec.thesisId, title: rec.title, student: rec.studentName }) + ')\'>'
         + '<i class="ti ti-trash"></i> Delete thesis</button>'
-        + ' <span class="text-muted" style="font-size:12px;">Removes the record, its tasks, its PDF, and its archived reports. Irreversible.</span>'
+        + ' <span class="text-muted" style="font-size:12px;">Removes the record, its tasks, and its PDF. Irreversible.</span>'
         + '</div>');
     }
 
@@ -755,8 +728,7 @@ window.ThesisUI = (() => {
       + '<label class="form-label">Faculty reader (honors)</label>'
       + '<select class="form-select" id="sp-reader"></select></div>'
       + '<div class="form-group"><label class="form-label">Comments <span class="required">*</span></label>'
-      + '<textarea class="form-textarea" id="sp-comments"></textarea>'
-      + '<div class="form-hint"><i class="ti ti-eye"></i> If the thesis is accepted, your comments are shared with the student in their acceptance email. Write them for the student as well as the department.</div></div>'
+      + '<textarea class="form-textarea" id="sp-comments"></textarea></div>'
       + '<div class="form-actions">'
       + '<button class="btn btn-primary" id="sp-save" onclick="ThesisUI.submitSponsor(\'' + _esc(rec.thesisId) + '\')"><i class="ti ti-check"></i> Record decision</button>'
       + '<button class="btn btn-danger" onclick="ThesisUI.returnThesis(\'' + _esc(rec.thesisId) + '\')"><i class="ti ti-arrow-back-up"></i> Return to student</button>'
@@ -765,14 +737,13 @@ window.ThesisUI = (() => {
 
   function _readerPanel(rec) {
     return '<div class="card" style="margin-top:8px;">'
-      + '<div class="card-title" style="font-size:14px;"><i class="ti ti-award"></i> Honors decision</div>'
-      + '<div class="form-group"><label class="form-label">Decision</label>'
-      + '<select class="form-select" id="rd-decision"><option value="">— Select —</option><option>Honors approved</option><option>Honors denied</option></select></div>'
+      + '<div class="card-title" style="font-size:14px;"><i class="ti ti-award"></i> Honors review</div>'
+      + '<p class="text-muted" style="font-size:13px;margin-top:0;">Approve the honors designation, or return the thesis to the sponsor '
+      + 'if you are not convinced it merits honors — the sponsor will re-decide.</p>'
       + '<div class="form-group"><label class="form-label">Comments <span class="required">*</span></label>'
-      + '<textarea class="form-textarea" id="rd-comments"></textarea>'
-      + '<div class="form-hint"><i class="ti ti-eye"></i> If you approve honors, your comments are shared with the student in their acceptance email. (A denial is never shown to the student.)</div></div>'
+      + '<textarea class="form-textarea" id="rd-comments"></textarea></div>'
       + '<div class="form-actions">'
-      + '<button class="btn btn-primary" id="rd-save" onclick="ThesisUI.submitReader(\'' + _esc(rec.thesisId) + '\')"><i class="ti ti-check"></i> Record honors decision</button>'
+      + '<button class="btn btn-primary" id="rd-save" onclick="ThesisUI.submitReader(\'' + _esc(rec.thesisId) + '\')"><i class="ti ti-award"></i> Approve honors</button>'
       + '<button class="btn btn-secondary" onclick="ThesisUI.returnToSponsor(\'' + _esc(rec.thesisId) + '\')"><i class="ti ti-arrow-back-up"></i> Return to sponsor</button>'
       + '</div>'
       + '</div>';
@@ -835,13 +806,11 @@ window.ThesisUI = (() => {
   }
 
   function submitReader(thesisId) {
-    const decision = document.getElementById('rd-decision').value;
-    if (!decision) { Toast.show('Choose a decision.', 'error'); return; }
     const comments = document.getElementById('rd-comments').value.trim();
-    if (!comments) { Toast.show('Comments are required with your honors decision.', 'error'); return; }
+    if (!comments) { Toast.show('Comments are required to approve honors.', 'error'); return; }
     FormHelper.setLoading('rd-save', true, 'Saving…');
-    App.call('thesis', 'readerDecision', { thesisId, decision, comments }, () => {
-      Toast.show('Honors decision recorded.', 'success'); closeModal(); _afterAction();
+    App.call('thesis', 'readerDecision', { thesisId, comments }, () => {
+      Toast.show('Honors approved.', 'success'); closeModal(); _afterAction();
     }, () => FormHelper.setLoading('rd-save', false));
   }
 
@@ -929,7 +898,6 @@ window.ThesisUI = (() => {
     addRegion, removeRegion,
     loadMine, loadQueue, loadSponsored, loadGradQueue, markDocViewed, remind, deleteThesis, open, closeModal,
     submitSponsor, submitReader, advisorComplete, returnThesis, returnToSponsor,
-    resendCertificate, regenerateRecord,
     _toggleReader,
   };
 
