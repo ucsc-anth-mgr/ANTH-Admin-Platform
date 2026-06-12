@@ -1,9 +1,15 @@
 // ============================================================
 // ThesisSettings.gs — UI-managed operational settings for Thesis
 // ============================================================
-// Currently holds a single setting, NOTIFY_ON_HANDOFF (whether the
-// module emails the next party at each workflow stage change). The
-// panel exists as the home for future UI-managed thesis settings.
+// Holds two settings:
+//   NOTIFY_ON_HANDOFF — whether the module emails the next party at
+//     each workflow stage change.
+//   SEND_CERTIFICATE  — whether an acceptance certificate is
+//     automatically emailed to the student when a thesis routes to
+//     final processing with a passing outcome. Gates AUTOMATIC
+//     issuance only: the advisor's explicit "Resend certificate"
+//     action passes force:true and sends regardless.
+// The panel is the home for future UI-managed thesis settings.
 //
 // Storage: a ThesisSettings tab (key/value) in the config spreadsheet.
 // The sheet is the source of truth, but if a key is missing or blank
@@ -24,11 +30,12 @@ const ThesisSettings = (() => {
 
   const HEADERS = ['Key', 'Value'];
   const KEY_NOTIFY = 'NOTIFY_ON_HANDOFF';
+  const KEY_CERT   = 'SEND_CERTIFICATE';
 
   /**
    * Effective settings: sheet value if present, else the CONFIG.THESIS
    * fallback. Returns booleans already coerced.
-   * @returns {{ notifyOnHandoff: boolean }}
+   * @returns {{ notifyOnHandoff: boolean, sendCertificate: boolean }}
    */
   function get() {
     const stored = _readMap();
@@ -38,17 +45,24 @@ const ThesisSettings = (() => {
           ? stored[KEY_NOTIFY]
           : (CONFIG.THESIS && CONFIG.THESIS.NOTIFY_ON_HANDOFF)
       ),
+      sendCertificate: _bool(
+        Object.prototype.hasOwnProperty.call(stored, KEY_CERT)
+          ? stored[KEY_CERT]
+          : (CONFIG.THESIS && CONFIG.THESIS.SEND_CERTIFICATE)
+      ),
     };
   }
 
   /**
    * Saves settings from the Admin panel.
-   * @param {Object} p - { notifyOnHandoff: boolean }
+   * @param {Object} p - { notifyOnHandoff: boolean, sendCertificate: boolean }
    */
   function save(p) {
     p = p || {};
-    const notify = (p.notifyOnHandoff === true || p.notifyOnHandoff === 'true');
-    _writeKey(KEY_NOTIFY, notify ? 'TRUE' : 'FALSE');
+    const notify   = (p.notifyOnHandoff === true || p.notifyOnHandoff === 'true');
+    const sendCert = (p.sendCertificate === true || p.sendCertificate === 'true');
+    _writeKey(KEY_NOTIFY, notify   ? 'TRUE' : 'FALSE');
+    _writeKey(KEY_CERT,   sendCert ? 'TRUE' : 'FALSE');
     return get();
   }
 
@@ -96,9 +110,9 @@ const ThesisSettings = (() => {
       sheet.appendRow(HEADERS);
       sheet.getRange(1, 1, 1, HEADERS.length).setFontWeight('bold').setBackground('#e8eaed');
       sheet.setFrozenRows(1);
-      // Seed from the current Config default so the sheet starts coherent.
-      const dflt = (CONFIG.THESIS && CONFIG.THESIS.NOTIFY_ON_HANDOFF) ? 'TRUE' : 'FALSE';
-      sheet.appendRow([KEY_NOTIFY, dflt]);
+      // Seed from the current Config defaults so the sheet starts coherent.
+      sheet.appendRow([KEY_NOTIFY, (CONFIG.THESIS && CONFIG.THESIS.NOTIFY_ON_HANDOFF) ? 'TRUE' : 'FALSE']);
+      sheet.appendRow([KEY_CERT,   (CONFIG.THESIS && CONFIG.THESIS.SEND_CERTIFICATE)  ? 'TRUE' : 'FALSE']);
     }
     return sheet;
   }

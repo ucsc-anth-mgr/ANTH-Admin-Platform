@@ -222,17 +222,17 @@ function getEventListeners() {
 }
 
 function testCertificateRender() {
-  const me = Session.getActiveUser().getEmail();   // needs a Users profile
+  const me = Session.getActiveUser().getEmail();
   const out = ThesisReports.issueCertificate({
-    ThesisID:        'TEST-CERT-001',
-    StudentEmail:    me,                            // certificate comes to YOU
-    SponsorEmail:    me,
+    ThesisID:        'TEST-CERT-003',
+    StudentEmail:    'anthwork@ucsc.edu',
+    SponsorEmail:    'fdeakin@ucsc.edu',
     SponsorDecision: 'Pass',
-    SponsorDecidedBy: me,
+    SponsorDecidedBy: 'fdeakin@ucsc.edu',
     SponsorDecidedAt: new Date(),
     Quarter: 'Spring',
     Year:    '2026',
-    Title:   'Ritual and memory in diaspora communities',
-  }, { force: true });                              // bypass the settings toggle
+    Title:   'LAYOUT TEST v2 — title passed through verbatim',
+  }, { force: true });
   Logger.log(JSON.stringify(out));
 }

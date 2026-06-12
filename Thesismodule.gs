@@ -34,6 +34,9 @@
 //   - Cross-cutting concerns go through platform services: Tasks for the
 //     attention queue, Notify for email, EventBus for fan-out, Auth for
 //     identity, DataService for sheet CRUD. No SpreadsheetApp here.
+//   - Documents (acceptance certificate, completion record) are composed
+//     by ThesisReports and rendered/archived by ReportService. Hooks here
+//     are log-and-continue: a document failure never blocks a decision.
 //   - Every privileged action allows super_admin.
 // ============================================================
 
@@ -324,6 +327,16 @@ const ThesisModule = (() => {
     updates.Stage = STAGE.PENDING_ADVISOR;
     DataService.update(CONFIG.SHEETS.THESIS, TAB, 'ThesisID', rec.ThesisID, updates);
     _routeToAdvisor(rec.ThesisID, rec, user);
+    // Acceptance certificate — Pass ONLY, never No Pass. Fresh read so the
+    // record carries the decision just written. Log-and-continue: a
+    // certificate failure must never block the decision ("Resend
+    // certificate" is the recovery path).
+    if (decision === SPONSOR.PASS) {
+      try {
+        const cert = ThesisReports.issueCertificate(_byId(rec.ThesisID));
+        if (!cert.sent) Logger.log('Certificate not sent for ' + rec.ThesisID + ': ' + cert.reason);
+      } catch (e) { Logger.log('Certificate issue failed for ' + rec.ThesisID + ': ' + e); }
+    }
     EventBus.emit('thesis.sponsor_decided',
       { thesisId: rec.ThesisID, decision: decision }, { user: user });
     return { thesisId: rec.ThesisID, stage: STAGE.PENDING_ADVISOR };
@@ -352,6 +365,13 @@ const ThesisModule = (() => {
       Stage: STAGE.PENDING_ADVISOR,
     });
     _routeToAdvisor(rec.ThesisID, rec, user);
+    // Acceptance certificate — both honors outcomes are a pass; the
+    // template handles the wording (denied → plain "Accepted", silent
+    // about the review). Log-and-continue as in sponsorDecision.
+    try {
+      const cert = ThesisReports.issueCertificate(_byId(rec.ThesisID));
+      if (!cert.sent) Logger.log('Certificate not sent for ' + rec.ThesisID + ': ' + cert.reason);
+    } catch (e) { Logger.log('Certificate issue failed for ' + rec.ThesisID + ': ' + e); }
     EventBus.emit('thesis.honors_decided',
       { thesisId: rec.ThesisID, decision: decision }, { user: user });
     return { thesisId: rec.ThesisID, stage: STAGE.PENDING_ADVISOR };
@@ -390,6 +410,15 @@ const ThesisModule = (() => {
     });
     const student = Auth.getProfile(rec.StudentEmail);
     const doneRec = _byId(rec.ThesisID);
+    // Internal completion record — approved path only (a No Pass close-out
+    // produces none, per department decision). doneRec is the post-update
+    // read, so the trail's final row (AdvisorProcessedBy/At) is populated.
+    // Append-only snapshot; log-and-continue so a report failure never
+    // blocks completion ("New completion-record snapshot" is the recovery).
+    if (approved) {
+      try { ThesisReports.archiveCompletionRecord(doneRec, user); }
+      catch (e) { Logger.log('Completion record failed for ' + rec.ThesisID + ': ' + e); }
+    }
     const doneHeading = 'Your ' + rec.Quarter + ' ' + rec.Year + ' senior thesis "' + rec.Title +
       '" has completed review. Outcome: ' + _outcomeSummary(rec) + '.';
     _notify(rec.StudentEmail, 'Your senior thesis has been processed',
@@ -488,7 +517,9 @@ const ThesisModule = (() => {
 
   /**
    * Permanently deletes a thesis: resolves its open tasks, trashes its
-   * Drive PDF (best-effort), and removes the sheet row. super_admin only.
+   * Drive PDF and its archived report documents (acceptance certificate,
+   * completion-record snapshots — files and Reports log rows, via
+   * ReportService), and removes the sheet row. super_admin only.
    * Built for cleaning up test submissions — irreversible, so the UI
    * confirms before calling. Audit-log entries are deliberately left
    * intact (append-only history).
@@ -509,6 +540,18 @@ const ThesisModule = (() => {
     if (fileId) {
       try { DriveApp.getFileById(fileId).setTrashed(true); }
       catch (err) { Logger.log('deleteThesis: could not trash file ' + fileId + ' (' + err + ')'); }
+    }
+
+    // Remove this thesis's archived documents (acceptance certificate and
+    // completion-record snapshots): Drive PDFs trashed, Reports log rows
+    // removed — via the platform service that owns the archive. Best-effort
+    // like the PDF above; a report-cleanup hiccup must not block deleting
+    // the record. Audit-log entries remain intact as ever.
+    try {
+      const n = ReportService.deleteArchived('thesis', rec.ThesisID);
+      if (n) Logger.log('deleteThesis: removed ' + n + ' archived report(s) for ' + rec.ThesisID);
+    } catch (err) {
+      Logger.log('deleteThesis: report cleanup failed for ' + rec.ThesisID + ' (' + err + ')');
     }
 
     const removed = DataService.remove(CONFIG.SHEETS.THESIS, TAB, 'ThesisID', rec.ThesisID);
@@ -617,6 +660,45 @@ const ThesisModule = (() => {
       _actionButtonHtml(rec.ThesisID, 'Re-review this thesis'));
     EventBus.emit('thesis.returned_to_sponsor', { thesisId: rec.ThesisID }, { user: user });
     return { thesisId: rec.ThesisID, stage: STAGE.SUBMITTED };
+  }
+
+
+  /**
+   * Re-sends the acceptance certificate to the student. Reuses the
+   * archived PDF (fetch-or-create); regenerates only if the Drive file is
+   * gone. force:true — an explicit resend by the advisor outranks the
+   * SEND_CERTIFICATE automation toggle. ThesisReports itself rejects
+   * theses that haven't reached a passing outcome.
+   * @param {Object} payload - { thesisId }
+   */
+  function resendCertificate(payload, user, roles) {
+    if (!_isUndergradAdvisor(user) && roles.indexOf('super_admin') === -1) {
+      throw new Error('Only the undergraduate advisor can resend a certificate.');
+    }
+    const rec = _byId(String((payload || {}).thesisId || '').trim());
+    if (!rec) throw new Error('Thesis not found.');
+    const out = ThesisReports.issueCertificate(rec, { force: true });
+    if (!out.sent) throw new Error('Certificate not sent: ' + (out.reason || 'unknown'));
+    return { thesisId: rec.ThesisID, sent: true, reused: out.reused };
+  }
+
+
+  /**
+   * Archives a fresh completion-record snapshot (append-only; earlier
+   * snapshots remain in the archive). Completed, approved theses only —
+   * ThesisReports rejects non-passing outcomes.
+   * @param {Object} payload - { thesisId }
+   */
+  function regenerateRecord(payload, user, roles) {
+    if (!_isUndergradAdvisor(user) && roles.indexOf('super_admin') === -1) {
+      throw new Error('Only the undergraduate advisor can regenerate a completion record.');
+    }
+    const rec = _byId(String((payload || {}).thesisId || '').trim());
+    if (!rec) throw new Error('Thesis not found.');
+    if (rec.Stage !== STAGE.COMPLETE) {
+      throw new Error('Completion records exist for completed theses only.');
+    }
+    return ThesisReports.archiveCompletionRecord(rec, user);
   }
 
 
@@ -1028,6 +1110,7 @@ const ThesisModule = (() => {
     listEligible, listCountries, submit, mySubmissions, sponsored, queue, get,
     sponsorDecision, readerDecision, advisorComplete, returnToStudent, returnToSponsor,
     gradQueue, remindResponsible, repairAdvisorTasks, deleteThesis,
+    resendCertificate, regenerateRecord,
   };
 
 })();

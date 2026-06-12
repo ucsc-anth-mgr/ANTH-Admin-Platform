@@ -46,7 +46,7 @@ const CONFIG = {
   //   without it; a broken id is logged and skipped, never fatal.
   // ORG_LINE: second line of the letterhead band.
   REPORTS: {
-    ARCHIVE_FOLDER_ID: '1BCWv3aBIYgPA5vBazU4DWki2XIV7-Wtu',
+    ARCHIVE_FOLDER_ID: '1h5jgba27YO5hUO4FiDkTlNln7eJvdu1_',
     LOGO_FILE_ID:      '1dzrvLQYF8rUmNBF4j3N28UXg8wVpSrY3',
     ORG_LINE:          'Department of Anthropology · UC Santa Cruz',
   },
@@ -92,7 +92,7 @@ const CONFIG = {
     // role (assign in Admin → Users), not a fixed address. These two
     // constants are retained only as a legacy reference and are no
     // longer read by the module.
-    UNDERGRAD_ADVISOR_EMAIL: 'advisor@ucsc.edu',
+    UNDERGRAD_ADVISOR_EMAIL: 'anthugra@ucsc.edu',
     UNDERGRAD_ADVISOR_NAME:  'Undergraduate Advisor',
     // Default for the UI-managed NOTIFY_ON_HANDOFF setting. ThesisSettings
     // reads this only as a fallback until a value is saved in Admin.

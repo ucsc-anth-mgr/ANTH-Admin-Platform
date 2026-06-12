@@ -235,36 +235,49 @@ const ThesisReports = (() => {
 
   function _certificateHtml(rec, student, sponsor) {
     const honors = _isHonors(rec);
-    const logo = ReportService.logoTag(56);
-    const badge = 'Accepted' + (honors ? ' with Honors' : '') + ' · ' + _esc(_term(rec));
+    const logo = ReportService.logoTag(72);
+    const badge = 'Accepted' + (honors ? ' with Honors' : '') + ' \u00B7 ' + _esc(_term(rec));
     const sponsorName = (sponsor && sponsor.name) || rec.SponsorEmail;
     const acceptedDate = Utilities.formatDate(
       new Date(_acceptedAt(rec)), Session.getScriptTimeZone(), 'MMMM d, yyyy');
 
+    // CONVERTER-TUNED LAYOUT. The Drive HTML→Doc converter has three
+    // behaviors this template designs around (learned from real output):
+    //   1. Table widths freeze at conversion time against the default
+    //      portrait page — ReportService re-stretches TOP-LEVEL tables to
+    //      the landscape page, so this is ONE table, with the double
+    //      border done as navy table border + gold cell border (no nested
+    //      tables, which would stay narrow and drift left).
+    //   2. Any border style on a cell becomes a full box — so no
+    //      border-top "signature lines"; the signature block is centered
+    //      stacked text instead.
+    //   3. align="center" on nested tables doesn't survive — so the
+    //      divider ornament and badge are styled TEXT, which centers
+    //      reliably, not boxed table cells.
+    // Vertical balance comes from explicit pt margins (no flex in Docs).
+    // Sizes below are tuned as a set: they total ≈525pt of vertical
+    // content against the 540pt printable height of the landscape page
+    // (792×612 minus 36pt margins), so the certificate fills the page
+    // without spilling to a second one. Scale them together, not singly.
     return '<html><body style="margin:0;font-family:Georgia,\'Times New Roman\',serif;">'
-      + '<table width="100%" cellpadding="0" cellspacing="0" style="border:3pt solid ' + NAVY + ';"><tr><td style="padding:4pt;">'
-      + '<table width="100%" cellpadding="0" cellspacing="0" style="border:1pt solid ' + GOLD + ';"><tr><td align="center" style="padding:26pt 44pt 20pt;">'
+      + '<table width="100%" border="0" cellpadding="0" cellspacing="0" style="border:3pt solid ' + NAVY + ';">'
+      + '<tr><td align="center" style="border:1.5pt solid ' + GOLD + ';padding:30pt 56pt 28pt;">'
       +   (logo ? '<div>' + logo + '</div>' : '')
-      +   '<div style="font-family:Arial,Helvetica,sans-serif;font-size:9pt;letter-spacing:2pt;color:' + NAVY + ';margin-top:8pt;">University of California, Santa Cruz</div>'
-      +   '<div style="font-family:Arial,Helvetica,sans-serif;font-size:8pt;letter-spacing:1pt;color:#666666;margin-top:2pt;">Department of Anthropology</div>'
-      +   '<table cellpadding="0" cellspacing="0" align="center" style="margin-top:10pt;"><tr><td style="background-color:' + GOLD + ';font-size:1pt;line-height:2pt;" width="50">&nbsp;</td></tr></table>'
-      +   '<div style="font-size:21pt;color:' + NAVY + ';margin-top:10pt;">Certificate of Completion</div>'
-      +   '<div style="font-size:10pt;color:#555555;font-style:italic;margin-top:12pt;">This certifies that</div>'
-      +   '<div style="font-size:22pt;color:#1a1a1a;margin-top:4pt;">' + _esc((student && student.name) || rec.StudentEmail) + '</div>'
-      +   '<div style="font-size:10pt;color:#555555;font-style:italic;margin-top:8pt;">has successfully completed and been granted acceptance of the senior thesis</div>'
-      +   '<div style="font-size:12pt;color:#1a1a1a;font-style:italic;margin-top:6pt;">&ldquo;' + _esc(rec.Title) + '&rdquo;</div>'
-      +   '<table cellpadding="0" cellspacing="0" align="center" style="margin-top:10pt;"><tr>'
-      +     '<td style="background-color:#fdf6dd;border:0.5pt solid ' + GOLD + ';padding:4pt 14pt;font-family:Arial,Helvetica,sans-serif;font-size:9pt;color:' + NAVY + ';">' + badge + '</td>'
-      +   '</tr></table>'
-      +   '<table width="100%" cellpadding="0" cellspacing="0" style="margin-top:30pt;"><tr>'
-      +     '<td align="left" width="40%" style="font-size:10pt;color:#333333;border-top:0.5pt solid #999999;padding-top:3pt;">' + _esc(sponsorName)
-      +       '<br><span style="font-family:Arial,Helvetica,sans-serif;font-size:7pt;color:#777777;">Faculty sponsor</span></td>'
-      +     '<td width="20%">&nbsp;</td>'
-      +     '<td align="right" width="40%" style="font-size:10pt;color:#333333;border-top:0.5pt solid #999999;padding-top:3pt;">' + _esc(acceptedDate)
-      +       '<br><span style="font-family:Arial,Helvetica,sans-serif;font-size:7pt;color:#777777;">Date of acceptance</span></td>'
-      +   '</tr></table>'
-      +   '<div style="font-family:Arial,Helvetica,sans-serif;font-size:6.5pt;color:#999999;margin-top:14pt;">Issued via the UCSC Anthropology Portal · Thesis ' + _esc(rec.ThesisID) + '</div>'
-      + '</td></tr></table>'
+      +   '<div style="font-family:Arial,Helvetica,sans-serif;font-size:11pt;letter-spacing:2.5pt;color:' + NAVY + ';margin-top:10pt;">University of California, Santa Cruz</div>'
+      +   '<div style="font-family:Arial,Helvetica,sans-serif;font-size:9.5pt;letter-spacing:1.5pt;color:#666666;margin-top:3pt;">Department of Anthropology</div>'
+      +   '<div style="font-size:11pt;color:' + GOLD + ';margin-top:10pt;">&#9670;</div>'
+      +   '<div style="font-size:28pt;color:' + NAVY + ';margin-top:10pt;">Certificate of Completion</div>'
+      +   '<div style="font-size:12pt;color:#555555;font-style:italic;margin-top:16pt;">This certifies that</div>'
+      +   '<div style="font-size:30pt;color:#1a1a1a;margin-top:6pt;">' + _esc((student && student.name) || rec.StudentEmail) + '</div>'
+      +   '<div style="font-size:12pt;color:#555555;font-style:italic;margin-top:10pt;">has successfully completed and been granted acceptance of the senior thesis</div>'
+      +   '<div style="font-size:16pt;color:#1a1a1a;font-style:italic;margin-top:8pt;">&ldquo;' + _esc(rec.Title) + '&rdquo;</div>'
+      +   '<div style="font-family:Arial,Helvetica,sans-serif;font-size:12pt;letter-spacing:1.5pt;color:' + NAVY + ';margin-top:14pt;">' + badge + '</div>'
+      +   '<div style="font-size:11pt;color:' + GOLD + ';margin-top:8pt;">&#9670;</div>'
+      +   '<div style="font-size:14pt;color:#1a1a1a;margin-top:34pt;">' + _esc(sponsorName) + '</div>'
+      +   '<div style="font-family:Arial,Helvetica,sans-serif;font-size:8.5pt;color:#777777;margin-top:2pt;">Faculty sponsor</div>'
+      +   '<div style="font-size:12pt;color:#333333;margin-top:12pt;">' + _esc(acceptedDate) + '</div>'
+      +   '<div style="font-family:Arial,Helvetica,sans-serif;font-size:8.5pt;color:#777777;margin-top:2pt;">Date of acceptance</div>'
+      +   '<div style="font-family:Arial,Helvetica,sans-serif;font-size:7.5pt;color:#999999;margin-top:24pt;">Issued via the UCSC Anthropology Portal \u00B7 Thesis ' + _esc(rec.ThesisID) + '</div>'
       + '</td></tr></table>'
       + '</body></html>';
   }
@@ -410,18 +423,59 @@ const ThesisReports = (() => {
       : 'Your faculty sponsor has formally recommended the thesis for acceptance — the '
         + 'culmination of sustained, serious work. ';
 
-    const nextSteps = 'Nothing further is needed from you. The undergraduate advisor will '
-      + 'complete final processing and enter the thesis milestone into your Degree Progress '
-      + 'Report. You can view your thesis record in the portal at any time.';
+    // No portal link in this email — students are deactivated in the
+    // portal after graduation, so a "view your record" button would
+    // eventually point somewhere they can't reach. The certificate
+    // attachment is the durable artifact; the email stands alone.
+    const nextSteps = 'Nothing further is needed from you at this time. The undergraduate '
+      + 'advisor will complete final processing and enter the thesis milestone into your '
+      + 'Degree Progress Report.';
 
-    const link = _deepLink(rec.ThesisID);
+    // Reviewer comments shared with the student — STRICT rule (department
+    // decision): comments appear only on paths with nothing to reveal.
+    //   • Direct sponsor Pass            → sponsor comments.
+    //   • Honors approved                → sponsor + reader comments.
+    //   • Honors DENIED                  → NO comments at all. The reader's
+    //     are obviously withheld, but the sponsor's are too — a sponsor who
+    //     recommended honors usually says so in their comments, which would
+    //     betray the review on the denied path. Total silence, no drama.
+    // NOTE the policy implication: this makes decision comments
+    // student-facing on acceptance. The comment forms in thesis.html warn
+    // reviewers accordingly.
+    const remarks = [];
+    const shareComments = !rec.HonorsDecision || honors;   // denied → false
+    if (shareComments && rec.SponsorComments) {
+      remarks.push({ who: 'Faculty sponsor \u2014 ' + sponsorName, text: rec.SponsorComments });
+    }
+    if (shareComments && honors && rec.ReaderComments) {
+      remarks.push({ who: 'Honors reader \u2014 ' + _personLabel(rec.ReaderDecidedBy || rec.ReaderEmail),
+                     text: rec.ReaderComments });
+    }
+
+    const remarksText = remarks.length
+      ? '\nWhat your reviewers said:\n'
+        + remarks.map(c => '\u2014 ' + c.who + ':\n"' + c.text + '"').join('\n\n') + '\n'
+      : '';
+
+    const remarksHtml = remarks.length
+      ? '<p style="margin:0 0 6px;color:#1a1a1a;"><b>What your reviewers said</b></p>'
+        + remarks.map(c =>
+            '<table width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 10px;"><tr>'
+          + '<td width="3" style="background-color:' + GOLD + ';">&nbsp;</td>'
+          + '<td style="background-color:#f4f6f8;padding:8px 14px;">'
+          +   '<div style="font-size:11px;color:#888888;">' + _esc(c.who) + '</div>'
+          +   '<div style="color:#333333;margin-top:3px;font-style:italic;">&ldquo;' + _esc(c.text) + '&rdquo;</div>'
+          + '</td>'
+          + '</tr></table>').join('')
+        + '<div style="margin:0 0 6px;"></div>'
+      : '';
 
     const text = 'Congratulations, ' + firstName + '!\n\n'
       + 'Your senior thesis has been formally accepted by the Department of Anthropology:\n\n'
       + '"' + rec.Title + '"\n' + badge + '\n\n'
-      + praise + 'Your certificate of completion is attached to this email; it\'s yours to keep and share.\n\n'
-      + 'What happens next: ' + nextSteps + '\n'
-      + (link ? '\nView your thesis record: ' + link + '\n' : '')
+      + praise + 'Your certificate of completion is attached to this email; it\'s yours to keep and share.\n'
+      + remarksText
+      + '\nWhat happens next: ' + nextSteps + '\n'
       + '\nWarm congratulations from all of us in the department,\nUCSC Anthropology';
 
     const html = '<div style="font-family:Arial,Helvetica,sans-serif;color:#222222;font-size:13px;line-height:1.65;">'
@@ -437,13 +491,9 @@ const ThesisReports = (() => {
       +   '</tr></table>'
       +   '<p style="margin:0 0 12px;">' + praise
       +     'Your certificate of completion is attached to this email; it&rsquo;s yours to keep and share.</p>'
+      +   remarksHtml
       +   '<p style="margin:0 0 6px;color:#1a1a1a;"><b>What happens next</b></p>'
       +   '<p style="margin:0 0 16px;">' + nextSteps + '</p>'
-      +   (link
-          ? '<table cellpadding="0" cellspacing="0" style="margin:0 0 18px;"><tr><td style="background-color:' + NAVY + ';">'
-            + '<a href="' + link + '" style="display:inline-block;padding:9px 22px;color:#ffffff;font-size:13px;text-decoration:none;">View your thesis record</a>'
-            + '</td></tr></table>'
-          : '')
       +   '<p style="margin:0;color:#444444;">Warm congratulations from all of us in the department,<br>UCSC Anthropology</p>'
       + '</div>'
       + '<div style="margin-top:16px;font-size:11px;color:#888888;">'
@@ -456,19 +506,14 @@ const ThesisReports = (() => {
       subject: subject,
       text: text,
       html: html,
-      senderName: sponsorName + ' (UCSC Anthropology)',
+      // Sender DISPLAY name (the address is always the deploying portal
+      // account). Department decision: the celebration comes from the
+      // Anthropology Undergraduate Advisor — the office that owns final
+      // processing and the Reply-To — not the individual sponsor, whose
+      // name still signs the certificate itself.
+      senderName: 'Anthropology Undergraduate Advisor',
     };
   }
-
-  /** Portal deep link to the thesis record (mirrors ThesisModule's). */
-  function _deepLink(thesisId) {
-    let base = '';
-    try { base = ScriptApp.getService().getUrl() || ''; } catch (e) { base = ''; }
-    if (!base) return '';
-    const sep = base.indexOf('?') === -1 ? '?' : '&';
-    return base + sep + 'page=thesis&focus=' + encodeURIComponent(thesisId);
-  }
-
 
   return { issueCertificate, archiveCompletionRecord };
 

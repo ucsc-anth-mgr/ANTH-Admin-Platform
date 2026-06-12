@@ -265,12 +265,18 @@
         <strong>staff_undergrad</strong> role (assign it in Users) — not set here.
       </p>
       <div class="form-group">
-        <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
-          <input type="checkbox" id="th-notify-handoff"> Email the next party at each workflow handoff
-        </label>
-        <div class="form-hint">When off, the module advances theses silently (no notification emails).</div>
-      </div>
-      <div class="form-actions">
+    <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
+      <input type="checkbox" id="th-notify-handoff"> Email the next party at each workflow handoff
+    </label>
+    <div class="form-hint">When off, the module advances theses silently (no notification emails).</div>
+  </div>
+  <div class="form-group">
+    <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
+      <input type="checkbox" id="th-send-cert"> Email an acceptance certificate to the student when a thesis passes to final processing
+    </label>
+    <div class="form-hint">The advisor's explicit "Resend certificate" always works, even when this is off.</div>
+  </div>
+  <div class="form-actions">
         <button class="btn btn-primary" id="save-thesis-settings-btn" onclick="AdminUI.saveThesisSettings()"><i class="ti ti-device-floppy"></i> Save settings</button>
       </div>
     </div>
@@ -903,7 +909,19 @@ window.AdminUI = (() => {
     App.call('admin', 'getThesisSettings', {}, s => {
       if (!document.getElementById('th-notify-handoff')) return;
       document.getElementById('th-notify-handoff').checked = !!(s && s.notifyOnHandoff);
+      const cert = document.getElementById('th-send-cert');
+      if (cert) cert.checked = !!(s && s.sendCertificate);
     });
+  }
+
+  function saveThesisSettings() {
+    const notifyOnHandoff = document.getElementById('th-notify-handoff').checked;
+    const sendCertificate = document.getElementById('th-send-cert').checked;
+    FormHelper.setLoading('save-thesis-settings-btn', true, 'Saving…');
+    App.call('admin', 'saveThesisSettings', { notifyOnHandoff, sendCertificate }, () => {
+      FormHelper.setLoading('save-thesis-settings-btn', false);
+      Toast.show('Thesis settings saved.', 'success');
+    }, () => FormHelper.setLoading('save-thesis-settings-btn', false));
   }
 
   function saveThesisSettings() {

@@ -183,6 +183,34 @@ const ReportService = (() => {
     return DriveApp.getFileById(id).getBlob();
   }
 
+  /**
+   * Deletes every archived report for (module, sourceId): trashes the
+   * Drive PDFs (best-effort) and removes the matching Reports log rows.
+   * Built for owning-module record deletion (e.g. thesis test cleanup)
+   * so the archive never holds documents for records that no longer
+   * exist. Requires a non-empty sourceId — there is deliberately no way
+   * to bulk-delete a module's whole archive through this API.
+   * @returns {number} log rows removed
+   */
+  function deleteArchived(module, sourceId) {
+    const sid = String(sourceId || '').trim();
+    if (!sid) return 0;
+    const matches = listArchived(module).filter(r => String(r.SourceID) === sid);
+    let removed = 0;
+    matches.forEach(r => {
+      if (r.DriveFileID) {
+        try { DriveApp.getFileById(r.DriveFileID).setTrashed(true); }
+        catch (e) { Logger.log('ReportService.deleteArchived: could not trash ' + r.DriveFileID + ' (' + e + ')'); }
+      }
+      try {
+        if (DataService.remove(CONFIG.SHEETS.PLATFORM, CONFIG.TABS.REPORTS, 'ReportID', r.ReportID)) removed++;
+      } catch (e) {
+        Logger.log('ReportService.deleteArchived: could not remove log row ' + r.ReportID + ' (' + e + ')');
+      }
+    });
+    return removed;
+  }
+
 
   // ── Public: template helpers (offered, not forced) ─────────
 
@@ -286,6 +314,36 @@ const ReportService = (() => {
       body.setMarginTop(PAGE.MARGIN).setMarginBottom(PAGE.MARGIN)
           .setMarginLeft(PAGE.MARGIN).setMarginRight(PAGE.MARGIN);
 
+      // Stretch top-level tables to the printable width. The HTML→Doc
+      // converter fixes table column widths against the DEFAULT page
+      // (portrait, 1" margins) at conversion time, so without this step
+      // landscape content occupies only the upper-left of the page and
+      // even portrait letterhead bands stop short of the 0.5" margins.
+      // Columns are scaled proportionally; nested tables are left alone
+      // (they size to content). Templates should avoid nested layout
+      // tables for anything that must span the page.
+      const printable = ((opts.orientation === 'landscape') ? PAGE.LONG : PAGE.SHORT)
+                        - (2 * PAGE.MARGIN);
+      for (let i = 0; i < body.getNumChildren(); i++) {
+        const child = body.getChild(i);
+        if (child.getType() !== DocumentApp.ElementType.TABLE) continue;
+        const t = child.asTable();
+        if (!t.getNumRows()) continue;
+        const cols = t.getRow(0).getNumCells();
+        let total = 0;
+        const widths = [];
+        for (let c = 0; c < cols; c++) {
+          const w = t.getColumnWidth(c) || 0;
+          widths.push(w);
+          total += w;
+        }
+        for (let c = 0; c < cols; c++) {
+          t.setColumnWidth(c, total > 0
+            ? Math.max(18, (widths[c] / total) * printable)
+            : printable / cols);
+        }
+      }
+
       if (opts.footerText) {
         const footer = doc.getFooter() || doc.addFooter();
         const para = footer.appendParagraph(String(opts.footerText));
@@ -383,6 +441,6 @@ const ReportService = (() => {
   }
 
 
-  return { generate, findArchived, listArchived, fetchPdf, logoTag, escapeHtml, formatStamp };
+  return { generate, findArchived, listArchived, fetchPdf, deleteArchived, logoTag, escapeHtml, formatStamp };
 
 })();
