@@ -167,6 +167,7 @@ function getModuleHandler(name) {
     SubmissionsModule: SubmissionsModule,
     UserManagerModule: UserManagerModule,
     ThesisModule:      ThesisModule,
+    TranscriptModule:  TranscriptModule,
     // HRModule:       HRModule,
   };
   if (!handlers[name]) throw new Error('Handler not found: ' + name);
@@ -179,7 +180,7 @@ function getModuleHandler(name) {
  * Used by the Module Manager to validate sheet entries.
  */
 function getRegisteredHandlers() {
-  return ['AdminModule', 'SubmissionsModule', 'UserManagerModule', 'ThesisModule'];
+  return ['AdminModule', 'SubmissionsModule', 'UserManagerModule', 'ThesisModule', 'TranscriptModule'];
 }
 
 
@@ -218,6 +219,43 @@ function getRegisteredHandlers() {
 function getEventListeners() {
   return {
     // (append event -> listener entries here as modules ship)
+  };
+}
+
+
+/**
+ * SCHEDULED JOB REGISTRY — append-only, mirrors getEventListeners().
+ *
+ * Maps a frequency to the jobs the Scheduler service runs on that
+ * cadence. This is the ONE place recurring jobs are wired. A module adds
+ * a scheduled job by ADDING an entry here — never by creating its own
+ * trigger. The platform installs a single trigger per frequency
+ * (installScheduledTriggers(), run once from the editor) that fans out
+ * to every job registered below.
+ *
+ * Shape:
+ *   { daily: [ { name: 'LabelForLogs', fn: SomeModule.someDailyJob }, ... ] }
+ *
+ * Each job fn is called as fn(context), where context carries
+ * { frequency, runAt }. A job that throws is logged and audited by
+ * Scheduler, then skipped — it can never break the other jobs.
+ *
+ * Read lazily by Scheduler on run (NOT at file-load time), so .gs
+ * evaluation order does not matter; every handler object referenced
+ * below is fully defined by the time a run actually happens.
+ *
+ * Supported frequencies are Scheduler.FREQUENCIES (currently: daily).
+ * Example:
+ *
+ *   return {
+ *     daily: [
+ *       { name: 'Transcript:dailyDigest', fn: TranscriptModule.dailyDigest },
+ *     ],
+ *   };
+ */
+function getScheduledJobs() {
+  return {
+    // (append frequency -> job entries here as modules ship)
   };
 }
 

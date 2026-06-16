@@ -1,0 +1,276 @@
+<!-- transcript.html — Transcript module UI (Layer 1: admin articulation sync) -->
+<!-- Server-rendered: currentUser and userRoles are available as template vars. -->
+<!-- Admin-only screen: operate the ASSIST sync, watch freshness, and review -->
+<!-- the flagged (non-1:1) articulations. Advisors look up articulations on -->
+<!-- assist.org directly; this screen is reference-data operations only. -->
+
+<? var _roles = JSON.parse(userRoles); ?>
+<? var _canSync = _roles.includes('super_admin') || _roles.includes('staff'); ?>
+
+<div id="transcript-module">
+
+  <!-- ── Review list (flagged, non-1:1) ─────────────── -->
+  <div class="card" style="margin-top:20px;">
+    <div class="card-title" style="justify-content:space-between;">
+      <span style="display:flex;align-items:center;gap:8px;">
+        <i class="ti ti-flag"></i> Needs review
+      </span>
+      <button class="btn btn-secondary btn-sm" onclick="TranscriptUI.loadReview()" title="Refresh">
+        <i class="ti ti-refresh"></i>
+      </button>
+    </div>
+    <p class="text-sm text-muted" style="margin-bottom:12px;">
+      Equivalencies ASSIST did not express as a single one-to-one match — for
+      example several courses combined, or a choice between courses. Confirm
+      these against the agreement on assist.org.
+    </p>
+    <div id="ts-review">
+      <div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>
+    </div>
+  </div>
+
+  <!-- ── Sync panel ─────────────────────────────────── -->
+  <div class="card">
+    <div class="card-title" style="justify-content:space-between;">
+      <span style="display:flex;align-items:center;gap:8px;">
+        <i class="ti ti-refresh"></i> Articulation sync
+      </span>
+      <span id="ts-freshness" class="text-sm text-muted">Checking…</span>
+    </div>
+
+    <p class="text-sm text-muted" style="margin-bottom:14px;">
+      Pulls UCSC Anthropology course equivalencies (ANTH&nbsp;1, 2, 3) from
+      ASSIST for every California community college with a UCSC agreement.
+      Clean one-to-one matches are stored as trusted; anything ambiguous is
+      sent to the review list above.
+    </p>
+
+    <? if (_canSync) { ?>
+    <div class="flex gap-2 items-center" style="flex-wrap:wrap;">
+      <div class="form-group" style="margin:0;">
+        <label class="form-label" for="ts-year" style="margin-bottom:4px;">Catalog year</label>
+        <select class="form-select" id="ts-year" style="width:auto;"></select>
+      </div>
+      <button class="btn btn-primary" id="ts-sync-btn" onclick="TranscriptUI.sync()" style="align-self:flex-end;">
+        <i class="ti ti-download"></i> Sync from ASSIST
+      </button>
+    </div>
+    <p class="text-sm text-muted" style="margin-top:10px;margin-bottom:0;">
+      Syncing replaces the selected year's articulations; other years are kept.
+    </p>
+    <? } else { ?>
+    <div class="empty-state" style="padding:18px;">
+      <i class="ti ti-lock" style="font-size:24px;"></i>
+      <p style="margin-top:6px;">Only staff and administrators can run the sync.</p>
+    </div>
+    <? } ?>
+
+    <!-- Sync run report (populated after a sync) -->
+    <div id="ts-report" style="margin-top:16px;"></div>
+  </div>
+
+  <!-- ── Stored summary ─────────────────────────────── -->
+  <div class="card">
+    <div class="card-title"><i class="ti ti-database"></i> Stored articulations</div>
+    <div id="ts-summary">
+      <div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+window.TranscriptUI = (() => {
+
+  var _years = [];
+  var _defaultYearId = null;
+
+  // Local HTML-escape (App._esc is private to the shell, not exported).
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  function init() {
+    _loadYears();
+    loadSummary();
+    loadReview();
+  }
+
+  // ── Catalog years + freshness ───────────────────────────
+  function _loadYears() {
+    App.call('transcript', 'listAcademicYears', {}, res => {
+      _years = res.years || [];
+      _defaultYearId = res.defaultId;
+      var sel = document.getElementById('ts-year');
+      if (sel) {
+        sel.innerHTML = _years.map(function (y) {
+          return '<option value="' + y.id + '"' +
+            (y.id === _defaultYearId ? ' selected' : '') + '>' + esc(y.code) + '</option>';
+        }).join('');
+      }
+      _refreshFreshness();
+    });
+  }
+
+  // Compares stored years against the years ASSIST offers, and nudges if a
+  // newer catalog year is available than anything stored. Never auto-syncs.
+  function _refreshFreshness() {
+    App.call('transcript', 'getSummary', {}, sum => {
+      var el = document.getElementById('ts-freshness');
+      if (!el) return;
+      var storedYears = Object.keys(sum.years || {});
+      if (!storedYears.length) {
+        el.innerHTML = '<span style="color:var(--color-danger);">Never synced</span>';
+        return;
+      }
+      // Latest stored year code, and the latest year ASSIST offers.
+      storedYears.sort();
+      var latestStored = storedYears[storedYears.length - 1];
+      var latestOffered = _years.length ? _years[_years.length - 1].code : latestStored;
+      if (latestOffered > latestStored) {
+        el.innerHTML = '<span style="color:var(--color-danger);">' +
+          esc(latestOffered) + ' is available — last synced ' +
+          esc(latestStored) + '</span>';
+      } else {
+        el.textContent = 'Synced for ' + latestStored;
+      }
+    });
+  }
+
+  // ── Sync ────────────────────────────────────────────────
+  function sync() {
+    var sel = document.getElementById('ts-year');
+    var yearId = sel ? Number(sel.value) : _defaultYearId;
+    var yearCode = '';
+    _years.forEach(function (y) { if (y.id === yearId) yearCode = y.code; });
+
+    if (!confirm('Sync articulations for ' + yearCode + '? This replaces the ' +
+                 'stored rows for that year (other years are kept).')) return;
+
+    var btn = document.getElementById('ts-sync-btn');
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="ti ti-loader"></i> Syncing…'; }
+    var report = document.getElementById('ts-report');
+    if (report) {
+      report.innerHTML = '<div class="module-loading"><div class="spinner"></div>' +
+        '<span>Contacting ASSIST — this can take a minute…</span></div>';
+    }
+
+    App.call('transcript', 'syncArticulations', { academicYearId: yearId, academicYearCode: yearCode },
+      function (res) {
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="ti ti-download"></i> Sync from ASSIST'; }
+        Toast.show('Sync complete: ' + res.trustedRowCount + ' trusted, ' +
+                   res.flaggedRowCount + ' to review.', 'success');
+        _renderReport(res);
+        loadSummary();
+        loadReview();
+        _refreshFreshness();
+      },
+      function () {
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="ti ti-download"></i> Sync from ASSIST'; }
+        if (report) {
+          report.innerHTML = '<div class="empty-state" style="padding:18px;">' +
+            '<i class="ti ti-alert-triangle" style="font-size:24px;color:var(--color-danger);"></i>' +
+            '<p style="margin-top:6px;">Sync failed. Stored articulations are unchanged. ' +
+            'Try again, or check that ASSIST is reachable.</p></div>';
+        }
+      });
+  }
+
+  function _renderReport(r) {
+    var el = document.getElementById('ts-report');
+    if (!el) return;
+    var without = (r.collegesWithoutAnthroAgreement || []);
+    var fails = (r.fetchFailures || []);
+
+    var html = '<div class="card" style="border:1px solid var(--color-border);box-shadow:none;margin:0;">' +
+      '<div style="font-weight:600;margin-bottom:8px;">Sync report — ' + esc(r.academicYearCode) + '</div>' +
+      '<div class="text-sm" style="margin-bottom:4px;">' +
+        'Colleges checked: <strong>' + r.institutionsChecked + '</strong>' +
+        ' &nbsp;·&nbsp; with an Anthropology agreement: <strong>' +
+        (r.collegesWithAnthroAgreement || []).length + '</strong>' +
+      '</div>' +
+      '<div class="text-sm" style="margin-bottom:4px;">' +
+        'Trusted equivalencies: <strong>' + r.trustedRowCount + '</strong>' +
+        ' &nbsp;·&nbsp; sent to review: <strong>' + r.flaggedRowCount + '</strong>' +
+      '</div>';
+
+    if (without.length) {
+      html += '<details style="margin-top:8px;"><summary class="text-sm text-muted">' +
+        without.length + ' college(s) with no Anthropology agreement</summary>' +
+        '<div class="text-sm text-muted" style="margin-top:6px;">' +
+        without.map(function (c) { return esc(c); }).join(', ') + '</div></details>';
+    }
+    if (fails.length) {
+      html += '<details style="margin-top:8px;" open><summary class="text-sm" ' +
+        'style="color:var(--color-danger);">' + fails.length + ' fetch failure(s)</summary>' +
+        '<div class="text-sm" style="margin-top:6px;">' +
+        fails.map(function (f) { return esc(f.college) + ': ' + esc(f.error); }).join('<br>') +
+        '</div></details>';
+    }
+    html += '</div>';
+    el.innerHTML = html;
+  }
+
+  // ── Stored summary ──────────────────────────────────────
+  function loadSummary() {
+    App.call('transcript', 'getSummary', {}, sum => {
+      var el = document.getElementById('ts-summary');
+      if (!el) return;
+      var years = sum.years || {};
+      var codes = Object.keys(years).sort();
+      if (!codes.length) {
+        el.innerHTML = '<div class="empty-state" style="padding:20px;">' +
+          '<i class="ti ti-inbox" style="font-size:28px;display:block;margin-bottom:8px;"></i>' +
+          'No articulations stored yet. Run a sync to populate them.</div>';
+        return;
+      }
+      var rows = codes.map(function (code) {
+        var y = years[code];
+        return '<tr><td>' + esc(code) + '</td>' +
+          '<td style="text-align:right;">' + y.trusted + '</td>' +
+          '<td style="text-align:right;">' + y.flagged + '</td></tr>';
+      }).join('');
+      el.innerHTML =
+        '<table class="data-table" style="width:100%;">' +
+        '<thead><tr><th>Catalog year</th>' +
+        '<th style="text-align:right;">Trusted</th>' +
+        '<th style="text-align:right;">To review</th></tr></thead>' +
+        '<tbody>' + rows + '</tbody></table>';
+    });
+  }
+
+  // ── Review list ─────────────────────────────────────────
+  function loadReview() {
+    var el = document.getElementById('ts-review');
+    if (el) el.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
+    App.call('transcript', 'listReview', {}, function (rows) {
+      if (!el) return;
+      if (!rows || !rows.length) {
+        el.innerHTML = '<div class="empty-state" style="padding:20px;">' +
+          '<i class="ti ti-circle-check" style="font-size:28px;display:block;margin-bottom:8px;' +
+          'color:var(--color-success);"></i>Nothing to review.</div>';
+        return;
+      }
+      var body = rows.map(function (r) {
+        return '<tr>' +
+          '<td>' + esc(r.SendingCollege || '') + '</td>' +
+          '<td>' + esc((r.ReceivingPrefix || '') + ' ' + (r.ReceivingNumber || '')) + '</td>' +
+          '<td>' + esc(r.Reason || '') + '</td>' +
+          '<td>' + esc(r.CatalogYear || '') + '</td>' +
+        '</tr>';
+      }).join('');
+      el.innerHTML =
+        '<table class="data-table" style="width:100%;">' +
+        '<thead><tr><th>College</th><th>UCSC course</th><th>Why</th><th>Year</th></tr></thead>' +
+        '<tbody>' + body + '</tbody></table>';
+    });
+  }
+
+  return { init: init, sync: sync, loadSummary: loadSummary, loadReview: loadReview };
+
+})();
+
+TranscriptUI.init();
+</script>

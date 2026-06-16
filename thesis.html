@@ -6,7 +6,7 @@
   <!-- Tab bar (role-aware). Students submit and track; reviewers see their
        queue and sponsorship history. Keep the role lists below in sync with
        the _canReview/_isStudent constants in the controller script. -->
-  <div class="module-tabs">
+  <div class="module-tabs" role="tablist" aria-label="Senior Thesis sections">
     <? var roles = JSON.parse(userRoles); ?>
     <? var canReview = false; ?>
     <? ['super_admin','senate_faculty','lecturer','staff','staff_undergrad'].forEach(function(r){ if (roles.includes(r)) canReview = true; }); ?>
@@ -14,34 +14,34 @@
     <? if (isStudent) { ?>
     <!-- Hidden by default: revealed by init() only when the student has no
          existing thesis, so returning students never see it flash in. -->
-    <button class="module-tab" data-tab="submit" id="tab-btn-submit" style="display:none;" onclick="ThesisUI.switchTab('submit')">
+    <button class="module-tab" role="tab" aria-selected="false" data-tab="submit" id="tab-btn-submit" style="display:none;" onclick="ThesisUI.switchTab('submit')">
       <i class="ti ti-file-upload"></i> Submit a thesis
     </button>
-    <button class="module-tab" data-tab="mine" onclick="ThesisUI.switchTab('mine')">
+    <button class="module-tab" role="tab" aria-selected="false" data-tab="mine" onclick="ThesisUI.switchTab('mine')">
       <i class="ti ti-list"></i> My theses
     </button>
     <? } ?>
     <? if (canReview) { ?>
-    <button class="module-tab" data-tab="queue" onclick="ThesisUI.switchTab('queue')">
+    <button class="module-tab" role="tab" aria-selected="false" data-tab="queue" onclick="ThesisUI.switchTab('queue')">
       <i class="ti ti-inbox"></i> Review queue
     </button>
     <? } ?>
     <? var canSponsor = roles.includes('senate_faculty') || roles.includes('lecturer') || roles.includes('super_admin'); ?>
     <? if (canSponsor) { ?>
-    <button class="module-tab" data-tab="sponsored" onclick="ThesisUI.switchTab('sponsored')">
+    <button class="module-tab" role="tab" aria-selected="false" data-tab="sponsored" onclick="ThesisUI.switchTab('sponsored')">
       <i class="ti ti-user-check"></i> Sponsored theses
     </button>
     <? } ?>
     <? var isAdvisor = roles.includes('staff_undergrad') || roles.includes('super_admin'); ?>
     <? if (isAdvisor) { ?>
-    <button class="module-tab" data-tab="grad" onclick="ThesisUI.switchTab('grad')">
+    <button class="module-tab" role="tab" aria-selected="false" data-tab="grad" onclick="ThesisUI.switchTab('grad')">
       <i class="ti ti-school"></i> Graduation queue
     </button>
     <? } ?>
   </div>
 
   <!-- ── Tab: Submit ───────────────────────────────────── -->
-  <div id="tab-submit" class="tab-panel" style="display:none;">
+  <div id="tab-submit" class="tab-panel" role="tabpanel" style="display:none;">
     <div class="card" style="margin-top:20px;">
       <div class="card-title"><i class="ti ti-file-upload"></i> Senior thesis submission</div>
 
@@ -50,7 +50,7 @@
       <div id="thesis-form">
         <div class="form-row">
           <div class="form-group">
-            <label class="form-label" for="th-quarter">Quarter <span class="required">*</span></label>
+            <label class="form-label" for="th-quarter">Quarter <span class="required" aria-hidden="true">*</span></label>
             <select class="form-select" name="quarter" id="th-quarter" required>
               <option value="">— Select —</option>
               <option>Fall</option><option>Winter</option><option>Spring</option><option>Summer</option>
@@ -58,31 +58,31 @@
             <div class="form-error"></div>
           </div>
           <div class="form-group">
-            <label class="form-label" for="th-year">Year <span class="required">*</span></label>
+            <label class="form-label" for="th-year">Year <span class="required" aria-hidden="true">*</span></label>
             <input class="form-input" type="text" name="year" id="th-year" inputmode="numeric" maxlength="4" placeholder="2026" required>
             <div class="form-error"></div>
           </div>
         </div>
 
         <div class="form-group">
-          <label class="form-label" for="th-title">Thesis title <span class="required">*</span></label>
+          <label class="form-label" for="th-title">Thesis title <span class="required" aria-hidden="true">*</span></label>
           <input class="form-input" type="text" name="title" id="th-title" required>
           <div class="form-error"></div>
         </div>
 
         <div class="form-group">
-          <label class="form-label" for="th-abstract">Abstract / description <span class="required">*</span></label>
+          <label class="form-label" for="th-abstract">Abstract / description <span class="required" aria-hidden="true">*</span></label>
           <textarea class="form-textarea" name="abstract" id="th-abstract" rows="6" required
             placeholder="A short summary of your thesis."></textarea>
           <div class="form-error"></div>
         </div>
 
         <div class="form-group">
-          <label class="form-label">Geographic regions <span class="required">*</span></label>
+          <label class="form-label">Geographic regions <span class="required" aria-hidden="true">*</span></label>
           <div class="form-hint">Add one or more countries. A locality (e.g. a state, city, or area) is optional.</div>
           <div class="region-add-row">
-            <select class="form-select" id="th-country"><option value="">— Select a country —</option></select>
-            <input class="form-input" type="text" id="th-locality" placeholder="Locality (optional)">
+            <select class="form-select" id="th-country" aria-label="Country"><option value="">— Select a country —</option></select>
+            <input class="form-input" type="text" id="th-locality" aria-label="Locality (optional)" placeholder="Locality (optional)">
             <button type="button" class="btn btn-secondary" onclick="ThesisUI.addRegion()"><i class="ti ti-plus"></i> Add</button>
           </div>
           <div id="th-region-chips" class="region-chips"></div>
@@ -90,7 +90,7 @@
         </div>
 
         <div class="form-group">
-          <label class="form-label" for="th-sponsor">Faculty sponsor <span class="required">*</span></label>
+          <label class="form-label" for="th-sponsor">Faculty sponsor <span class="required" aria-hidden="true">*</span></label>
           <select class="form-select" name="sponsorEmail" id="th-sponsor" required>
             <option value="">— Loading faculty… —</option>
           </select>
@@ -98,7 +98,7 @@
         </div>
 
         <div class="form-group">
-          <label class="form-label" for="th-file">Thesis PDF <span class="required">*</span></label>
+          <label class="form-label" for="th-file">Thesis PDF <span class="required" aria-hidden="true">*</span></label>
           <input class="form-input" type="file" id="th-file" accept="application/pdf">
           <div class="form-hint">Upload the final thesis as a single PDF. Resubmitting replaces the file already on record.</div>
           <div class="form-error" id="th-file-error"></div>
@@ -123,18 +123,18 @@
   </div>
 
   <!-- ── Tab: My theses ────────────────────────────────── -->
-  <div id="tab-mine" class="tab-panel" style="display:none;">
+  <div id="tab-mine" class="tab-panel" role="tabpanel" style="display:none;">
     <div class="card" style="margin-top:20px;">
       <div class="card-title" style="justify-content:space-between;">
         <span><i class="ti ti-list"></i> My theses</span>
-        <button class="btn btn-secondary btn-sm" onclick="ThesisUI.loadMine()"><i class="ti ti-refresh"></i></button>
+        <button class="btn btn-secondary btn-sm" onclick="ThesisUI.loadMine()" aria-label="Refresh My theses"><i class="ti ti-refresh"></i></button>
       </div>
       <div id="mine-list"><div class="empty-state"><i class="ti ti-inbox" style="font-size:32px;display:block;margin-bottom:8px;"></i>No theses yet</div></div>
     </div>
   </div>
 
   <!-- ── Tab: Review queue ─────────────────────────────── -->
-  <div id="tab-queue" class="tab-panel" style="display:none;">
+  <div id="tab-queue" class="tab-panel" role="tabpanel" style="display:none;">
     <div class="card" style="margin-top:20px;">
       <div class="card-title" style="justify-content:space-between;">
         <span><i class="ti ti-inbox"></i> Review queue</span>
@@ -144,7 +144,7 @@
             <input type="checkbox" id="th-scope-all" onchange="ThesisUI.loadQueue()"> Show all theses
           </label>
           <? } ?>
-          <button class="btn btn-secondary btn-sm" onclick="ThesisUI.loadQueue()"><i class="ti ti-refresh"></i></button>
+          <button class="btn btn-secondary btn-sm" onclick="ThesisUI.loadQueue()" aria-label="Refresh Review queue"><i class="ti ti-refresh"></i></button>
         </span>
       </div>
       <div id="queue-list"><div class="empty-state">Nothing awaiting you right now.</div></div>
@@ -152,22 +152,22 @@
   </div>
 
   <!-- ── Tab: Sponsored theses ─────────────────────────── -->
-  <div id="tab-sponsored" class="tab-panel" style="display:none;">
+  <div id="tab-sponsored" class="tab-panel" role="tabpanel" style="display:none;">
     <div class="card" style="margin-top:20px;">
       <div class="card-title" style="justify-content:space-between;">
         <span><i class="ti ti-user-check"></i> Theses I've sponsored</span>
-        <button class="btn btn-secondary btn-sm" onclick="ThesisUI.loadSponsored()"><i class="ti ti-refresh"></i></button>
+        <button class="btn btn-secondary btn-sm" onclick="ThesisUI.loadSponsored()" aria-label="Refresh Sponsored theses"><i class="ti ti-refresh"></i></button>
       </div>
       <div id="sponsored-list"><div class="empty-state">No sponsored theses yet.</div></div>
     </div>
   </div>
 
   <!-- ── Tab: Graduation queue (advisor) ───────────────── -->
-  <div id="tab-grad" class="tab-panel" style="display:none;">
+  <div id="tab-grad" class="tab-panel" role="tabpanel" style="display:none;">
     <div class="card" style="margin-top:20px;">
       <div class="card-title" style="justify-content:space-between;">
         <span><i class="ti ti-school"></i> Approved theses awaiting graduation records</span>
-        <button class="btn btn-secondary btn-sm" onclick="ThesisUI.loadGradQueue()"><i class="ti ti-refresh"></i></button>
+        <button class="btn btn-secondary btn-sm" onclick="ThesisUI.loadGradQueue()" aria-label="Refresh Graduation queue"><i class="ti ti-refresh"></i></button>
       </div>
       <p class="text-muted" style="font-size:13px;margin-top:0;">
         Theses awaiting your final processing. For each: open the thesis document, then either
@@ -179,11 +179,11 @@
   </div>
 
   <!-- Detail / action modal -->
-  <div id="th-modal" class="th-modal" style="display:none;">
+  <div id="th-modal" class="th-modal" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="th-modal-title">
     <div class="th-modal-card card">
       <div class="card-title" style="justify-content:space-between;">
         <span id="th-modal-title">Thesis</span>
-        <button class="btn btn-secondary btn-sm" onclick="ThesisUI.closeModal()"><i class="ti ti-x"></i></button>
+        <button class="btn btn-secondary btn-sm" onclick="ThesisUI.closeModal()" id="th-modal-close" aria-label="Close dialog"><i class="ti ti-x"></i></button>
       </div>
       <div id="th-modal-body"></div>
     </div>
@@ -191,7 +191,7 @@
 
   <!-- Busy overlay: shown during slow round-trips (upload, record loads) -->
   <div id="th-busy" class="th-busy" style="display:none;">
-    <div class="th-busy-box">
+    <div class="th-busy-box" role="status" aria-live="polite">
       <div class="spinner"></div>
       <span id="th-busy-msg">Working…</span>
     </div>
@@ -390,14 +390,18 @@ window.ThesisUI = (() => {
     el.innerHTML = _regions.map((r, i) => {
       const loc = r.locality ? _esc(r.locality) + ', ' : '';
       return '<span class="region-chip">' + loc + _esc(r.country)
-        + ' <button type="button" title="Remove" onclick="ThesisUI.removeRegion(' + i + ')"><i class="ti ti-x"></i></button></span>';
+        + ' <button type="button" title="Remove" aria-label="Remove region" onclick="ThesisUI.removeRegion(' + i + ')"><i class="ti ti-x"></i></button></span>';
     }).join('');
   }
 
   // ── Tabs ─────────────────────────────────────────────
   function switchTab(tab) {
     document.querySelectorAll('#thesis-module .tab-panel').forEach(p => p.style.display = 'none');
-    document.querySelectorAll('#thesis-module .module-tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+    document.querySelectorAll('#thesis-module .module-tab').forEach(b => {
+      const on = b.dataset.tab === tab;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
     document.getElementById('tab-' + tab).style.display = 'block';
     if (tab === 'mine')      loadMine();
     if (tab === 'queue')     loadQueue();
@@ -547,7 +551,9 @@ window.ThesisUI = (() => {
         : '<span class="text-muted" style="font-size:12px;">No Pass — no milestone</span>';
 
       const doneLabel = approved ? 'Complete' : 'Close out';
-      return '<tr onclick="ThesisUI.open(\'' + _esc(r.thesisId) + '\',\'' + _esc(r.stage) + '\')" style="cursor:pointer;">'
+      return '<tr role="button" tabindex="0" aria-label="Open thesis: ' + _esc(r.title) + '" '
+        + 'onclick="ThesisUI.open(\'' + _esc(r.thesisId) + '\',\'' + _esc(r.stage) + '\')" '
+        + 'onkeydown="ThesisUI.rowKey(event,\'' + _esc(r.thesisId) + '\',\'' + _esc(r.stage) + '\')" style="cursor:pointer;">'
         + '<td>' + _esc(r.term) + '</td>'
         + '<td>' + _esc(r.studentName) + '<div class="text-muted" style="font-size:11px;">' + _esc(r.studentId) + '</div></td>'
         + '<td>' + _esc(r.title) + '</td>'
@@ -564,7 +570,7 @@ window.ThesisUI = (() => {
         + '</tr>';
     }).join('');
     return '<div class="table-wrap"><table class="data-table"><thead><tr>'
-      + '<th>Term</th><th>Student</th><th>Title</th><th>Outcome</th><th>Document</th><th>Degree Progress</th><th></th>'
+      + '<th scope="col">Term</th><th scope="col">Student</th><th scope="col">Title</th><th scope="col">Outcome</th><th scope="col">Document</th><th scope="col">Degree Progress</th><th scope="col"></th>'
       + '</tr></thead><tbody>' + body + '</tbody></table></div>';
   }
 
@@ -610,7 +616,9 @@ window.ThesisUI = (() => {
               + '<i class="ti ti-bell"></i> Remind ' + remindTarget + '</button></td>'
             : '<td><span class="text-muted" style="font-size:12px;">Waiting on you</span></td>')
         : '';
-      return '<tr onclick="ThesisUI.open(\'' + _esc(r.thesisId) + '\',\'' + _esc(r.stage) + '\')" style="cursor:pointer;">'
+      return '<tr role="button" tabindex="0" aria-label="Open thesis: ' + _esc(r.title) + '" '
+        + 'onclick="ThesisUI.open(\'' + _esc(r.thesisId) + '\',\'' + _esc(r.stage) + '\')" '
+        + 'onkeydown="ThesisUI.rowKey(event,\'' + _esc(r.thesisId) + '\',\'' + _esc(r.stage) + '\')" style="cursor:pointer;">'
         + '<td>' + _esc(r.term) + '</td>'
         + '<td>' + _esc(r.title) + '</td>'
         + '<td><span class="text-muted" style="font-size:11px;">' + whoLabel + '</span><br>' + who + '</td>'
@@ -620,8 +628,8 @@ window.ThesisUI = (() => {
         + '</tr>';
     }).join('');
     return '<div class="table-wrap"><table class="data-table"><thead><tr>'
-      + '<th>Term</th><th>Title</th><th>' + (showStudent ? 'Student' : 'Sponsor') + '</th><th>Stage</th>'
-      + (showRemind ? '<th></th>' : '') + '<th></th>'
+      + '<th scope="col">Term</th><th scope="col">Title</th><th scope="col">' + (showStudent ? 'Student' : 'Sponsor') + '</th><th scope="col">Stage</th>'
+      + (showRemind ? '<th scope="col"></th>' : '') + '<th scope="col"></th>'
       + '</tr></thead><tbody>' + body + '</tbody></table></div>';
   }
 
@@ -634,6 +642,14 @@ window.ThesisUI = (() => {
   }
 
   // ── Detail + actions ─────────────────────────────────
+  /** Keyboard activation for clickable list rows (Enter / Space). */
+  function rowKey(ev, thesisId, listedStage) {
+    if (ev.key === 'Enter' || ev.key === ' ') {
+      ev.preventDefault();
+      open(thesisId, listedStage);
+    }
+  }
+
   function open(thesisId, listedStage) {
     _busy('Loading thesis…');
     App.call('thesis', 'get', { thesisId }, rec => {
@@ -646,7 +662,10 @@ window.ThesisUI = (() => {
     }, () => _idle());
   }
 
+  let _lastFocus = null;
+
   function _openDetail(rec) {
+    _lastFocus = document.activeElement;
     const m = STAGE_META[rec.stage] || { cls: 'badge-neutral', label: rec.stage };
     document.getElementById('th-modal-title').textContent = rec.title || 'Thesis';
 
@@ -671,6 +690,8 @@ window.ThesisUI = (() => {
     html += _actionsFor(rec);
     document.getElementById('th-modal-body').innerHTML = html;
     document.getElementById('th-modal').style.display = 'flex';
+    const closeBtn = document.getElementById('th-modal-close');
+    if (closeBtn) closeBtn.focus();
   }
 
   // Stage- and viewer-aware actions. The server re-checks every one of
@@ -695,6 +716,26 @@ window.ThesisUI = (() => {
     // Reader acting on an honors review.
     if (rec.stage === 'PENDING_HONORS' && (isMe(rec.readerEmail, me) || isSuper)) {
       out.push(_readerPanel(rec));
+    }
+
+    // Advisor unstick at honors review: if the reader is unresponsive,
+    // the advisor can return the thesis to the sponsor to re-decide
+    // (different reader, or a plain Pass). Shown to advisor role-holders
+    // AND super_admin — only the assigned reader is excluded (their own
+    // panel covers it). Super_admin therefore sees both panels; the
+    // redundancy is deliberate so the unstick is always discoverable.
+    if (rec.stage === 'PENDING_HONORS' && _isAdvisorUser
+        && !isMe(rec.readerEmail, me)) {
+      out.push('<div class="card" style="margin-top:8px;">'
+        + '<div class="card-title" style="font-size:14px;"><i class="ti ti-clock-pause"></i> Honors review in progress</div>'
+        + '<p class="text-muted" style="font-size:13px;margin-top:0;">Waiting on the honors reader'
+        + (rec.readerName ? ' (' + _esc(rec.readerName) + ')' : '') + '. '
+        + 'If the reader is unresponsive, you can return this thesis to the sponsor to re-decide — '
+        + 'with a different reader, or as a regular pass. Consider a reminder first.</p>'
+        + '<div class="form-actions">'
+        + '<button class="btn btn-secondary" onclick="ThesisUI.remind(\'' + _esc(rec.thesisId) + '\')"><i class="ti ti-bell"></i> Remind reader</button>'
+        + '<button class="btn btn-secondary" onclick="ThesisUI.returnToSponsor(\'' + _esc(rec.thesisId) + '\')"><i class="ti ti-arrow-back-up"></i> Return to sponsor</button>'
+        + '</div></div>');
     }
 
     // Advisor finishing, or returning, a thesis at final processing.
@@ -727,7 +768,7 @@ window.ThesisUI = (() => {
       + '<div class="form-group" id="sp-reader-group" style="display:none;">'
       + '<label class="form-label">Faculty reader (honors)</label>'
       + '<select class="form-select" id="sp-reader"></select></div>'
-      + '<div class="form-group"><label class="form-label">Comments <span class="required">*</span></label>'
+      + '<div class="form-group"><label class="form-label">Comments <span class="required" aria-hidden="true">*</span></label>'
       + '<textarea class="form-textarea" id="sp-comments"></textarea></div>'
       + '<div class="form-actions">'
       + '<button class="btn btn-primary" id="sp-save" onclick="ThesisUI.submitSponsor(\'' + _esc(rec.thesisId) + '\')"><i class="ti ti-check"></i> Record decision</button>'
@@ -740,7 +781,7 @@ window.ThesisUI = (() => {
       + '<div class="card-title" style="font-size:14px;"><i class="ti ti-award"></i> Honors review</div>'
       + '<p class="text-muted" style="font-size:13px;margin-top:0;">Approve the honors designation, or return the thesis to the sponsor '
       + 'if you are not convinced it merits honors — the sponsor will re-decide.</p>'
-      + '<div class="form-group"><label class="form-label">Comments <span class="required">*</span></label>'
+      + '<div class="form-group"><label class="form-label">Comments <span class="required" aria-hidden="true">*</span></label>'
       + '<textarea class="form-textarea" id="rd-comments"></textarea></div>'
       + '<div class="form-actions">'
       + '<button class="btn btn-primary" id="rd-save" onclick="ThesisUI.submitReader(\'' + _esc(rec.thesisId) + '\')"><i class="ti ti-award"></i> Approve honors</button>'
@@ -761,7 +802,7 @@ window.ThesisUI = (() => {
     const milestoneStep = approved
       ? '<div class="form-group"><label style="display:flex;align-items:center;gap:8px;font-weight:normal;cursor:pointer;">'
         + '<input type="checkbox" id="ad-ms-' + _esc(rec.thesisId) + '"' + (viewed ? '' : ' disabled title="Open the PDF first"') + '>'
-        + ' Milestone entered into Degree Progress Report <span class="required">*</span>'
+        + ' Milestone entered into Degree Progress Report <span class="required" aria-hidden="true">*</span>'
         + '</label></div>'
       : '<p class="text-muted" style="font-size:13px;">No Pass — closed out without a Degree Progress milestone.</p>';
     return '<div class="card" style="margin-top:8px;">'
@@ -869,7 +910,27 @@ window.ThesisUI = (() => {
     if (document.getElementById('tab-grad').style.display !== 'none') loadGradQueue();
   }
 
-  function closeModal() { document.getElementById('th-modal').style.display = 'none'; }
+  function closeModal() {
+    document.getElementById('th-modal').style.display = 'none';
+    // Return focus to the row/control that opened the dialog, if it still exists.
+    if (_lastFocus && document.contains(_lastFocus) && typeof _lastFocus.focus === 'function') {
+      _lastFocus.focus();
+    }
+    _lastFocus = null;
+  }
+
+  // Escape closes the dialog. Bound to document ONCE across module reloads
+  // (module scripts re-execute on each load), and routed through
+  // window.ThesisUI so it always reaches the current instance.
+  if (!window.__thesisEscBound) {
+    window.__thesisEscBound = true;
+    document.addEventListener('keydown', e => {
+      const modal = document.getElementById('th-modal');
+      if (e.key === 'Escape' && modal && modal.style.display !== 'none' && window.ThesisUI) {
+        window.ThesisUI.closeModal();
+      }
+    });
+  }
 
   // ── Busy overlay (slow round-trips: upload, record loads) ──
   function _busy(msg) {
@@ -896,7 +957,7 @@ window.ThesisUI = (() => {
   return {
     init, switchTab, submit, cancelResubmit, startResubmit,
     addRegion, removeRegion,
-    loadMine, loadQueue, loadSponsored, loadGradQueue, markDocViewed, remind, deleteThesis, open, closeModal,
+    loadMine, loadQueue, loadSponsored, loadGradQueue, markDocViewed, remind, rowKey, deleteThesis, open, closeModal,
     submitSponsor, submitReader, advisorComplete, returnThesis, returnToSponsor,
     _toggleReader,
   };

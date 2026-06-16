@@ -26,6 +26,11 @@ const CONFIG = {
     SUBMISSIONS:   '1zacvd0FhWcjKldhKt9Fan3lWY0QkRAZ3Ol45wobBZl4',  // Tab per form type
     // Senior Thesis module — its OWN spreadsheet (per-module storage tier).
     THESIS:        '16MiWlHY0mTFuBioI5mc1nV3mmiIEbgBssG3h7jO4tBc',
+    // Transcript / ASSIST-articulation module — its OWN spreadsheet
+    // (per-module storage tier). Tabs: Articulations, ArticulationReview.
+    // Create a new spreadsheet, paste its id here (leave '' until then —
+    // setUp() skips a blank id rather than erroring).
+    TRANSCRIPT:    '1CPid5jHFa46nZvqdJYQXmAKbtGDRrwG42KcIhn-Hmls',
     // Platform-services operational data (owned by platform-wide services,
     // not by any single module). Tenants: Tasks, Reports.
     PLATFORM:      '1CyVapaV52tFWDGOC4fI7RNyVrcExevQeV7_gR_mpTNg',
@@ -63,6 +68,9 @@ const CONFIG = {
     REPORTS:     'Reports',
     THESIS_ELIGIBILITY: 'ThesisEligibility',
     THESIS_SETTINGS: 'ThesisSettings',
+    // Transcript / ASSIST-articulation module tabs (live in SHEETS.TRANSCRIPT)
+    ARTICULATIONS:        'Articulations',
+    ARTICULATION_REVIEW:  'ArticulationReview',
   },
 
   // ── Storage convention (three tiers) ───────────────────────
@@ -109,6 +117,36 @@ const CONFIG = {
     // Without it, resubmission still works but creates a new file ID.
     DRIVE_FOLDER_ID: '1KZ62caXh6IO-fLghGzaPJAC1b-qI50he',
   },
+
+  // ── Transcript / ASSIST articulation module ────────────────
+  // Set-once infrastructure constants for the articulation sync. These are
+  // the kind of stable pointers that stay in Config.gs (like the Thesis
+  // Drive/spreadsheet ids); they are NOT UI-managed settings.
+  TRANSCRIPT: {
+    // UCSC's ASSIST receiving-institution id. Verified from the ASSIST
+    // institutions API (id 132 = "University of California, Santa Cruz").
+    // Stable; will not change. Used to query agreements for which UCSC is
+    // the receiving institution.
+    UCSC_INSTITUTION_ID: 132,
+    // Case-insensitive substring used to identify Anthropology Major
+    // agreements among a college's UCSC agreements. Matched against the
+    // agreement label; a visible match report surfaces what was matched.
+    ANTHRO_MATCH_SUBSTRING: 'anthropolog',
+    // ASSIST public API base. Unofficial but stable; no API key needed for
+    // the routes this module uses. The stored Articulations tables are a
+    // durable snapshot, so an API change degrades sync without breaking
+    // already-stored data.
+    ASSIST_API_BASE: 'https://prod.assistng.org',
+    // Only equivalencies whose RECEIVING (UCSC) course is in this list are
+    // stored — everything else from a matched agreement is dropped, so the
+    // table holds exactly the Anthropology prerequisites we clear. Matched
+    // case-insensitively on "PREFIX NUMBER" (e.g. "ANTH 1"). This is the
+    // scope lever: add a course here (Config edit, no code change) if UCSC
+    // ever adds a prerequisite. Applies to BOTH trusted and flagged rows —
+    // a flagged ANTH 1 still goes to review, it is not dropped.
+    RECEIVING_COURSE_ALLOWLIST: ['ANTH 1', 'ANTH 2', 'ANTH 3'],
+  },
+
 };
 
 

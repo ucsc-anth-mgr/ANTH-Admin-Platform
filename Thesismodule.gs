@@ -622,7 +622,8 @@ const ThesisModule = (() => {
   /**
    * Sends a thesis back to the SPONSOR for re-decision. Allowed from:
    *   - PENDING_ADVISOR by an advisor role-holder (or super_admin)
-   *   - PENDING_HONORS  by the assigned honors reader (or super_admin)
+   *   - PENDING_HONORS  by the assigned honors reader, an advisor
+   *     role-holder (the unstick for an unresponsive reader), or super_admin
    * The recorded sponsor/reader decisions are cleared (the re-decision
    * starts fresh; history survives in the audit log), and the sponsor is
    * re-tasked and notified with the returner's note. The student is NOT
@@ -636,10 +637,10 @@ const ThesisModule = (() => {
     if (!rec) throw new Error('Thesis not found.');
     const isSuper = roles.indexOf('super_admin') !== -1;
 
-    const advisorReturn = rec.Stage === STAGE.PENDING_ADVISOR &&
+    const advisorReturn = (rec.Stage === STAGE.PENDING_ADVISOR || rec.Stage === STAGE.PENDING_HONORS) &&
       (_isUndergradAdvisor(user) || isSuper);
     const readerReturn = rec.Stage === STAGE.PENDING_HONORS &&
-      (_norm(rec.ReaderEmail) === _norm(user) || isSuper);
+      _norm(rec.ReaderEmail) === _norm(user);
     if (!advisorReturn && !readerReturn) {
       throw new Error('You cannot return this thesis to the sponsor at its current stage.');
     }

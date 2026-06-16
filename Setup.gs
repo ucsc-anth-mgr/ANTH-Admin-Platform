@@ -153,6 +153,35 @@ const SETUP_SCHEMA = {
               'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
     seed: [],
   },
+  ARTICULATIONS: {
+    tab: 'Articulations',
+    // Trusted, clean 1:1 UCSC Anthropology articulations, one row per
+    // (catalog year, sending college, sending course). Both the human-
+    // readable course code and ASSIST's stable courseIdentifierParentId
+    // are kept: the code for advisor display + transcript matching, the
+    // id as the durable identifier across catalog-year renumbers.
+    // Lower-division only. Meta columns are filled by DataService.
+    headers: ['CatalogYear', 'SendingCollege', 'SendingCollegeId',
+              'SendingPrefix', 'SendingNumber', 'SendingCourseId', 'SendingTitle',
+              'ReceivingPrefix', 'ReceivingNumber', 'ReceivingCourseId', 'ReceivingTitle',
+              'SyncedDate',
+              'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
+  ARTICULATION_REVIEW: {
+    tab: 'ArticulationReview',
+    // Anything the sync could NOT confirm as a clean 1:1 (multiple course
+    // groups, internal AND, OR between groups, denied courses, advisement,
+    // no-articulation, or a parse failure). Reason explains why; RawCell
+    // holds the raw ASSIST template-cell JSON so an advisor sees exactly
+    // what ASSIST returned. Fail-safe: uncertain cells land here, never in
+    // the trusted table.
+    headers: ['CatalogYear', 'SendingCollege', 'SendingCollegeId',
+              'ReceivingPrefix', 'ReceivingNumber', 'ReceivingCourseId', 'ReceivingTitle',
+              'Reason', 'RawCell', 'SyncedDate',
+              'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
 };
 
 
@@ -168,6 +197,7 @@ function setUp() {
   const submitSS = _resolveSpreadsheet(CONFIG.SHEETS.SUBMISSIONS,   'Portal Submissions',                    'SUBMISSIONS');
   const platformSS = _resolveSpreadsheet(CONFIG.SHEETS.PLATFORM,    'Portal Platform Services',              'PLATFORM');
   const thesisSS = _resolveSpreadsheet(CONFIG.SHEETS.THESIS,        'Portal Senior Thesis',                  'THESIS');
+  const transcriptSS = _resolveSpreadsheet(CONFIG.SHEETS.TRANSCRIPT, 'Portal Transcript / Articulations',    'TRANSCRIPT');
 
   // Config spreadsheet gets Users, Roles, Modules, Requests tabs
   _setupTab(usersSS, SETUP_SCHEMA.USERS);
@@ -190,6 +220,11 @@ function setUp() {
   // Senior Thesis spreadsheet gets the Thesis tab
   _setupTab(thesisSS, SETUP_SCHEMA.THESIS);
   _tidyDefaultSheet(thesisSS);
+
+  // Transcript / ASSIST-articulation spreadsheet gets its two tabs
+  _setupTab(transcriptSS, SETUP_SCHEMA.ARTICULATIONS);
+  _setupTab(transcriptSS, SETUP_SCHEMA.ARTICULATION_REVIEW);
+  _tidyDefaultSheet(transcriptSS);
 
   // Submissions spreadsheet: tabs are created per form type on demand,
   // so we just ensure the spreadsheet exists and remove the default
@@ -356,6 +391,7 @@ function checkSetup() {
     ['SUBMISSIONS',  CONFIG.SHEETS.SUBMISSIONS,  []],
     ['PLATFORM',     CONFIG.SHEETS.PLATFORM,     [SETUP_SCHEMA.TASKS.tab, SETUP_SCHEMA.REPORTS.tab]],
     ['THESIS',       CONFIG.SHEETS.THESIS,       [SETUP_SCHEMA.THESIS.tab]],
+    ['TRANSCRIPT',   CONFIG.SHEETS.TRANSCRIPT,   [SETUP_SCHEMA.ARTICULATIONS.tab, SETUP_SCHEMA.ARTICULATION_REVIEW.tab]],
   ];
   Logger.log('=== Config check ===');
   checks.forEach(([key, id, tabs]) => {
@@ -392,6 +428,8 @@ function _schemaPlacement() {
     { sheetKey: 'PLATFORM',     def: SETUP_SCHEMA.TASKS },
     { sheetKey: 'PLATFORM',     def: SETUP_SCHEMA.REPORTS },
     { sheetKey: 'THESIS',       def: SETUP_SCHEMA.THESIS },
+    { sheetKey: 'TRANSCRIPT',   def: SETUP_SCHEMA.ARTICULATIONS },
+    { sheetKey: 'TRANSCRIPT',   def: SETUP_SCHEMA.ARTICULATION_REVIEW },
   ];
 }
 
