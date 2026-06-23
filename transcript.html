@@ -1,106 +1,673 @@
-<!-- transcript.html — Transcript module UI (Layer 1: admin articulation sync) -->
+<!-- transcript.html — Transcript module UI (Layer 1 admin + Layer 2 student/advisor) -->
 <!-- Server-rendered: currentUser and userRoles are available as template vars. -->
-<!-- Admin-only screen: operate the ASSIST sync, watch freshness, and review -->
-<!-- the flagged (non-1:1) articulations. Advisors look up articulations on -->
-<!-- assist.org directly; this screen is reference-data operations only. -->
+<!-- Four role-aware tabs:                                                       -->
+<!--   Upload / My Transcripts  → undergraduate_student                          -->
+<!--   Transcripts (review queue) → staff_undergrad + super_admin                -->
+<!--   Articulations (sync + flagged review + settings) → super_admin / staff    -->
 
 <? var _roles = JSON.parse(userRoles); ?>
-<? var _canSync = _roles.includes('super_admin') || _roles.includes('staff'); ?>
+<? var _isStudent = _roles.includes('undergraduate_student'); ?>
+<? var _isAdvisor = _roles.includes('staff_undergrad') || _roles.includes('super_admin'); ?>
+<? var _isAdmin   = _roles.includes('super_admin') || _roles.includes('staff'); ?>
+<? var _canSync   = _isAdmin; ?>
 
 <div id="transcript-module">
 
-  <!-- ── Review list (flagged, non-1:1) ─────────────── -->
-  <div class="card" style="margin-top:20px;">
-    <div class="card-title" style="justify-content:space-between;">
-      <span style="display:flex;align-items:center;gap:8px;">
-        <i class="ti ti-flag"></i> Needs review
-      </span>
-      <button class="btn btn-secondary btn-sm" onclick="TranscriptUI.loadReview()" title="Refresh">
-        <i class="ti ti-refresh"></i>
-      </button>
-    </div>
-    <p class="text-sm text-muted" style="margin-bottom:12px;">
-      Equivalencies ASSIST did not express as a single one-to-one match — for
-      example several courses combined, or a choice between courses. Confirm
-      these against the agreement on assist.org.
-    </p>
-    <div id="ts-review">
-      <div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>
-    </div>
-  </div>
-
-  <!-- ── Sync panel ─────────────────────────────────── -->
-  <div class="card">
-    <div class="card-title" style="justify-content:space-between;">
-      <span style="display:flex;align-items:center;gap:8px;">
-        <i class="ti ti-refresh"></i> Articulation sync
-      </span>
-      <span id="ts-freshness" class="text-sm text-muted">Checking…</span>
-    </div>
-
-    <p class="text-sm text-muted" style="margin-bottom:14px;">
-      Pulls UCSC Anthropology course equivalencies (ANTH&nbsp;1, 2, 3) from
-      ASSIST for every California community college with a UCSC agreement.
-      Clean one-to-one matches are stored as trusted; anything ambiguous is
-      sent to the review list above.
-    </p>
-
-    <? if (_canSync) { ?>
-    <div class="flex gap-2 items-center" style="flex-wrap:wrap;">
-      <div class="form-group" style="margin:0;">
-        <label class="form-label" for="ts-year" style="margin-bottom:4px;">Catalog year</label>
-        <select class="form-select" id="ts-year" style="width:auto;"></select>
-      </div>
-      <button class="btn btn-primary" id="ts-sync-btn" onclick="TranscriptUI.sync()" style="align-self:flex-end;">
-        <i class="ti ti-download"></i> Sync from ASSIST
-      </button>
-    </div>
-    <p class="text-sm text-muted" style="margin-top:10px;margin-bottom:0;">
-      Syncing replaces the selected year's articulations; other years are kept.
-    </p>
-    <? } else { ?>
-    <div class="empty-state" style="padding:18px;">
-      <i class="ti ti-lock" style="font-size:24px;"></i>
-      <p style="margin-top:6px;">Only staff and administrators can run the sync.</p>
-    </div>
+  <!-- Tab bar (role-aware) -->
+  <div class="module-tabs" role="tablist" aria-label="Transcript sections">
+    <? if (_isStudent) { ?>
+    <button class="module-tab" role="tab" aria-selected="false" data-tab="upload" id="tab-btn-upload" onclick="TranscriptUI.switchTab('upload')">
+      <i class="ti ti-file-upload"></i> Upload transcript
+    </button>
+    <button class="module-tab" role="tab" aria-selected="false" data-tab="mine" onclick="TranscriptUI.switchTab('mine')">
+      <i class="ti ti-list"></i> My transcripts
+    </button>
     <? } ?>
-
-    <!-- Sync run report (populated after a sync) -->
-    <div id="ts-report" style="margin-top:16px;"></div>
+    <? if (_isAdvisor) { ?>
+    <button class="module-tab" role="tab" aria-selected="false" data-tab="queue" onclick="TranscriptUI.switchTab('queue')">
+      <i class="ti ti-inbox"></i> Transcripts
+    </button>
+    <? } ?>
+    <? if (_isAdmin) { ?>
+    <button class="module-tab" role="tab" aria-selected="false" data-tab="artic" onclick="TranscriptUI.switchTab('artic')">
+      <i class="ti ti-table"></i> Articulations
+    </button>
+    <? } ?>
   </div>
 
-  <!-- ── Stored summary ─────────────────────────────── -->
-  <div class="card">
-    <div class="card-title"><i class="ti ti-database"></i> Stored articulations</div>
-    <div id="ts-summary">
-      <div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>
+  <!-- ════ Tab: Upload (student) ═══════════════════════════ -->
+  <? if (_isStudent) { ?>
+  <div id="tab-upload" class="tab-panel" role="tabpanel" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title"><i class="ti ti-file-upload"></i> Upload a transcript</div>
+      <p class="text-sm text-muted" style="margin-bottom:14px;">
+        Upload a transcript from a California community college and indicate which
+        UCSC Anthropology prerequisites you believe it satisfies. An advisor will
+        review it and you'll be notified of the outcome.
+      </p>
+
+      <!-- Filled by init(): blocks the form when nothing is claimable. -->
+      <div id="tr-upload-blocked" style="display:none;"></div>
+
+      <div id="tr-upload-form" style="display:none;">
+        <div class="form-group">
+          <label class="form-label" for="tr-college">Community college <span class="required" aria-hidden="true">*</span></label>
+          <select class="form-select" id="tr-college" onchange="TranscriptUI.onCollegeChange()">
+            <option value="">— Select —</option>
+          </select>
+          <p class="text-sm text-muted" id="tr-college-hint" style="margin-top:6px;">
+            Don't see your college? <strong>Contact the Undergraduate Advisor</strong> — we may not have its articulation on file.
+          </p>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Prerequisites this transcript is for <span class="required" aria-hidden="true">*</span></label>
+          <div id="tr-prereqs" class="text-sm" style="display:flex;flex-direction:column;gap:8px;margin-top:4px;"></div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="tr-file">Transcript PDF <span class="required" aria-hidden="true">*</span></label>
+          <input class="form-input" type="file" id="tr-file" accept="application/pdf">
+          <div class="form-error" id="tr-file-error" style="display:none;color:var(--color-danger);"></div>
+        </div>
+
+        <button class="btn btn-primary" id="tr-submit-btn" onclick="TranscriptUI.submitUpload()">
+          <i class="ti ti-upload"></i> Submit transcript
+        </button>
+      </div>
     </div>
   </div>
+
+  <!-- ════ Tab: My transcripts (student) ═══════════════════ -->
+  <div id="tab-mine" class="tab-panel" role="tabpanel" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title" style="justify-content:space-between;">
+        <span style="display:flex;align-items:center;gap:8px;"><i class="ti ti-list"></i> My transcripts</span>
+        <button class="btn btn-secondary btn-sm" onclick="TranscriptUI.loadMine()" title="Refresh"><i class="ti ti-refresh"></i></button>
+      </div>
+      <div id="tr-mine-list">
+        <div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>
+      </div>
+    </div>
+  </div>
+  <? } ?>
+
+  <!-- ════ Tab: Transcripts review queue (advisor) ═════════ -->
+  <? if (_isAdvisor) { ?>
+  <div id="tab-queue" class="tab-panel" role="tabpanel" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title" style="justify-content:space-between;">
+        <span style="display:flex;align-items:center;gap:8px;"><i class="ti ti-inbox"></i> Transcripts awaiting review</span>
+        <span>
+          <label class="text-sm text-muted" style="margin-right:10px;">
+            <input type="checkbox" id="tr-include-recent" onchange="TranscriptUI.loadQueue()"> show recently reviewed
+          </label>
+          <button class="btn btn-secondary btn-sm" onclick="TranscriptUI.loadQueue()" title="Refresh"><i class="ti ti-refresh"></i></button>
+        </span>
+      </div>
+      <div id="tr-queue-list">
+        <div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>
+      </div>
+    </div>
+  </div>
+  <? } ?>
+
+  <!-- ════ Tab: Articulations (admin) ══════════════════════ -->
+  <? if (_isAdmin) { ?>
+  <div id="tab-artic" class="tab-panel" role="tabpanel" style="display:none;">
+
+    <!-- ── Needs review (flagged, non-1:1) ── -->
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title" style="justify-content:space-between;align-items:center;">
+        <span style="display:flex;align-items:center;gap:8px;">
+          <i class="ti ti-flag"></i>
+          <span>Needs review</span>
+          <span id="ts-review-count" class="badge" style="margin-left:4px;"></span>
+        </span>
+        <button class="btn btn-secondary btn-sm" onclick="TranscriptUI.loadReview()" title="Refresh">
+          <i class="ti ti-refresh"></i>
+        </button>
+      </div>
+      <details id="ts-review-details" style="margin-top:8px;">
+        <summary style="display:flex;align-items:center;gap:6px;cursor:pointer;list-style:none;">
+          <i class="ti ti-chevron-right ts-chevron"></i>
+          <span class="text-sm">Details</span>
+        </summary>
+        <p class="text-sm text-muted" style="margin-top:12px;margin-bottom:12px;">
+          Equivalencies ASSIST did not express as a single one-to-one match — for
+          example several courses combined, or a choice between courses. Confirm
+          these against the agreement on assist.org.
+        </p>
+        <div id="ts-review">
+          <div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>
+        </div>
+      </details>
+    </div>
+
+    <!-- ── Sync panel ── -->
+    <div class="card">
+      <div class="card-title" style="justify-content:space-between;">
+        <span style="display:flex;align-items:center;gap:8px;">
+          <i class="ti ti-refresh"></i> Articulation sync
+        </span>
+        <span id="ts-freshness" class="text-sm text-muted">Checking…</span>
+      </div>
+      <p class="text-sm text-muted" style="margin-bottom:14px;">
+        Pulls UCSC Anthropology course equivalencies (ANTH&nbsp;1, 2, 3) from
+        ASSIST for every California community college with a UCSC agreement.
+        Clean one-to-one matches are stored as trusted; anything ambiguous is
+        sent to the review list above.
+      </p>
+      <? if (_canSync) { ?>
+      <div class="flex gap-2 items-center" style="flex-wrap:wrap;">
+        <div class="form-group" style="margin:0;">
+          <label class="form-label" for="ts-year" style="margin-bottom:4px;">Catalog year</label>
+          <select class="form-select" id="ts-year" style="width:auto;"></select>
+        </div>
+        <button class="btn btn-primary" id="ts-sync-btn" onclick="TranscriptUI.sync()" style="align-self:flex-end;">
+          <i class="ti ti-download"></i> Sync from ASSIST
+        </button>
+      </div>
+      <p class="text-sm text-muted" style="margin-top:10px;margin-bottom:0;">
+        Syncing replaces the selected year's articulations; other years are kept.
+      </p>
+      <? } else { ?>
+      <div class="empty-state" style="padding:18px;">
+        <i class="ti ti-lock" style="font-size:24px;"></i>
+        <p style="margin-top:6px;">Only staff and administrators can run the sync.</p>
+      </div>
+      <? } ?>
+      <div id="ts-report" style="margin-top:16px;"></div>
+    </div>
+
+    <!-- ── Stored summary ── -->
+    <div class="card">
+      <div class="card-title"><i class="ti ti-database"></i> Stored articulations</div>
+      <div id="ts-summary">
+        <div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>
+      </div>
+    </div>
+
+    <!-- ── Notification settings ── -->
+    <div class="card">
+      <div class="card-title"><i class="ti ti-mail"></i> Student notifications</div>
+      <p class="text-sm text-muted" style="margin-bottom:14px;">
+        Messages emailed to a student when their transcript is reviewed. Tokens
+        <code>{FirstName}</code> and <code>{College}</code> are filled in
+        automatically; the advisor's review note is appended below the message.
+      </p>
+      <div id="tr-settings">
+        <div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>
+      </div>
+    </div>
+
+    <!-- ── Folder access (advisor PDF sharing) ── -->
+    <div class="card">
+      <div class="card-title"><i class="ti ti-folder-share"></i> Advisor folder access</div>
+      <p class="text-sm text-muted" style="margin-bottom:14px;">
+        Transcript PDFs live in a shared Drive folder. Students automatically
+        get access to their own file on upload. Advisors (staff_undergrad) need
+        view access to the whole folder to open any transcript — run this after
+        adding or changing advisors to grant the current advisors access.
+      </p>
+      <button class="btn btn-secondary btn-sm" id="tr-share-btn" onclick="TranscriptUI.shareFolder()">
+        <i class="ti ti-folder-share"></i> Share folder with current advisors
+      </button>
+      <div id="tr-share-report" class="text-sm" style="margin-top:10px;"></div>
+    </div>
+
+  </div>
+  <? } ?>
 
 </div>
+
+<!-- Review modal (advisor) -->
+<div id="tr-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:1000;align-items:center;justify-content:center;">
+  <div class="card" style="max-width:560px;width:92%;max-height:88vh;overflow:auto;margin:0;">
+    <div class="card-title" style="justify-content:space-between;">
+      <span><i class="ti ti-file-text"></i> Review transcript</span>
+      <button class="btn btn-secondary btn-sm" onclick="TranscriptUI.closeModal()"><i class="ti ti-x"></i></button>
+    </div>
+    <div id="tr-modal-body"></div>
+  </div>
+</div>
+
+<!-- Busy overlay (slow round-trips: page load, upload) — mirrors Thesis -->
+<div id="tr-busy" class="tr-busy" style="display:none;">
+  <div class="tr-busy-box"><div class="spinner"></div><span id="tr-busy-msg">Working…</span></div>
+</div>
+
+<style>
+  #ts-review-details summary::-webkit-details-marker { display: none; }
+  #ts-review-details .ts-chevron { transition: transform 0.15s ease; }
+  #ts-review-details[open] .ts-chevron { transform: rotate(90deg); }
+  .tr-prereq-row { display:flex; align-items:center; gap:8px; padding:6px 0; }
+  .tr-prereq-locked { color: var(--color-text-muted); }
+  .tr-busy {
+    position: fixed; inset: 0; background: rgba(255,255,255,0.75);
+    display: flex; align-items: center; justify-content: center; z-index: 1100;
+  }
+  .tr-busy-box {
+    display: flex; align-items: center; gap: 12px;
+    background: var(--color-surface); border: 1px solid var(--color-border);
+    border-radius: var(--radius); box-shadow: var(--shadow-pop);
+    padding: 16px 22px; font-size: 14px;
+  }
+</style>
 
 <script>
 window.TranscriptUI = (() => {
 
+  const _roles = <?!= userRoles ?>;
+  const _isStudent = _roles.indexOf('undergraduate_student') !== -1;
+  const _isAdvisor = _roles.indexOf('staff_undergrad') !== -1 || _roles.indexOf('super_admin') !== -1;
+  const _isAdmin   = _roles.indexOf('super_admin') !== -1 || _roles.indexOf('staff') !== -1;
+  const _isSuperAdmin = _roles.indexOf('super_admin') !== -1;
+
   var _years = [];
   var _defaultYearId = null;
+  var _filePayload = null;        // { dataBase64, mimeType }
+  var _prereqStatus = null;       // from getMyPrereqStatus
 
-  // Local HTML-escape (App._esc is private to the shell, not exported).
   function esc(s) {
     return String(s == null ? '' : s)
       .replace(/&/g, '&amp;').replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
+  // ── Busy overlay (slow round-trips) — mirrors Thesis ──
+  function _busy(msg) {
+    var m = document.getElementById('tr-busy-msg');
+    if (m) m.textContent = msg || 'Working…';
+    var el = document.getElementById('tr-busy');
+    if (el) el.style.display = 'flex';
+  }
+  function _idle() {
+    var el = document.getElementById('tr-busy');
+    if (el) el.style.display = 'none';
+  }
+
+  // ── Init: pick the default tab by role, wire deep-link ──
   function init() {
-    _loadYears();
-    loadSummary();
-    loadReview();
+    if (_isStudent) {
+      switchTab('upload');
+    } else if (_isAdvisor) {
+      switchTab('queue');
+    } else if (_isAdmin) {
+      switchTab('artic');
+    }
+
+    // Dashboard/email deep-link via window.__focus.sourceId:
+    //   'mine'  → the student's My transcripts tab (from receipt/decision emails)
+    //   other   → an advisor landing on the review queue
+    var f = window.__focus;
+    var target = f && f.sourceId ? String(f.sourceId) : '';
+    if (target === 'mine' && _isStudent) {
+      switchTab('mine');
+    } else if (target && _isAdvisor) {
+      switchTab('queue');
+    }
   }
 
-  // ── Catalog years + freshness ───────────────────────────
+  // ── Tabs ────────────────────────────────────────────────
+  function switchTab(tab) {
+    document.querySelectorAll('#transcript-module .tab-panel').forEach(function (p) { p.style.display = 'none'; });
+    document.querySelectorAll('#transcript-module .module-tab').forEach(function (b) {
+      var on = b.dataset.tab === tab;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    var panel = document.getElementById('tab-' + tab);
+    if (panel) panel.style.display = 'block';
+
+    if (tab === 'upload') loadUploadForm();
+    if (tab === 'mine')   loadMine();
+    if (tab === 'queue')  loadQueue();
+    if (tab === 'artic')  { _loadYears(); loadSummary(); loadReview(); loadSettings(); }
+  }
+
+  // ════════════════════════════════════════════════════════
+  // STUDENT — upload
+  // ════════════════════════════════════════════════════════
+  function loadUploadForm() {
+    var blocked = document.getElementById('tr-upload-blocked');
+    var form = document.getElementById('tr-upload-form');
+    if (!form) return;
+
+    _busy('Loading…');
+    App.call('transcript', 'getMyPrereqStatus', {}, function (status) {
+      _idle();
+      _prereqStatus = status;
+      if (!status.anyClaimable) {
+        // All prereqs are approved or under review — nothing to submit.
+        form.style.display = 'none';
+        blocked.style.display = 'block';
+        blocked.innerHTML = '<div class="empty-state" style="padding:24px;">' +
+          '<i class="ti ti-circle-check" style="font-size:30px;display:block;margin-bottom:8px;color:var(--color-success);"></i>' +
+          'All of your prerequisites are either approved or under review — there is nothing further to submit right now.</div>';
+        return;
+      }
+      blocked.style.display = 'none';
+      form.style.display = 'block';
+      _loadColleges();
+      _renderPrereqs();
+    }, function () { _idle(); });
+  }
+
+  function _loadColleges() {
+    App.call('transcript', 'listColleges', {}, function (cols) {
+      var sel = document.getElementById('tr-college');
+      if (!sel) return;
+      sel.innerHTML = '<option value="">— Select —</option>' +
+        (cols || []).map(function (c) {
+          return '<option value="' + esc(c.id) + '" data-name="' + esc(c.name) + '">' + esc(c.name) + '</option>';
+        }).join('');
+    });
+  }
+
+  // Render the ANTH 1/2/3 checkboxes reflecting lock state. Approved /
+  // under-review prereqs are shown disabled with their state; claimable
+  // ones are checkboxes. The selected college further disables prereqs
+  // whose (college, prereq) pair already returned No Articulation.
+  function _renderPrereqs() {
+    var box = document.getElementById('tr-prereqs');
+    if (!box || !_prereqStatus) return;
+    var collegeId = (document.getElementById('tr-college') || {}).value || '';
+    var noArt = _prereqStatus.noArticulationPairs || [];
+    var titles = _prereqStatus.titles || {};
+
+    // "ANTH 1 — Introduction to Biological Anthropology" (title in muted text);
+    // falls back to just the code if no title is configured.
+    function label(p) {
+      var t = titles[p];
+      return esc(p) + (t ? ' <span class="text-muted">— ' + esc(t) + '</span>' : '');
+    }
+
+    box.innerHTML = _prereqStatus.prereqs.map(function (p) {
+      var st = _prereqStatus.state[p];
+      if (st === 'approved') {
+        return '<div class="tr-prereq-row tr-prereq-locked"><i class="ti ti-circle-check" style="color:var(--color-success);"></i> ' +
+          label(p) + ' — already approved</div>';
+      }
+      if (st === 'pending') {
+        return '<div class="tr-prereq-row tr-prereq-locked"><i class="ti ti-clock"></i> ' +
+          label(p) + ' — submitted, under review</div>';
+      }
+      // Claimable — but check the (college, prereq) no-articulation pair.
+      var failedPair = collegeId && noArt.indexOf(collegeId + '|' + p) !== -1;
+      if (failedPair) {
+        return '<div class="tr-prereq-row tr-prereq-locked"><i class="ti ti-ban"></i> ' +
+          label(p) + ' — this college did not articulate for it; choose another college</div>';
+      }
+      return '<label class="tr-prereq-row"><input type="checkbox" class="tr-prereq-cb" value="' + esc(p) + '"> ' + label(p) + '</label>';
+    }).join('');
+  }
+
+  function onCollegeChange() { _renderPrereqs(); }
+
+  function _onFileChange(e) {
+    var errEl = document.getElementById('tr-file-error');
+    errEl.style.display = 'none';
+    _filePayload = null;
+    var file = e.target.files && e.target.files[0];
+    if (!file) return;
+    if (file.type !== 'application/pdf') {
+      errEl.textContent = 'The transcript must be a PDF file.'; errEl.style.display = 'block';
+      e.target.value = ''; return;
+    }
+    var reader = new FileReader();
+    reader.onload = function () {
+      var b64 = String(reader.result).split(',')[1] || '';
+      _filePayload = { dataBase64: b64, mimeType: 'application/pdf' };
+    };
+    reader.onerror = function () { errEl.textContent = 'Could not read that file. Try again.'; errEl.style.display = 'block'; };
+    reader.readAsDataURL(file);
+  }
+
+  function submitUpload() {
+    var sel = document.getElementById('tr-college');
+    var collegeId = sel ? sel.value : '';
+    var collegeName = sel && sel.selectedOptions.length ? (sel.selectedOptions[0].dataset.name || '') : '';
+    var prereqs = Array.prototype.slice.call(document.querySelectorAll('.tr-prereq-cb:checked')).map(function (cb) { return cb.value; });
+
+    if (!collegeId) { Toast.show('Select the community college this transcript is from.', 'error'); return; }
+    if (!prereqs.length) { Toast.show('Select at least one prerequisite.', 'error'); return; }
+    if (!_filePayload) { Toast.show('Attach the transcript PDF.', 'error'); return; }
+
+    var btn = document.getElementById('tr-submit-btn');
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="ti ti-loader"></i> Uploading…'; }
+    _busy('Uploading your transcript…');
+
+    App.call('transcript', 'uploadTranscript',
+      { sendingCollegeId: collegeId, sendingCollege: collegeName, claimedPrereqs: prereqs, file: _filePayload },
+      function (res) {
+        _idle();
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="ti ti-upload"></i> Submit transcript'; }
+        Toast.show(res.replaced ? 'Transcript replaced and resubmitted.' : 'Transcript submitted for review.', 'success');
+        _resetUpload();
+        switchTab('mine');
+      },
+      function () {
+        _idle();
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="ti ti-upload"></i> Submit transcript'; }
+      });
+  }
+
+  function _resetUpload() {
+    var f = document.getElementById('tr-file'); if (f) f.value = '';
+    _filePayload = null;
+    var sel = document.getElementById('tr-college'); if (sel) sel.value = '';
+  }
+
+  // ════════════════════════════════════════════════════════
+  // STUDENT — my transcripts
+  // ════════════════════════════════════════════════════════
+  function loadMine() {
+    var el = document.getElementById('tr-mine-list');
+    if (!el) return;
+    el.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
+    App.call('transcript', 'listMyTranscripts', {}, function (rows) {
+      if (!rows || !rows.length) {
+        el.innerHTML = '<div class="empty-state" style="padding:20px;">No transcripts uploaded yet.</div>';
+        return;
+      }
+      var body = rows.map(function (r) {
+        return '<tr>' +
+          '<td>' + esc(r.college || '') + '</td>' +
+          '<td>' + esc(r.claimedPrereqs || '') + '</td>' +
+          '<td>' + _statusBadge(r.status) + '</td>' +
+          '<td>' + (r.documentLink ? '<a href="' + esc(r.documentLink) + '" target="_blank" rel="noopener" class="text-sm"><i class="ti ti-file-text"></i> PDF</a>' : '—') + '</td>' +
+          '<td class="text-sm text-muted">' + esc(_fmtDate(r.uploadedAt)) + '</td>' +
+        '</tr>';
+      }).join('');
+      el.innerHTML = '<table class="data-table" style="width:100%;">' +
+        '<thead><tr><th>College</th><th>Prerequisites</th><th>Status</th><th>Document</th><th>Uploaded</th></tr></thead>' +
+        '<tbody>' + body + '</tbody></table>';
+    });
+  }
+
+  // ════════════════════════════════════════════════════════
+  // ADVISOR — review queue
+  // ════════════════════════════════════════════════════════
+  function loadQueue() {
+    var el = document.getElementById('tr-queue-list');
+    if (!el) return;
+    var recent = (document.getElementById('tr-include-recent') || {}).checked;
+    el.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
+    App.call('transcript', 'listQueue', { includeRecent: !!recent }, function (rows) {
+      if (!rows || !rows.length) {
+        el.innerHTML = '<div class="empty-state" style="padding:20px;">' +
+          '<i class="ti ti-circle-check" style="font-size:28px;display:block;margin-bottom:8px;color:var(--color-success);"></i>' +
+          'Nothing awaiting review.</div>';
+        return;
+      }
+      var body = rows.map(function (r) {
+        var action = (r.status === 'Pending Review')
+          ? '<button class="btn btn-primary btn-sm" onclick="TranscriptUI.openReview(\'' + esc(r.transcriptId) + '\')"><i class="ti ti-eye"></i> Review</button>'
+          : '<button class="btn btn-secondary btn-sm" onclick="TranscriptUI.openReview(\'' + esc(r.transcriptId) + '\')">View</button>';
+        var collegeCell = r.assistUrl
+          ? '<a href="' + esc(r.assistUrl) + '" target="_blank" rel="noopener" title="View this college\'s UCSC agreement on ASSIST">' + esc(r.college || '') + ' <i class="ti ti-external-link" style="font-size:0.85em;"></i></a>'
+          : esc(r.college || '');
+        return '<tr>' +
+          '<td>' + esc(r.studentName || r.studentEmail || '') + '</td>' +
+          '<td>' + collegeCell + '</td>' +
+          '<td>' + esc(r.claimedPrereqs || '') + '</td>' +
+          '<td>' + _statusBadge(r.status) + '</td>' +
+          '<td>' + (r.documentLink ? '<a href="' + esc(r.documentLink) + '" target="_blank" rel="noopener" class="text-sm"><i class="ti ti-file-text"></i> PDF</a>' : '—') + '</td>' +
+          '<td>' + action + '</td>' +
+        '</tr>';
+      }).join('');
+      el.innerHTML = '<table class="data-table" style="width:100%;">' +
+        '<thead><tr><th>Student</th><th>College</th><th>Prerequisites</th><th>Status</th><th>Document</th><th></th></tr></thead>' +
+        '<tbody>' + body + '</tbody></table>';
+    });
+  }
+
+  function openReview(transcriptId) {
+    App.call('transcript', 'getTranscript', { transcriptId: transcriptId }, function (r) {
+      var terminal = (r.status !== 'Pending Review');
+      var body = document.getElementById('tr-modal-body');
+      body.innerHTML =
+        '<div class="text-sm" style="margin:6px 0 14px;">' +
+          '<div><strong>Student:</strong> ' + esc(r.studentName || r.studentEmail) + '</div>' +
+          '<div><strong>College:</strong> ' +
+            (r.assistUrl
+              ? '<a href="' + esc(r.assistUrl) + '" target="_blank" rel="noopener" title="View this college\'s UCSC agreement on ASSIST">' + esc(r.college) + ' <i class="ti ti-external-link" style="font-size:0.85em;"></i></a>'
+              : esc(r.college)) +
+          '</div>' +
+          '<div><strong>Prerequisites claimed:</strong> ' + esc(r.claimedPrereqs) + '</div>' +
+          '<div><strong>Status:</strong> ' + _statusBadge(r.status) + '</div>' +
+          (r.documentLink ? '<div style="margin-top:8px;"><a class="btn btn-secondary btn-sm" href="' + esc(r.documentLink) + '" target="_blank" rel="noopener"><i class="ti ti-file-text"></i> Open transcript PDF</a></div>' : '') +
+        '</div>' +
+        (r.reviewNote ? '<div class="text-sm text-muted" style="margin-bottom:10px;"><strong>Prior note:</strong> ' + esc(r.reviewNote) + '</div>' : '') +
+        '<div class="form-group">' +
+          '<label class="form-label" for="tr-review-note">Note to student (optional — appended to their email)</label>' +
+          '<textarea class="form-textarea" id="tr-review-note" rows="3">' + esc(r.reviewNote || '') + '</textarea>' +
+        '</div>' +
+        // Reminder gate for Mark Processed: confirm the credit was entered in
+        // the separate Other Credit Quick system. Required for Processed only;
+        // No Articulation grants no credit and is unaffected.
+        '<label class="tr-prereq-row" style="margin-bottom:10px;">' +
+          '<input type="checkbox" id="tr-occ-confirm"> ' +
+          'I have entered this credit in <strong style="margin:0 4px;">Other Credit Quick</strong> for ' + esc(r.claimedPrereqs || 'this prerequisite') +
+        '</label>' +
+        '<div class="flex gap-2" style="flex-wrap:wrap;margin-top:6px;">' +
+          '<button class="btn btn-primary btn-sm" onclick="TranscriptUI.review(\'' + esc(r.transcriptId) + '\',\'Processed\')"><i class="ti ti-check"></i> Mark Processed</button>' +
+          '<button class="btn btn-secondary btn-sm" onclick="TranscriptUI.review(\'' + esc(r.transcriptId) + '\',\'No Articulation\')"><i class="ti ti-x"></i> No Articulation</button>' +
+          '<button class="btn btn-secondary btn-sm" style="margin-left:auto;" onclick="TranscriptUI.override(\'' + esc(r.transcriptId) + '\')" title="Reopen this transcript for review"><i class="ti ti-rotate"></i> Reopen</button>' +
+          (_isSuperAdmin
+            ? '<button class="btn btn-secondary btn-sm" style="color:var(--color-danger);border-color:var(--color-danger);" onclick="TranscriptUI.deleteTranscript(\'' + esc(r.transcriptId) + '\')" title="Permanently delete this transcript and its PDF"><i class="ti ti-trash"></i> Delete</button>'
+            : '') +
+        '</div>';
+      document.getElementById('tr-modal').style.display = 'flex';
+    });
+  }
+
+  function review(transcriptId, status) {
+    var note = (document.getElementById('tr-review-note') || {}).value || '';
+    var confirmed = (document.getElementById('tr-occ-confirm') || {}).checked === true;
+    // Processed requires confirming the Other Credit Quick entry first.
+    if (status === 'Processed' && !confirmed) {
+      Toast.show('Confirm the credit has been entered in Other Credit Quick before marking Processed.', 'error');
+      return;
+    }
+    if (!confirm('Mark this transcript "' + status + '"? The student will be emailed.')) return;
+    _busy('Recording review and notifying the student…');
+    App.call('transcript', 'recordReview',
+      { transcriptId: transcriptId, status: status, note: note, otherCreditConfirmed: confirmed },
+      function () {
+        _idle();
+        Toast.show('Recorded "' + status + '" and notified the student.', 'success');
+        closeModal();
+        loadQueue();
+      },
+      function () { _idle(); });
+  }
+
+  function override(transcriptId) {
+    if (!confirm('Reopen this transcript for review (revert to Pending)? This clears the recorded decision.')) return;
+    _busy('Reopening transcript…');
+    App.call('transcript', 'overrideReset', { transcriptId: transcriptId }, function () {
+      _idle();
+      Toast.show('Transcript reopened.', 'success');
+      closeModal();
+      loadQueue();
+    }, function () { _idle(); });
+  }
+
+  function deleteTranscript(transcriptId) {
+    if (!confirm('Permanently delete this transcript and its PDF? This removes the record and the uploaded file. This cannot be undone.')) return;
+    _busy('Deleting transcript…');
+    App.call('transcript', 'overrideReset', { transcriptId: transcriptId, delete: true }, function () {
+      _idle();
+      Toast.show('Transcript deleted.', 'success');
+      closeModal();
+      loadQueue();
+    }, function () { _idle(); });
+  }
+
+  function closeModal() { document.getElementById('tr-modal').style.display = 'none'; }
+
+  // ════════════════════════════════════════════════════════
+  // ADMIN — settings
+  // ════════════════════════════════════════════════════════
+  function loadSettings() {
+    var el = document.getElementById('tr-settings');
+    if (!el) return;
+    App.call('transcript', 'getSettings', {}, function (s) {
+      el.innerHTML =
+        '<div class="form-group">' +
+          '<label class="text-sm"><input type="checkbox" id="tr-digest" ' + (String(s.DIGEST_ENABLED).toUpperCase() === 'TRUE' ? 'checked' : '') + '> ' +
+          'Send the morning digest of pending transcripts to advisors</label>' +
+        '</div>' +
+        '<div class="form-group">' +
+          '<label class="form-label" for="tr-tmpl-processed">"Processed" message</label>' +
+          '<textarea class="form-textarea" id="tr-tmpl-processed" rows="5">' + esc(s.NOTIFY_PROCESSED || '') + '</textarea>' +
+        '</div>' +
+        '<div class="form-group">' +
+          '<label class="form-label" for="tr-tmpl-noart">"No Articulation" message</label>' +
+          '<textarea class="form-textarea" id="tr-tmpl-noart" rows="5">' + esc(s.NOTIFY_NO_ARTICULATION || '') + '</textarea>' +
+        '</div>' +
+        '<button class="btn btn-primary btn-sm" onclick="TranscriptUI.saveSettings()"><i class="ti ti-device-floppy"></i> Save notifications</button>';
+    });
+  }
+
+  function saveSettings() {
+    var payload = {
+      DIGEST_ENABLED: (document.getElementById('tr-digest') || {}).checked === true,
+      NOTIFY_PROCESSED: (document.getElementById('tr-tmpl-processed') || {}).value || '',
+      NOTIFY_NO_ARTICULATION: (document.getElementById('tr-tmpl-noart') || {}).value || '',
+    };
+    App.call('transcript', 'saveSettings', payload, function () {
+      Toast.show('Notification settings saved.', 'success');
+    });
+  }
+
+  function shareFolder() {
+    var btn = document.getElementById('tr-share-btn');
+    var report = document.getElementById('tr-share-report');
+    if (btn) btn.disabled = true;
+    _busy('Sharing folder with advisors…');
+    App.call('transcript', 'shareFolderWithAdvisors', {}, function (res) {
+      _idle();
+      if (btn) btn.disabled = false;
+      var msg = 'Shared with ' + res.shared + ' of ' + res.advisors + ' advisor(s).';
+      if (res.failed && res.failed.length) {
+        msg += ' Failed: ' + res.failed.map(function (f) { return esc(f.email); }).join(', ');
+      }
+      if (report) report.innerHTML = msg;
+      Toast.show('Folder sharing updated.', 'success');
+    }, function () {
+      _idle();
+      if (btn) btn.disabled = false;
+    });
+  }
+
+  // ════════════════════════════════════════════════════════
+  // ADMIN — Articulations (sync / summary / review) — preserved
+  // ════════════════════════════════════════════════════════
   function _loadYears() {
-    App.call('transcript', 'listAcademicYears', {}, res => {
+    App.call('transcript', 'listAcademicYears', {}, function (res) {
       _years = res.years || [];
       _defaultYearId = res.defaultId;
       var sel = document.getElementById('ts-year');
@@ -114,10 +681,8 @@ window.TranscriptUI = (() => {
     });
   }
 
-  // Compares stored years against the years ASSIST offers, and nudges if a
-  // newer catalog year is available than anything stored. Never auto-syncs.
   function _refreshFreshness() {
-    App.call('transcript', 'getSummary', {}, sum => {
+    App.call('transcript', 'getSummary', {}, function (sum) {
       var el = document.getElementById('ts-freshness');
       if (!el) return;
       var storedYears = Object.keys(sum.years || {});
@@ -125,30 +690,25 @@ window.TranscriptUI = (() => {
         el.innerHTML = '<span style="color:var(--color-danger);">Never synced</span>';
         return;
       }
-      // Latest stored year code, and the latest year ASSIST offers.
       storedYears.sort();
       var latestStored = storedYears[storedYears.length - 1];
       var latestOffered = _years.length ? _years[_years.length - 1].code : latestStored;
       if (latestOffered > latestStored) {
         el.innerHTML = '<span style="color:var(--color-danger);">' +
-          esc(latestOffered) + ' is available — last synced ' +
-          esc(latestStored) + '</span>';
+          esc(latestOffered) + ' is available — last synced ' + esc(latestStored) + '</span>';
       } else {
         el.textContent = 'Synced for ' + latestStored;
       }
     });
   }
 
-  // ── Sync ────────────────────────────────────────────────
   function sync() {
     var sel = document.getElementById('ts-year');
     var yearId = sel ? Number(sel.value) : _defaultYearId;
     var yearCode = '';
     _years.forEach(function (y) { if (y.id === yearId) yearCode = y.code; });
-
     if (!confirm('Sync articulations for ' + yearCode + '? This replaces the ' +
                  'stored rows for that year (other years are kept).')) return;
-
     var btn = document.getElementById('ts-sync-btn');
     if (btn) { btn.disabled = true; btn.innerHTML = '<i class="ti ti-loader"></i> Syncing…'; }
     var report = document.getElementById('ts-report');
@@ -156,16 +716,12 @@ window.TranscriptUI = (() => {
       report.innerHTML = '<div class="module-loading"><div class="spinner"></div>' +
         '<span>Contacting ASSIST — this can take a minute…</span></div>';
     }
-
     App.call('transcript', 'syncArticulations', { academicYearId: yearId, academicYearCode: yearCode },
       function (res) {
         if (btn) { btn.disabled = false; btn.innerHTML = '<i class="ti ti-download"></i> Sync from ASSIST'; }
-        Toast.show('Sync complete: ' + res.trustedRowCount + ' trusted, ' +
-                   res.flaggedRowCount + ' to review.', 'success');
+        Toast.show('Sync complete: ' + res.trustedRowCount + ' trusted, ' + res.flaggedRowCount + ' to review.', 'success');
         _renderReport(res);
-        loadSummary();
-        loadReview();
-        _refreshFreshness();
+        loadSummary(); loadReview(); _refreshFreshness();
       },
       function () {
         if (btn) { btn.disabled = false; btn.innerHTML = '<i class="ti ti-download"></i> Sync from ASSIST'; }
@@ -183,19 +739,12 @@ window.TranscriptUI = (() => {
     if (!el) return;
     var without = (r.collegesWithoutAnthroAgreement || []);
     var fails = (r.fetchFailures || []);
-
     var html = '<div class="card" style="border:1px solid var(--color-border);box-shadow:none;margin:0;">' +
       '<div style="font-weight:600;margin-bottom:8px;">Sync report — ' + esc(r.academicYearCode) + '</div>' +
-      '<div class="text-sm" style="margin-bottom:4px;">' +
-        'Colleges checked: <strong>' + r.institutionsChecked + '</strong>' +
-        ' &nbsp;·&nbsp; with an Anthropology agreement: <strong>' +
-        (r.collegesWithAnthroAgreement || []).length + '</strong>' +
-      '</div>' +
-      '<div class="text-sm" style="margin-bottom:4px;">' +
-        'Trusted equivalencies: <strong>' + r.trustedRowCount + '</strong>' +
-        ' &nbsp;·&nbsp; sent to review: <strong>' + r.flaggedRowCount + '</strong>' +
-      '</div>';
-
+      '<div class="text-sm" style="margin-bottom:4px;">Colleges checked: <strong>' + r.institutionsChecked + '</strong>' +
+        ' &nbsp;·&nbsp; with an Anthropology agreement: <strong>' + (r.collegesWithAnthroAgreement || []).length + '</strong></div>' +
+      '<div class="text-sm" style="margin-bottom:4px;">Trusted equivalencies: <strong>' + r.trustedRowCount + '</strong>' +
+        ' &nbsp;·&nbsp; sent to review: <strong>' + r.flaggedRowCount + '</strong></div>';
     if (without.length) {
       html += '<details style="margin-top:8px;"><summary class="text-sm text-muted">' +
         without.length + ' college(s) with no Anthropology agreement</summary>' +
@@ -203,19 +752,16 @@ window.TranscriptUI = (() => {
         without.map(function (c) { return esc(c); }).join(', ') + '</div></details>';
     }
     if (fails.length) {
-      html += '<details style="margin-top:8px;" open><summary class="text-sm" ' +
-        'style="color:var(--color-danger);">' + fails.length + ' fetch failure(s)</summary>' +
-        '<div class="text-sm" style="margin-top:6px;">' +
-        fails.map(function (f) { return esc(f.college) + ': ' + esc(f.error); }).join('<br>') +
-        '</div></details>';
+      html += '<details style="margin-top:8px;" open><summary class="text-sm" style="color:var(--color-danger);">' +
+        fails.length + ' fetch failure(s)</summary><div class="text-sm" style="margin-top:6px;">' +
+        fails.map(function (f) { return esc(f.college) + ': ' + esc(f.error); }).join('<br>') + '</div></details>';
     }
     html += '</div>';
     el.innerHTML = html;
   }
 
-  // ── Stored summary ──────────────────────────────────────
   function loadSummary() {
-    App.call('transcript', 'getSummary', {}, sum => {
+    App.call('transcript', 'getSummary', {}, function (sum) {
       var el = document.getElementById('ts-summary');
       if (!el) return;
       var years = sum.years || {};
@@ -232,43 +778,72 @@ window.TranscriptUI = (() => {
           '<td style="text-align:right;">' + y.trusted + '</td>' +
           '<td style="text-align:right;">' + y.flagged + '</td></tr>';
       }).join('');
-      el.innerHTML =
-        '<table class="data-table" style="width:100%;">' +
-        '<thead><tr><th>Catalog year</th>' +
-        '<th style="text-align:right;">Trusted</th>' +
-        '<th style="text-align:right;">To review</th></tr></thead>' +
-        '<tbody>' + rows + '</tbody></table>';
+      el.innerHTML = '<table class="data-table" style="width:100%;">' +
+        '<thead><tr><th>Catalog year</th><th style="text-align:right;">Trusted</th>' +
+        '<th style="text-align:right;">To review</th></tr></thead><tbody>' + rows + '</tbody></table>';
     });
   }
 
-  // ── Review list ─────────────────────────────────────────
   function loadReview() {
     var el = document.getElementById('ts-review');
+    var countEl = document.getElementById('ts-review-count');
     if (el) el.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
     App.call('transcript', 'listReview', {}, function (rows) {
+      if (countEl) countEl.textContent = (rows && rows.length) ? String(rows.length) : '0';
       if (!el) return;
       if (!rows || !rows.length) {
         el.innerHTML = '<div class="empty-state" style="padding:20px;">' +
-          '<i class="ti ti-circle-check" style="font-size:28px;display:block;margin-bottom:8px;' +
-          'color:var(--color-success);"></i>Nothing to review.</div>';
+          '<i class="ti ti-circle-check" style="font-size:28px;display:block;margin-bottom:8px;color:var(--color-success);"></i>' +
+          'Nothing to review.</div>';
         return;
       }
       var body = rows.map(function (r) {
+        var link = r.AssistUrl
+          ? '<a href="' + esc(r.AssistUrl) + '" target="_blank" rel="noopener" class="text-sm" style="white-space:nowrap;">' +
+            '<i class="ti ti-external-link"></i> View on ASSIST</a>'
+          : '<span class="text-sm text-muted">—</span>';
         return '<tr>' +
           '<td>' + esc(r.SendingCollege || '') + '</td>' +
           '<td>' + esc((r.ReceivingPrefix || '') + ' ' + (r.ReceivingNumber || '')) + '</td>' +
           '<td>' + esc(r.Reason || '') + '</td>' +
           '<td>' + esc(r.CatalogYear || '') + '</td>' +
-        '</tr>';
+          '<td>' + link + '</td></tr>';
       }).join('');
-      el.innerHTML =
-        '<table class="data-table" style="width:100%;">' +
-        '<thead><tr><th>College</th><th>UCSC course</th><th>Why</th><th>Year</th></tr></thead>' +
+      el.innerHTML = '<table class="data-table" style="width:100%;">' +
+        '<thead><tr><th>College</th><th>UCSC course</th><th>Why</th><th>Year</th><th>ASSIST</th></tr></thead>' +
         '<tbody>' + body + '</tbody></table>';
     });
   }
 
-  return { init: init, sync: sync, loadSummary: loadSummary, loadReview: loadReview };
+  // ── Shared helpers ──────────────────────────────────────
+  function _statusBadge(status) {
+    var cls = 'badge';
+    if (status === 'Processed') cls = 'badge badge-success';
+    else if (status === 'No Articulation') cls = 'badge badge-danger';
+    else if (status === 'Pending Review') cls = 'badge badge-warning';
+    return '<span class="' + cls + '">' + esc(status || '') + '</span>';
+  }
+  function _fmtDate(iso) {
+    if (!iso) return '';
+    var d = new Date(iso);
+    return isNaN(d.getTime()) ? String(iso) : d.toLocaleDateString();
+  }
+
+  // Wire the file input once the DOM is present.
+  (function () {
+    var f = document.getElementById('tr-file');
+    if (f) f.addEventListener('change', _onFileChange);
+  })();
+
+  return {
+    init: init, switchTab: switchTab,
+    // student
+    loadUploadForm: loadUploadForm, onCollegeChange: onCollegeChange, submitUpload: submitUpload, loadMine: loadMine,
+    // advisor
+    loadQueue: loadQueue, openReview: openReview, review: review, override: override, deleteTranscript: deleteTranscript, closeModal: closeModal,
+    // admin
+    sync: sync, loadSummary: loadSummary, loadReview: loadReview, loadSettings: loadSettings, saveSettings: saveSettings, shareFolder: shareFolder,
+  };
 
 })();
 

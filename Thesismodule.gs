@@ -148,6 +148,7 @@ const ThesisModule = (() => {
 
       const fileName = _buildFileName(quarter, year, profile);
       const replaced = _replacePdf(rec.DriveFileID, payload.file, fileName);
+      _grantStudentView(replaced.fileId, rec.StudentEmail);
 
       DataService.update(CONFIG.SHEETS.THESIS, TAB, 'ThesisID', existingId, {
         Quarter: quarter, Year: year, Title: title, Abstract: abstract,
@@ -187,6 +188,7 @@ const ThesisModule = (() => {
     const thesisId = DataService.generateId('THES');
     const fileName = _buildFileName(quarter, year, profile);
     const link = _uploadPdf(payload.file, fileName);
+    _grantStudentView(link.fileId, user);
 
     DataService.insert(CONFIG.SHEETS.THESIS, TAB, {
       ThesisID: thesisId,
@@ -438,6 +440,13 @@ const ThesisModule = (() => {
       MilestoneEntered: approved ? 'TRUE' : '',
       Stage: STAGE.COMPLETE,
     });
+
+    // Public access: only now (completed), only if accepted, only with the
+    // student's consent. A No Pass close-out is never published. Best-effort
+    // — a sharing-policy hiccup must not fail completion.
+    if (approved && String(rec.ShareConsent).toUpperCase() === 'TRUE') {
+      _setPdfLinkSharing(rec.DriveFileID, true);
+    }
     const student = Auth.getProfile(rec.StudentEmail);
     const doneRec = _byId(rec.ThesisID);
     // Outcome wording from the STUDENT's view — a denied honors referral
@@ -562,6 +571,9 @@ const ThesisModule = (() => {
     // Trash the PDF if it still exists; a missing file must not block deletion.
     const fileId = String(rec.DriveFileID || '').trim();
     if (fileId) {
+      // Revoke any public link-sharing first, so a published thesis cannot
+      // remain world-readable if the trash step is denied.
+      _setPdfLinkSharing(fileId, false);
       try { DriveApp.getFileById(fileId).setTrashed(true); }
       catch (err) { Logger.log('deleteThesis: could not trash file ' + fileId + ' (' + err + ')'); }
     }
@@ -769,6 +781,56 @@ const ThesisModule = (() => {
 
 
   // ── Drive helpers ──────────────────────────────────────────
+  //
+  // Access model: faculty and staff reach thesis PDFs through DIRECTORY-
+  // level sharing on the configured Drive folder (managed in Drive, not by
+  // this module — if a sponsor/reader/advisor ever cannot open a PDF, the
+  // fix is folder sharing, not code). Students are deliberately NOT given
+  // folder access (they would see everyone's theses), so each student is
+  // granted explicit viewer access to THEIR OWN file on submission.
+
+  /**
+   * Best-effort: grant a student view access to their own thesis PDF.
+   * Never throws — a sharing hiccup (non-Google address, domain sharing
+   * policy) must not fail the submission; the access grant is secondary
+   * to the record being saved. Idempotent: re-adding an existing viewer
+   * is a no-op.
+   */
+  function _grantStudentView(fileId, studentEmail) {
+    const id = String(fileId || '').trim();
+    const email = String(studentEmail || '').trim();
+    if (!id || !email) return;
+    try {
+      DriveApp.getFileById(id).addViewer(email);
+    } catch (err) {
+      Logger.log('ThesisModule._grantStudentView: could not grant ' + email +
+                 ' on ' + id + ' (' + err + ')');
+    }
+  }
+
+  /**
+   * Sets (or revokes) "anyone with the link can view" on a thesis PDF.
+   * Used to publish a completed, accepted, consented thesis. Best-effort
+   * and never throws — a domain sharing policy may forbid link sharing,
+   * which must not fail the completion that triggered it. Idempotent.
+   * @param {string} fileId
+   * @param {boolean} publicView - true to publish, false to revoke
+   */
+  function _setPdfLinkSharing(fileId, publicView) {
+    const id = String(fileId || '').trim();
+    if (!id) return;
+    try {
+      const f = DriveApp.getFileById(id);
+      if (publicView) {
+        f.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+      } else {
+        f.setSharing(DriveApp.Access.PRIVATE, DriveApp.Permission.NONE);
+      }
+    } catch (err) {
+      Logger.log('ThesisModule._setPdfLinkSharing(' + publicView + '): could not update ' +
+                 id + ' (' + err + ')');
+    }
+  }
 
   /** Uploads a new PDF to the configured folder. Returns { fileId, url }. */
   function _uploadPdf(file, fileName) {

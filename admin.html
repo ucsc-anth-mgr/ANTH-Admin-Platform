@@ -94,6 +94,31 @@
       <div class="card-title between"><span><i class="ti ti-users"></i> User roster</span>
         <button class="btn btn-secondary btn-sm" onclick="AdminUI.loadUsers()"><i class="ti ti-refresh"></i> Refresh</button>
       </div>
+
+      <!-- search / filter controls -->
+      <div id="au-controls" style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:14px;">
+        <div class="form-group" style="flex:1 1 240px;margin:0;">
+          <label class="form-label" for="au-search">Search</label>
+          <input class="form-input" type="text" id="au-search" placeholder="Name, email, or ID" oninput="AdminUI.onUserFilterChange()">
+        </div>
+        <div class="form-group" style="flex:0 1 200px;margin:0;">
+          <label class="form-label" for="au-filter-role">Role</label>
+          <select class="form-select" id="au-filter-role" onchange="AdminUI.onUserFilterChange()">
+            <option value="">All roles</option>
+          </select>
+        </div>
+        <div class="form-group" style="flex:0 1 160px;margin:0;">
+          <label class="form-label" for="au-filter-status">Status</label>
+          <select class="form-select" id="au-filter-status" onchange="AdminUI.onUserFilterChange()">
+            <option value="all">All statuses</option>
+            <option value="active">Active only</option>
+            <option value="inactive">Inactive only</option>
+          </select>
+        </div>
+        <button class="btn btn-secondary" id="au-clear-filters" onclick="AdminUI.clearUserFilters()" style="margin-bottom:0;"><i class="ti ti-filter-off"></i> Clear</button>
+      </div>
+      <div id="au-count" class="text-sm text-muted" style="margin-bottom:10px;"></div>
+
       <div id="users-table"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
     </div>
   </div>
@@ -324,6 +349,10 @@ window.AdminUI = (() => {
   let _availableHandlers = [];
   let _editingKey = null;
 
+  // users-roster state
+  let _users = [];                                 // last fetched roster (cache)
+  let _userSort = { key: 'name', dir: 'asc' };     // current sort
+
   function init() {
     loadModules();
     App.call('admin', 'listRoles', {}, roles => { _roles = roles; _renderRoleCheckboxes(roles); });
@@ -521,24 +550,143 @@ window.AdminUI = (() => {
     const el = document.getElementById('users-table');
     el.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
     App.call('admin', 'listUsers', {}, users => {
-      if (!users.length) { el.innerHTML = '<div class="empty-state">No users configured yet.</div>'; return; }
-      const rows = users.map(u => {
-        const roleBadges = (u.roles || []).map(r => `<span class="badge badge-navy" style="margin:1px;">${r}</span>`).join(' ');
-        const ids = [];
-        if (u.studentId) ids.push(`${u.studentId} <span class="text-muted text-sm">(student)</span>`);
-        if (u.employeeId) ids.push(`${u.employeeId} <span class="text-muted text-sm">(employee)</span>`);
-        const idText = ids.length ? ids.join('<br>') : '<span class="text-muted">—</span>';
-        return `
-          <tr>
-            <td>${u.nameLastFirst || '<span class="text-muted">—</span>'}<div class="text-sm text-muted">${u.email}</div></td>
-            <td>${roleBadges}</td>
-            <td>${idText}</td>
-            <td><span class="badge ${u.active?'badge-success':'badge-neutral'}">${u.active?'Active':'Inactive'}</span></td>
-            <td><a class="edit-link" onclick='AdminUI.editUser(${JSON.stringify(u).replace(/'/g,"&#39;")})'><i class="ti ti-pencil"></i> Edit</a></td>
-          </tr>`;
-      }).join('');
-      el.innerHTML = `<div class="table-wrap"><table class="data-table"><thead><tr><th>Name / Email</th><th>Roles</th><th>ID</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+      if (!document.getElementById('users-table')) return;
+      _users = users || [];
+      _populateUserRoleFilter();
+      _renderUsers();
     });
+  }
+
+  // Role filter populated from all defined roles (_roles), preserving selection.
+  function _populateUserRoleFilter() {
+    const sel = document.getElementById('au-filter-role');
+    if (!sel) return;
+    const prev = sel.value;
+    const roles = (_roles || []).slice().sort();
+    sel.innerHTML = '<option value="">All roles</option>'
+      + roles.map(r => `<option value="${String(r).replace(/"/g,'&quot;')}">${r}</option>`).join('');
+    if (roles.indexOf(prev) !== -1) sel.value = prev;
+  }
+
+  function onUserFilterChange() { _renderUsers(); }
+
+  function clearUserFilters() {
+    const s = document.getElementById('au-search');         if (s) s.value = '';
+    const r = document.getElementById('au-filter-role');    if (r) r.value = '';
+    const st = document.getElementById('au-filter-status'); if (st) st.value = 'all';
+    _renderUsers();
+  }
+
+  function sortUsersBy(key) {
+    if (_userSort.key === key) {
+      _userSort.dir = _userSort.dir === 'asc' ? 'desc' : 'asc';
+    } else {
+      _userSort.key = key;
+      _userSort.dir = 'asc';
+    }
+    _renderUsers();
+  }
+
+  // Apply search + filters + sort to the cache and draw the roster table.
+  function _renderUsers() {
+    const el = document.getElementById('users-table');
+    if (!el) return;
+
+    if (!_users.length) {
+      el.innerHTML = '<div class="empty-state">No users configured yet.</div>';
+      _updateUserCount(0, 0);
+      return;
+    }
+
+    const q = (document.getElementById('au-search') || {}).value || '';
+    const roleFilter = (document.getElementById('au-filter-role') || {}).value || '';
+    const statusFilter = (document.getElementById('au-filter-status') || {}).value || 'all';
+    const needle = q.trim().toLowerCase();
+
+    let rows = _users.filter(u => {
+      if (statusFilter === 'active' && !u.active) return false;
+      if (statusFilter === 'inactive' && u.active) return false;
+      if (roleFilter && !(u.roles || []).includes(roleFilter)) return false;
+      if (needle) {
+        const hay = [
+          u.nameLastFirst, u.name, u.firstName, u.lastName, u.email,
+          u.studentId, u.employeeId,
+        ].filter(Boolean).join(' ').toLowerCase();
+        if (hay.indexOf(needle) === -1) return false;
+      }
+      return true;
+    });
+
+    rows = _sortUserRows(rows);
+    _updateUserCount(rows.length, _users.length);
+
+    if (!rows.length) {
+      el.innerHTML = '<div class="empty-state"><i class="ti ti-search-off" style="font-size:28px;display:block;margin-bottom:8px;"></i>No users match your filters.</div>';
+      return;
+    }
+
+    const body = rows.map(u => _userRowHtml(u)).join('');
+    el.innerHTML = `<div class="table-wrap"><table class="data-table"><thead><tr>`
+      + _userTh('Name / Email', 'name')
+      + _userTh('Roles', 'roles')
+      + _userTh('ID', 'ids')
+      + _userTh('Status', 'status')
+      + `<th></th></tr></thead><tbody>${body}</tbody></table></div>`;
+  }
+
+  function _userTh(label, key) {
+    const active = _userSort.key === key;
+    const arrow = active ? (_userSort.dir === 'asc' ? ' ▲' : ' ▼') : '';
+    return `<th style="cursor:pointer;user-select:none;white-space:nowrap;" onclick="AdminUI.sortUsersBy('${key}')">${label}<span class="text-muted">${arrow}</span></th>`;
+  }
+
+  function _sortUserRows(rows) {
+    const dir = _userSort.dir === 'asc' ? 1 : -1;
+    const key = _userSort.key;
+    const val = u => {
+      switch (key) {
+        case 'roles':  return (u.roles || []).slice().sort().join(',').toLowerCase();
+        case 'ids':    return (u.studentId || u.employeeId || '').toString();
+        case 'status': return u.active ? '0' : '1';
+        case 'name':
+        default:       return (u.nameLastFirst || u.email || '').toLowerCase();
+      }
+    };
+    return rows.slice().sort((a, b) => {
+      const av = val(a), bv = val(b);
+      if (av < bv) return -1 * dir;
+      if (av > bv) return  1 * dir;
+      const ae = (a.email || '').toLowerCase(), be = (b.email || '').toLowerCase();
+      return ae < be ? -1 : ae > be ? 1 : 0;
+    });
+  }
+
+  function _userRowHtml(u) {
+    const roleBadges = (u.roles || []).map(r => `<span class="badge badge-navy" style="margin:1px;">${r}</span>`).join(' ');
+    const ids = [];
+    if (u.studentId) ids.push(`${u.studentId} <span class="text-muted text-sm">(student)</span>`);
+    if (u.employeeId) ids.push(`${u.employeeId} <span class="text-muted text-sm">(employee)</span>`);
+    const idText = ids.length ? ids.join('<br>') : '<span class="text-muted">—</span>';
+    // Don't repeat the email as the name when no real name is stored.
+    const nameCell = (u.nameLastFirst && u.nameLastFirst !== u.email)
+      ? u.nameLastFirst
+      : '<span class="text-muted">—</span>';
+    return `
+      <tr>
+        <td>${nameCell}<div class="text-sm text-muted">${u.email}</div></td>
+        <td>${roleBadges}</td>
+        <td>${idText}</td>
+        <td><span class="badge ${u.active?'badge-success':'badge-neutral'}">${u.active?'Active':'Inactive'}</span></td>
+        <td><a class="edit-link" onclick='AdminUI.editUser(${JSON.stringify(u).replace(/'/g,"&#39;")})'><i class="ti ti-pencil"></i> Edit</a></td>
+      </tr>`;
+  }
+
+  function _updateUserCount(shown, total) {
+    const el = document.getElementById('au-count');
+    if (!el) return;
+    el.textContent = (shown === total)
+      ? `${total} user${total === 1 ? '' : 's'}`
+      : `Showing ${shown} of ${total} users`;
   }
 
   function _renderRoleCheckboxes(roles) {
@@ -924,15 +1072,6 @@ window.AdminUI = (() => {
     }, () => FormHelper.setLoading('save-thesis-settings-btn', false));
   }
 
-  function saveThesisSettings() {
-    const notifyOnHandoff = document.getElementById('th-notify-handoff').checked;
-    FormHelper.setLoading('save-thesis-settings-btn', true, 'Saving…');
-    App.call('admin', 'saveThesisSettings', { notifyOnHandoff }, () => {
-      FormHelper.setLoading('save-thesis-settings-btn', false);
-      Toast.show('Thesis settings saved.', 'success');
-    }, () => FormHelper.setLoading('save-thesis-settings-btn', false));
-  }
-
   function _slugId(s) { return String(s).replace(/[^a-zA-Z0-9]+/g, '_'); }
   function _escAttr(s) {
     return String(s == null ? '' : s)
@@ -950,7 +1089,7 @@ window.AdminUI = (() => {
     });
   }
 
-  return { init, switchTab, loadModules, toggleModule, deleteModule, openModuleForm, editModule, closeModuleForm, checkHandler, pickIcon, onModuleChip, saveModule, loadUsers, onChip, editUser, saveUser, clearUserForm, loadAudit, loadRoles, editRole, saveRole, clearRoleForm, deleteRole, explainBlocked, loadRequests, approveRequest, rejectRequest, loadImportPolicy, editPolicy, savePolicy, deletePolicy, loadNotifyRules, editNotifyRule, saveNotifyRule, deleteNotifyRule, loadThesisRoster, toggleThesis, loadThesisSettings, saveThesisSettings };
+  return { init, switchTab, loadModules, toggleModule, deleteModule, openModuleForm, editModule, closeModuleForm, checkHandler, pickIcon, onModuleChip, saveModule, loadUsers, onUserFilterChange, clearUserFilters, sortUsersBy, onChip, editUser, saveUser, clearUserForm, loadAudit, loadRoles, editRole, saveRole, clearRoleForm, deleteRole, explainBlocked, loadRequests, approveRequest, rejectRequest, loadImportPolicy, editPolicy, savePolicy, deletePolicy, loadNotifyRules, editNotifyRule, saveNotifyRule, deleteNotifyRule, loadThesisRoster, toggleThesis, loadThesisSettings, saveThesisSettings };
 
 })();
 

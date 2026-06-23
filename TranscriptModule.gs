@@ -120,6 +120,13 @@ const TranscriptModule = (() => {
    * confirm against assist.org. Optionally filter by year via payload.year.
    * Read-only; entry to the module is already gated to super_admin/staff via
    * the registry Roles, so no extra per-action check is needed here.
+   *
+   * Returns ONLY the human-readable display columns — deliberately NOT the
+   * RawCell blob. RawCell holds the full nested ASSIST cell JSON (large,
+   * heavily quoted); shipping ~47 of those back through google.script.run
+   * bloats and can break the return serialization, which is why the list
+   * view never carries it. The raw JSON stays in the sheet for anyone who
+   * needs to inspect a specific case directly.
    */
   function listReview(payload, user, roles) {
     payload = payload || {};
@@ -135,7 +142,20 @@ const TranscriptModule = (() => {
       const rb = String(b.ReceivingPrefix || '') + String(b.ReceivingNumber || '');
       return ra < rb ? -1 : (ra > rb ? 1 : 0);
     });
-    return rows;
+    // Project to display columns only (omit RawCell and meta columns).
+    // AssistUrl is built server-side from the year + sending college so the
+    // UI can render a "View on ASSIST" link straight to the agreement.
+    return rows.map(r => ({
+      CatalogYear: r.CatalogYear,
+      SendingCollege: r.SendingCollege,
+      SendingCollegeId: r.SendingCollegeId,
+      ReceivingPrefix: r.ReceivingPrefix,
+      ReceivingNumber: r.ReceivingNumber,
+      ReceivingCourseId: r.ReceivingCourseId,
+      ReceivingTitle: r.ReceivingTitle,
+      Reason: r.Reason,
+      AssistUrl: _assistAgreementUrl(r.CatalogYear, r.SendingCollegeId),
+    }));
   }
 
   /**
@@ -527,6 +547,34 @@ const TranscriptModule = (() => {
     return String(yearId);
   }
 
+  // Reverse of _resolveYearCode: "2025-2026" -> 76. Returns '' if unknown,
+  // in which case the ASSIST link is omitted rather than built wrong.
+  function _resolveYearId(yearCode) {
+    for (let i = 0; i < ACADEMIC_YEARS.length; i++) {
+      if (ACADEMIC_YEARS[i].code === String(yearCode)) return ACADEMIC_YEARS[i].id;
+    }
+    return '';
+  }
+
+  /**
+   * Build a shareable assist.org link to the sending-college -> UCSC
+   * agreement, pre-scoped to Major view. Verified format; the GUID-less
+   * form lands on the correct agreement page (admin clicks the major to
+   * see courses — ASSIST has no per-row anchor). Returns '' if we can't
+   * resolve the year id or college id, so the UI simply shows no link
+   * rather than a broken one.
+   */
+  function _assistAgreementUrl(yearCode, sendingCollegeId) {
+    const yearId = _resolveYearId(yearCode);
+    if (!yearId || !sendingCollegeId || !UCSC_ID()) return '';
+    // Human-facing site (distinct from the prod.assistng.org API host).
+    const SITE = 'https://assist.org';
+    return SITE + '/transfer/results?year=' + yearId +
+      '&institution=' + sendingCollegeId +
+      '&agreement=' + UCSC_ID() +
+      '&agreementType=to&view=agreement&viewBy=major';
+  }
+
   function _safeJson(maybe) {
     if (maybe == null) return null;
     if (typeof maybe === 'object') return maybe;
@@ -632,7 +680,614 @@ const TranscriptModule = (() => {
     return out;
   }
 
+  // ========================================================================
+  // LAYER 2 — student transcript upload (Pass 1: student side)
+  // ========================================================================
+
+  const T_TRANSCRIPTS = () => CONFIG.TABS.TRANSCRIPTS;          // 'Transcripts'
+  const STATUS = {
+    PENDING:        'Pending Review',
+    PROCESSED:      'Processed',
+    NO_ARTICULATION:'No Articulation',
+  };
+  const ADVISOR_ROLE = 'staff_undergrad';
+  const QUEUE_TASK = { module: 'transcript', sourceType: 'transcript_queue', sourceId: 'PENDING' };
+
+  // ── Claim-set normalization ───────────────────────────────
+  // A claim set is the UCSC prereqs a transcript is submitted for. Stored
+  // and compared order-independently as a sorted, deduped, allowlist-bounded
+  // comma string, e.g. "ANTH 1, ANTH 3".
+  function _normalizePrereqs(list) {
+    const allow = _allowSet(); // keys are normalized "ANTH 1" etc.
+    const seen = {};
+    (list || []).forEach(item => {
+      const k = _normCourse(item);
+      if (k && (!Object.keys(allow).length || allow[k])) seen[k] = true;
+    });
+    return Object.keys(seen).sort();
+  }
+  function _claimKey(prereqArr) { return prereqArr.join(', '); }
+
+  // ── Prereq availability for a student ─────────────────────
+  // Returns, per allowlisted prereq, the student's current state:
+  //   'approved'  — in a Processed transcript (any college)        → locked
+  //   'pending'   — in a Pending Review transcript (any college)   → locked
+  //   'none'      — claimable
+  // PLUS the set of (collegeId, prereq) pairs that returned No Articulation,
+  // so the form can block re-submitting the SAME college for that prereq
+  // while still allowing a DIFFERENT college.
+  function getMyPrereqStatus(payload, user, roles) {
+    const mine = DataService.query(SHEET(), T_TRANSCRIPTS(), 'StudentEmail', user);
+    const allow = Object.keys(_allowSet());           // ['ANTH 1','ANTH 2','ANTH 3']
+    const state = {};
+    allow.forEach(p => { state[p] = 'none'; });
+    const noArtPairs = {};                            // "collegeId|ANTH 1" -> true
+
+    mine.forEach(r => {
+      const prereqs = _normalizePrereqs(String(r.ClaimedPrereqs || '').split(','));
+      const status = String(r.Status || '');
+      prereqs.forEach(p => {
+        if (status === STATUS.PROCESSED) {
+          state[p] = 'approved';                      // permanent, beats all
+        } else if (status === STATUS.PENDING && state[p] !== 'approved') {
+          state[p] = 'pending';
+        } else if (status === STATUS.NO_ARTICULATION) {
+          noArtPairs[String(r.SendingCollegeId) + '|' + p] = true;
+        }
+      });
+    });
+
+    // Claimable = any prereq not approved/pending. (No-articulation does not
+    // lock the prereq itself — only the specific college pair, enforced at
+    // upload against noArtPairs.)
+    const anyClaimable = allow.some(p => state[p] === 'none');
+    return {
+      prereqs: allow,
+      titles: (cfg().RECEIVING_COURSE_TITLES) || {},  // { 'ANTH 1': 'Introduction to…' }
+      state: state,                                   // per-prereq lock state
+      noArticulationPairs: Object.keys(noArtPairs),   // "collegeId|ANTH 1"
+      anyClaimable: anyClaimable,
+    };
+  }
+
+  // ── Colleges available to claim against ───────────────────
+  // Only colleges that actually appear in the trusted Articulations table —
+  // a college with no articulation data can't be matched, so it isn't an
+  // option (the form tells such students to contact the advisor).
+  function listColleges(payload, user, roles) {
+    const rows = DataService.getAll(SHEET(), T_ARTIC());
+    const byId = {};
+    rows.forEach(r => {
+      const id = String(r.SendingCollegeId || '');
+      if (id && !byId[id]) byId[id] = { id: id, name: String(r.SendingCollege || '') };
+    });
+    return Object.keys(byId)
+      .map(id => byId[id])
+      .sort((a, b) => a.name < b.name ? -1 : (a.name > b.name ? 1 : 0));
+  }
+
+  // ── The student's own transcripts ─────────────────────────
+  function listMyTranscripts(payload, user, roles) {
+    const mine = DataService.query(SHEET(), T_TRANSCRIPTS(), 'StudentEmail', user);
+    return mine.map(_publicTranscript).sort((a, b) =>
+      String(b.uploadedAt) < String(a.uploadedAt) ? -1 :
+      (String(b.uploadedAt) > String(a.uploadedAt) ? 1 : 0));
+  }
+
+  // ── Upload (or replace) a transcript ──────────────────────
+  function uploadTranscript(payload, user, roles) {
+    payload = payload || {};
+    const collegeId = String(payload.sendingCollegeId || '').trim();
+    const collegeName = String(payload.sendingCollege || '').trim();
+    const prereqs = _normalizePrereqs(payload.claimedPrereqs);
+
+    if (!collegeId) throw new Error('Select the community college this transcript is from.');
+    if (!prereqs.length) throw new Error('Select at least one prerequisite this transcript is for.');
+
+    // Validate the college is one we have articulation data for.
+    const validCollege = listColleges({}, user, roles).some(c => c.id === collegeId);
+    if (!validCollege) {
+      throw new Error('That college has no articulation data on file. Please contact the Undergraduate Advisor.');
+    }
+
+    // Server-side lock enforcement (mirrors the form; can't be bypassed).
+    const avail = getMyPrereqStatus({}, user, roles);
+    prereqs.forEach(p => {
+      if (avail.state[p] === 'approved') {
+        throw new Error(p + ' has already been approved and cannot be resubmitted.');
+      }
+      if (avail.state[p] === 'pending') {
+        throw new Error(p + ' is already submitted and under review.');
+      }
+      if (avail.noArticulationPairs.indexOf(collegeId + '|' + p) !== -1) {
+        throw new Error('You already submitted ' + collegeName + ' for ' + p +
+          ' and it did not articulate. Try a different college, or contact the Undergraduate Advisor.');
+      }
+    });
+
+    const profile = Auth.getProfile(user);
+    if (!profile) throw new Error('Your profile could not be found.');
+    const fileName = _buildTranscriptFileName(collegeName, profile);
+
+    // Replacement key: same student + same college + same exact claim set.
+    const claimKey = _claimKey(prereqs);
+    const mine = DataService.query(SHEET(), T_TRANSCRIPTS(), 'StudentEmail', user);
+    const match = mine.filter(r =>
+      String(r.SendingCollegeId) === collegeId &&
+      _claimKey(_normalizePrereqs(String(r.ClaimedPrereqs || '').split(','))) === claimKey
+    )[0];
+
+    if (match) {
+      // Replace in place: new file (same id if possible), reset to Pending,
+      // clear prior review fields — a fresh submission needs fresh review.
+      const replaced = _replacePdf(match.DriveFileID, payload.file, fileName);
+      _grantStudentViewer(replaced.fileId, user);
+      DataService.update(SHEET(), T_TRANSCRIPTS(), 'TranscriptID', match.TranscriptID, {
+        SendingCollege: collegeName,
+        ClaimedPrereqs: claimKey,
+        Status: STATUS.PENDING,
+        ReviewNote: '', ReviewedBy: '', ReviewedAt: '',
+        DriveFileID: replaced.fileId, FileName: fileName, DocumentLink: replaced.url,
+        UploadedAt: new Date().toISOString(),
+      });
+      _ensureQueueTask();
+      _emailStudentReceipt(user, collegeName, claimKey, true);
+      return { transcriptId: match.TranscriptID, replaced: true };
+    }
+
+    // New transcript.
+    const id = DataService.generateId('TR');
+    const uploaded = _uploadPdf(payload.file, fileName);
+    _grantStudentViewer(uploaded.fileId, user);
+    DataService.insert(SHEET(), T_TRANSCRIPTS(), {
+      TranscriptID: id,
+      StudentEmail: user,
+      SendingCollege: collegeName,
+      SendingCollegeId: collegeId,
+      ClaimedPrereqs: claimKey,
+      Status: STATUS.PENDING,
+      ReviewNote: '',
+      DriveFileID: uploaded.fileId, FileName: fileName, DocumentLink: uploaded.url,
+      UploadedAt: new Date().toISOString(),
+      ReviewedBy: '', ReviewedAt: '',
+    });
+    _ensureQueueTask();
+    _emailStudentReceipt(user, collegeName, claimKey, false);
+    return { transcriptId: id, replaced: false };
+  }
+
+  // ── Queue task: one standing "transcripts awaiting review" pointer ──
+  // Created when anything is Pending Review; resolved when none remain.
+  // Routed to the advisor role (any holder sees/clears it).
+  function _ensureQueueTask() {
+    const pending = DataService.query(SHEET(), T_TRANSCRIPTS(), 'Status', STATUS.PENDING);
+    if (!pending.length) return;
+    // Avoid stacking duplicates: only create if no open task already points
+    // at this source. (Tasks exposes openForSource, not an exists check.)
+    try {
+      const open = Tasks.openForSource(QUEUE_TASK.module, QUEUE_TASK.sourceId);
+      if (open && open.length) return;
+    } catch (e) { /* fall through to create */ }
+    Tasks.create({
+      module: QUEUE_TASK.module,
+      sourceType: QUEUE_TASK.sourceType,
+      sourceId: QUEUE_TASK.sourceId,
+      // No count in the label: it's a standing pointer created once and not
+      // updated as more arrive, so a number would go stale. The advisor
+      // clicks through to the queue for the live list.
+      label: 'Transcripts awaiting review',
+      assignedRole: ADVISOR_ROLE,
+      staleAfterDays: 7,
+    });
+  }
+  function _resolveQueueTaskIfEmpty(actingUser) {
+    const pending = DataService.query(SHEET(), T_TRANSCRIPTS(), 'Status', STATUS.PENDING);
+    if (pending.length) return;
+    try { Tasks.resolveForSource(QUEUE_TASK.module, QUEUE_TASK.sourceId, { resolvedBy: actingUser || 'system' }); }
+    catch (e) { Logger.log('Transcript queue task resolve failed: ' + e); }
+  }
+
+  // ── Drive helpers (mirror ThesisModule for platform consistency) ──
+  function _uploadPdf(file, fileName) {
+    const blob = _toPdfBlob(file, fileName);
+    const created = _transcriptFolder().createFile(blob);
+    return { fileId: created.getId(), url: created.getUrl() };
+  }
+
+  // Grant a student view access to their own transcript PDF, so the
+  // "Open PDF" links in their emails/portal actually open (the file lives
+  // in a department folder they otherwise can't see). Best-effort: a
+  // sharing failure (policy, etc.) must never break the upload itself.
+  function _grantStudentViewer(fileId, studentEmail) {
+    const id = String(fileId || '').trim();
+    const email = String(studentEmail || '').trim();
+    if (!id || !email) return;
+    try {
+      DriveApp.getFileById(id).addViewer(email);
+    } catch (e) {
+      Logger.log('TranscriptModule._grantStudentViewer: could not share ' + id + ' with ' + email + ': ' + e);
+    }
+  }
+
+  // Share the transcript Drive FOLDER with all current staff_undergrad
+  // advisors as viewers, so they can open any transcript PDF (current and
+  // future). Folder-level so new uploads are covered automatically; run via
+  // the admin button to reconcile after advisors change. Best-effort and
+  // idempotent (addViewer on an existing viewer is a no-op). Returns a small
+  // report. Super_admin (or staff) only — gated at the action.
+  function shareFolderWithAdvisors(payload, user, roles) {
+    if (!roles.includes('super_admin') && !roles.includes('staff')) {
+      throw new Error('Not authorized to manage transcript folder sharing.');
+    }
+    const advisors = Auth.listUsers()
+      .filter(u => u.active && (u.roles || []).indexOf(ADVISOR_ROLE) !== -1)
+      .map(u => u.email);
+    const folder = _transcriptFolder();
+    const shared = [];
+    const failed = [];
+    advisors.forEach(email => {
+      try { folder.addViewer(email); shared.push(email); }
+      catch (e) { failed.push({ email: email, error: String(e) }); Logger.log('shareFolderWithAdvisors: ' + email + ': ' + e); }
+    });
+    return { advisors: advisors.length, shared: shared.length, failed: failed };
+  }
+
+  function _replacePdf(fileId, file, fileName) {
+    const id = String(fileId || '').trim();
+    const blob = _toPdfBlob(file, fileName);
+    if (id && _hasAdvancedDrive()) {
+      try {
+        Drive.Files.update({ title: fileName, mimeType: 'application/pdf' }, id, blob);
+        const f = DriveApp.getFileById(id);
+        f.setName(fileName);
+        return { fileId: id, url: f.getUrl() };
+      } catch (err) {
+        Logger.log('TranscriptModule._replacePdf: in-place update failed (' + err + '); uploading fresh.');
+      }
+    }
+    return _uploadPdf(file, fileName);
+  }
+  function _hasAdvancedDrive() {
+    return (typeof Drive !== 'undefined') && Drive && Drive.Files && typeof Drive.Files.update === 'function';
+  }
+  function _toPdfBlob(file, fileName) {
+    file = file || {};
+    const b64 = String(file.dataBase64 || '').trim();
+    if (!b64) throw new Error('Attach the transcript PDF.');
+    const mime = String(file.mimeType || 'application/pdf');
+    if (mime.indexOf('pdf') === -1) throw new Error('The transcript must be a PDF file.');
+    const bytes = Utilities.base64Decode(b64);
+    return Utilities.newBlob(bytes, 'application/pdf', fileName);
+  }
+  function _transcriptFolder() {
+    const id = String((cfg().DRIVE_FOLDER_ID) || '').trim();
+    if (!id) throw new Error('Transcript Drive folder is not configured (CONFIG.TRANSCRIPT.DRIVE_FOLDER_ID).');
+    return DriveApp.getFolderById(id);
+  }
+  // Filename: <College>_<StudentID>_TRANSCRIPT_Last-First.pdf
+  function _buildTranscriptFileName(collegeName, profile) {
+    const college = _slug(collegeName) || 'College';
+    const last  = _slug(profile.lastName)  || 'Last';
+    const first = _slug(profile.firstName) || 'First';
+    const sid   = profile.studentId || 'NoID';
+    return college + '_' + sid + '_TRANSCRIPT_' + last + '-' + first + '.pdf';
+  }
+  function _slug(s) {
+    return String(s || '').trim().replace(/[^A-Za-z0-9]+/g, '');
+  }
+
+  // ── Display shaping ───────────────────────────────────────
+  function _publicTranscript(r) {
+    const student = Auth.getProfile(r.StudentEmail);
+    // Deep link to the college's UCSC agreement on ASSIST for the current
+    // catalog year — an advisor convenience while reviewing. A transcript
+    // record has no catalog year of its own (the student only picks a
+    // college), so we use the default/current year, which is the year the
+    // advisor's articulation table reflects. Empty string if it can't be
+    // built (missing college id), so the UI shows plain text, not a link.
+    const assistUrl = _assistAgreementUrl(_resolveYearCode(DEFAULT_YEAR_ID), r.SendingCollegeId);
+    return {
+      transcriptId: r.TranscriptID,
+      studentEmail: r.StudentEmail,
+      studentName:  student ? student.nameLastFirst : r.StudentEmail,
+      studentId:    student ? student.studentId : '',
+      college:      r.SendingCollege,
+      collegeId:    r.SendingCollegeId,
+      assistUrl:    assistUrl,
+      claimedPrereqs: r.ClaimedPrereqs,
+      status:       r.Status,
+      reviewNote:   r.ReviewNote,
+      documentLink: r.DocumentLink,
+      fileName:     r.FileName,
+      uploadedAt:   r.UploadedAt,
+      reviewedBy:   r.ReviewedBy,
+      reviewedAt:   r.ReviewedAt,
+    };
+  }
+
+  // ========================================================================
+  // LAYER 2 — advisor review + admin settings + digest (Pass 2)
+  // ========================================================================
+
+  const SETTINGS_TAB = () => CONFIG.TABS.TRANSCRIPT_SETTINGS;   // 'TranscriptSettings'
+
+  function _isAdvisor(roles) {
+    return roles.includes('super_admin') || roles.includes(ADVISOR_ROLE) || roles.includes('staff');
+  }
+
+  // ── The review queue (advisor) ────────────────────────────
+  // Pending transcripts by default; pass payload.includeRecent to also
+  // return recently-resolved ones for context. Deep-link target.
+  function listQueue(payload, user, roles) {
+    if (!_isAdvisor(roles)) {
+      throw new Error('Not authorized: the transcript queue requires the undergraduate advisor role.');
+    }
+    payload = payload || {};
+    let rows = DataService.getAll(SHEET(), T_TRANSCRIPTS());
+    if (!payload.includeRecent) {
+      rows = rows.filter(r => String(r.Status) === STATUS.PENDING);
+    }
+    rows.sort((a, b) => String(a.UploadedAt) < String(b.UploadedAt) ? -1 :
+                        (String(a.UploadedAt) > String(b.UploadedAt) ? 1 : 0));
+    return rows.map(_publicTranscript);
+  }
+
+  // ── One transcript's detail (advisor review screen) ───────
+  function getTranscript(payload, user, roles) {
+    if (!_isAdvisor(roles)) throw new Error('Not authorized.');
+    const id = String((payload || {}).transcriptId || '').trim();
+    if (!id) throw new Error('transcriptId is required.');
+    const found = DataService.query(SHEET(), T_TRANSCRIPTS(), 'TranscriptID', id);
+    if (!found.length) throw new Error('Transcript not found.');
+    return _publicTranscript(found[0]);
+  }
+
+  // ── Record a review decision (advisor) ────────────────────
+  // Sets a terminal status, stamps the reviewer, emails the student
+  // (template + appended note), and resolves the queue task if nothing
+  // remains Pending. status must be Processed or No Articulation.
+  function recordReview(payload, user, roles) {
+    if (!_isAdvisor(roles)) throw new Error('Not authorized to review transcripts.');
+    payload = payload || {};
+    const id = String(payload.transcriptId || '').trim();
+    const status = String(payload.status || '').trim();
+    const note = String(payload.note || '').trim();
+
+    if (status !== STATUS.PROCESSED && status !== STATUS.NO_ARTICULATION) {
+      throw new Error('Status must be "' + STATUS.PROCESSED + '" or "' + STATUS.NO_ARTICULATION + '".');
+    }
+    // Processing reflects credit entered in the separate "Other Credit Quick"
+    // system. The advisor must confirm that step before a transcript can be
+    // marked Processed — a reminder gate, not an audited fact (so nothing is
+    // stored; reaching Processed is itself the confirmation). No Articulation
+    // grants no credit, so it does not involve Other Credit Quick.
+    if (status === STATUS.PROCESSED && payload.otherCreditConfirmed !== true) {
+      throw new Error('Confirm the credit has been entered in Other Credit Quick before marking this transcript Processed.');
+    }
+    const found = DataService.query(SHEET(), T_TRANSCRIPTS(), 'TranscriptID', id);
+    if (!found.length) throw new Error('Transcript not found.');
+    const rec = found[0];
+
+    DataService.update(SHEET(), T_TRANSCRIPTS(), 'TranscriptID', id, {
+      Status: status,
+      ReviewNote: note,
+      ReviewedBy: user,
+      ReviewedAt: new Date().toISOString(),
+    });
+
+    _emailStudentDecision(rec, status, note);
+    _resolveQueueTaskIfEmpty(user);
+    return { transcriptId: id, status: status };
+  }
+
+  // ── Override / reset / delete (escape hatch) ──────────────
+  // Two distinct, separately-gated actions sharing one entry point:
+  //   • Revert (default) — sets the transcript back to Pending Review (into
+  //     the advisor queue) and clears the recorded decision. Allowed to the
+  //     undergraduate advisor (staff_undergrad) or super_admin.
+  //   • Delete (payload.delete === true) — permanently removes the record
+  //     and trashes its Drive PDF. SUPER_ADMIN ONLY. Useful for clearing
+  //     test data or mistaken/duplicate uploads. The audit log entry for
+  //     this action is retained (it is not "associated data" to purge).
+  function overrideReset(payload, user, roles) {
+    payload = payload || {};
+    const id = String(payload.transcriptId || '').trim();
+    if (!id) throw new Error('transcriptId is required.');
+
+    const isDelete = payload.delete === true;
+    if (isDelete) {
+      if (!roles.includes('super_admin')) {
+        throw new Error('Not authorized: deleting a transcript requires super_admin.');
+      }
+    } else {
+      if (!roles.includes('super_admin') && !roles.includes(ADVISOR_ROLE)) {
+        throw new Error('Not authorized: reopening a transcript requires the undergraduate advisor role.');
+      }
+    }
+
+    const found = DataService.query(SHEET(), T_TRANSCRIPTS(), 'TranscriptID', id);
+    if (!found.length) throw new Error('Transcript not found.');
+
+    if (isDelete) {
+      // Best-effort: trash the Drive file, then remove the row.
+      const fid = String(found[0].DriveFileID || '').trim();
+      if (fid) { try { DriveApp.getFileById(fid).setTrashed(true); } catch (e) { Logger.log('overrideReset trash failed: ' + e); } }
+      DataService.remove(SHEET(), T_TRANSCRIPTS(), 'TranscriptID', id);
+      _resolveQueueTaskIfEmpty(user);
+      return { transcriptId: id, action: 'deleted' };
+    }
+
+    DataService.update(SHEET(), T_TRANSCRIPTS(), 'TranscriptID', id, {
+      Status: STATUS.PENDING, ReviewNote: '', ReviewedBy: '', ReviewedAt: '',
+    });
+    _ensureQueueTask();
+    return { transcriptId: id, action: 'reverted' };
+  }
+
+  // ── Settings (admin tab): templates + digest toggle ───────
+  function getSettings(payload, user, roles) {
+    if (!_isAdvisor(roles)) throw new Error('Not authorized.');
+    return _readSettings();
+  }
+  function saveSettings(payload, user, roles) {
+    if (!roles.includes('super_admin') && !roles.includes('staff') && !roles.includes(ADVISOR_ROLE)) {
+      throw new Error('Not authorized to change transcript settings.');
+    }
+    payload = payload || {};
+    const allowed = ['DIGEST_ENABLED', 'NOTIFY_PROCESSED', 'NOTIFY_NO_ARTICULATION'];
+    allowed.forEach(key => {
+      if (payload[key] === undefined) return;
+      const value = (key === 'DIGEST_ENABLED')
+        ? (payload[key] === true || String(payload[key]).toUpperCase() === 'TRUE' ? 'TRUE' : 'FALSE')
+        : String(payload[key]);
+      _writeSetting(key, value);
+    });
+    return _readSettings();
+  }
+
+  // ── Daily digest (Scheduler job) ──────────────────────────
+  // Emails staff_undergrad role-holders a summary of pending transcripts,
+  // only if DIGEST_ENABLED and at least one is pending. context = { frequency,
+  // runAt } from Scheduler. Never throws (Scheduler isolates jobs anyway).
+  function dailyDigest(context) {
+    const settings = _readSettings();
+    if (String(settings.DIGEST_ENABLED).toUpperCase() !== 'TRUE') return { sent: false, reason: 'disabled' };
+
+    const pending = DataService.query(SHEET(), T_TRANSCRIPTS(), 'Status', STATUS.PENDING);
+    if (!pending.length) return { sent: false, reason: 'queue empty' };
+
+    const recipients = Auth.listUsers()
+      .filter(u => u.active && (u.roles || []).indexOf(ADVISOR_ROLE) !== -1)
+      .map(u => u.email);
+    if (!recipients.length) return { sent: false, reason: 'no advisors' };
+
+    const lines = pending.map(r => {
+      const p = Auth.getProfile(r.StudentEmail);
+      const who = p ? p.nameLastFirst : r.StudentEmail;
+      return '• ' + who + ' — ' + r.SendingCollege + ' (' + r.ClaimedPrereqs + ')';
+    });
+    const body = 'There ' + (pending.length === 1 ? 'is 1 transcript' : 'are ' + pending.length + ' transcripts')
+      + ' awaiting review:\n\n' + lines.join('\n')
+      + '\n\nOpen the portal → Transcripts to review.';
+
+    Notify.send({
+      to: recipients,
+      subject: 'Transcripts awaiting review (' + pending.length + ')',
+      body: body,
+    });
+    return { sent: true, count: pending.length, recipients: recipients.length };
+  }
+
+  // ── Student receipt email (on upload) ─────────────────────
+  // Confirms the department has the transcript and points the student to
+  // "My transcripts" for status — mirrors the Thesis received receipt.
+  // Goes to the student's own email; delivery via Notify (never throws).
+  function _emailStudentReceipt(studentEmail, collegeName, claimedPrereqs, replaced) {
+    const profile = Auth.getProfile(studentEmail);
+    const firstName = profile ? (profile.firstName || profile.name || 'there') : 'there';
+    const heading = replaced
+      ? 'Your revised transcript has been received by the Anthropology Department and is back under review.'
+      : 'Your transcript has been received by the Anthropology Department.';
+    const link = _deepLinkMine();
+    const statusNote = 'You can check its status anytime in the "My transcripts" tab' +
+      (link ? '' : '') + ' — you will also be emailed when the review is complete.';
+    const linkText = link ? ('\n\nView your transcripts:\n' + link) : '';
+    const bodyText = 'Hello ' + firstName + ',\n\n' + heading + '\n\n' + statusNote +
+      '\n\nCollege: ' + (collegeName || '') +
+      '\nPrerequisites: ' + (claimedPrereqs || '') +
+      linkText +
+      '\n\n— UCSC Anthropology Department';
+
+    const htmlBody = Notify.htmlWrap(
+      'Hello ' + firstName + ',\n\n' + heading + '\n\n' + statusNote +
+      '\n\nCollege: ' + (collegeName || '') +
+      '\nPrerequisites: ' + (claimedPrereqs || '') +
+      '\n\n— UCSC Anthropology Department'
+    ) + _mineButtonHtml();
+
+    Notify.send({
+      to: studentEmail,
+      subject: replaced ? 'Your revised transcript has been received' : 'Your transcript has been received',
+      body: bodyText,
+      htmlBody: htmlBody,
+    });
+  }
+
+  // Deep link to the student's "My transcripts" tab (after portal login).
+  function _deepLinkMine() {
+    let base = '';
+    try { base = ScriptApp.getService().getUrl() || ''; } catch (e) { base = ''; }
+    if (!base) return '';
+    const sep = base.indexOf('?') === -1 ? '?' : '&';
+    return base + sep + 'page=transcript&focus=mine';
+  }
+
+  // HTML button to the My transcripts tab, or '' if the URL can't be built.
+  function _mineButtonHtml() {
+    const url = _deepLinkMine();
+    if (!url) return '';
+    return '<p style="margin:16px 0;">' +
+      '<a href="' + url + '" ' +
+      'style="display:inline-block;background:#003C6C;color:#fff;text-decoration:none;' +
+      'padding:10px 18px;border-radius:6px;font-size:14px;">View my transcripts</a></p>' +
+      '<p style="margin:0;color:#888;font-size:12px;">You will be asked to sign in if you are not already.</p>';
+  }
+
+  // ── Student decision email ────────────────────────────────
+  // Template for the status (tokens filled) + the advisor note appended
+  // below with a label, when present. Goes to the student's own profile
+  // email. Delivery via Notify (never throws).
+  function _emailStudentDecision(rec, status, note) {
+    const settings = _readSettings();
+    const tmplKey = (status === STATUS.PROCESSED) ? 'NOTIFY_PROCESSED' : 'NOTIFY_NO_ARTICULATION';
+    const profile = Auth.getProfile(rec.StudentEmail);
+    const firstName = profile ? (profile.firstName || profile.name || '') : '';
+
+    let bodyText = String(settings[tmplKey] || '')
+      .replace(/\{FirstName\}/g, firstName)
+      .replace(/\{College\}/g, rec.SendingCollege || '');
+    if (note) {
+      bodyText += '\n\n— Note from your advisor —\n' + note;
+    }
+    const link = _deepLinkMine();
+    const textWithLink = bodyText + (link ? ('\n\nView your transcripts:\n' + link) : '');
+
+    const subject = (status === STATUS.PROCESSED)
+      ? 'Your transcript has been processed'
+      : 'Update on your transcript review';
+
+    Notify.send({
+      to: rec.StudentEmail,
+      subject: subject,
+      body: textWithLink,
+      htmlBody: Notify.htmlWrap(bodyText) + _mineButtonHtml(),
+    });
+  }
+
+  // ── Settings read/write (key/value tab) ───────────────────
+  function _readSettings() {
+    const out = { DIGEST_ENABLED: 'TRUE', NOTIFY_PROCESSED: '', NOTIFY_NO_ARTICULATION: '' };
+    try {
+      DataService.getAll(SHEET(), SETTINGS_TAB()).forEach(r => {
+        const k = String(r.Key || '').trim();
+        if (k) out[k] = String(r.Value != null ? r.Value : '');
+      });
+    } catch (e) { Logger.log('Transcript _readSettings failed: ' + e); }
+    return out;
+  }
+  function _writeSetting(key, value) {
+    const existing = DataService.query(SHEET(), SETTINGS_TAB(), 'Key', key);
+    if (existing.length) {
+      DataService.update(SHEET(), SETTINGS_TAB(), 'Key', key, { Value: value });
+    } else {
+      DataService.insert(SHEET(), SETTINGS_TAB(), { Key: key, Value: value });
+    }
+  }
+
   // Only these names are dispatchable.
-  return { listAcademicYears, getSummary, listReview, syncArticulations, diagnose };
+  return { listAcademicYears, getSummary, listReview, syncArticulations, diagnose,
+           getMyPrereqStatus, listColleges, listMyTranscripts, uploadTranscript,
+           listQueue, getTranscript, recordReview, overrideReset,
+           getSettings, saveSettings, dailyDigest, shareFolderWithAdvisors };
 
 })();

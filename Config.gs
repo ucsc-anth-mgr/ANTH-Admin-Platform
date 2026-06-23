@@ -27,9 +27,8 @@ const CONFIG = {
     // Senior Thesis module — its OWN spreadsheet (per-module storage tier).
     THESIS:        '16MiWlHY0mTFuBioI5mc1nV3mmiIEbgBssG3h7jO4tBc',
     // Transcript / ASSIST-articulation module — its OWN spreadsheet
-    // (per-module storage tier). Tabs: Articulations, ArticulationReview.
-    // Create a new spreadsheet, paste its id here (leave '' until then —
-    // setUp() skips a blank id rather than erroring).
+    // (per-module storage tier). Tabs: Articulations, ArticulationReview,
+    // Transcripts, TranscriptSettings.
     TRANSCRIPT:    '1CPid5jHFa46nZvqdJYQXmAKbtGDRrwG42KcIhn-Hmls',
     // Platform-services operational data (owned by platform-wide services,
     // not by any single module). Tenants: Tasks, Reports.
@@ -71,6 +70,8 @@ const CONFIG = {
     // Transcript / ASSIST-articulation module tabs (live in SHEETS.TRANSCRIPT)
     ARTICULATIONS:        'Articulations',
     ARTICULATION_REVIEW:  'ArticulationReview',
+    TRANSCRIPTS:          'Transcripts',
+    TRANSCRIPT_SETTINGS:  'TranscriptSettings',
   },
 
   // ── Storage convention (three tiers) ───────────────────────
@@ -145,6 +146,22 @@ const CONFIG = {
     // ever adds a prerequisite. Applies to BOTH trusted and flagged rows —
     // a flagged ANTH 1 still goes to review, it is not dropped.
     RECEIVING_COURSE_ALLOWLIST: ['ANTH 1', 'ANTH 2', 'ANTH 3'],
+    // Human-readable titles for the allowlisted prerequisites, keyed by the
+    // same "PREFIX NUMBER" code. Display-only — shown on the student upload
+    // form so the student recognizes the course. Kept here, next to the
+    // allowlist, so a course change is a single Config edit; a code with no
+    // entry here simply shows without a title (never an error).
+    RECEIVING_COURSE_TITLES: {
+      'ANTH 1': 'Introduction to Biological Anthropology',
+      'ANTH 2': 'Introduction to Cultural Anthropology',
+      'ANTH 3': 'Introduction to Archaeology',
+    },
+    // Drive folder where uploaded student transcript PDFs are stored
+    // (Layer 2). Replace-in-place on resubmission (keeping the same file ID)
+    // also requires the Advanced Drive Service enabled: Apps Script editor →
+    // Services (+) → Drive API. Without it, resubmission still works but
+    // creates a new file ID.
+    DRIVE_FOLDER_ID: '1dbJnmVURcoUS7hePNG-fV16LDmtnuX7L',
   },
 
 };

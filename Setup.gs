@@ -182,6 +182,63 @@ const SETUP_SCHEMA = {
               'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
     seed: [],
   },
+  TRANSCRIPTS: {
+    tab: 'Transcripts',
+    // Layer 2: one row per uploaded student transcript. Identity is a
+    // routing key (StudentEmail); name/StudentID are read from Auth at
+    // display time, not copied here. The PDF lives in Drive
+    // (CONFIG.TRANSCRIPT.DRIVE_FOLDER_ID); DriveFileID is replaced in place
+    // on resubmission, DocumentLink is its viewable URL captured at upload.
+    //
+    // ClaimedPrereqs: the UCSC ANTH prereqs the student says this transcript
+    // satisfies (subset of the allowlist), stored normalized as a sorted
+    // comma list e.g. "ANTH 1, ANTH 3". It is the advisor's anchor and the
+    // hook 2b's auto-match will use.
+    //
+    // Replacement key: an upload REPLACES an existing row in place (same
+    // DriveFileID) only when StudentEmail + SendingCollegeId + ClaimedPrereqs
+    // ALL match exactly (claim set compared order-independently). Any
+    // difference — including overlapping-but-not-identical prereqs — is a
+    // NEW transcript. A replacement resets Status to 'Pending Review' and
+    // clears the prior review fields (fresh submission needs fresh review).
+    //
+    // Status: 'Pending Review' (on upload) -> 'Processed' or
+    // 'No Articulation' (both terminal; either fires the student email).
+    // ReviewNote is the advisor's optional per-case note — it is BOTH the
+    // internal record and the addendum appended to the student email.
+    headers: ['TranscriptID', 'StudentEmail', 'SendingCollege', 'SendingCollegeId',
+              'ClaimedPrereqs', 'Status', 'ReviewNote',
+              'DriveFileID', 'FileName', 'DocumentLink', 'UploadedAt',
+              'ReviewedBy', 'ReviewedAt',
+              'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
+  TRANSCRIPT_SETTINGS: {
+    tab: 'TranscriptSettings',
+    // UI-managed operational settings (key/value), mirroring ThesisSettings.
+    // Edited in the module's admin tab; the sheet overrides these seeded
+    // defaults once saved. The two NOTIFY_* values are the student-email
+    // templates per terminal status; tokens {FirstName} and {College} are
+    // filled at send time, and the advisor's review note (if any) is
+    // appended below the template. DIGEST_ENABLED toggles the morning
+    // advisor digest (Scheduler job).
+    headers: ['Key', 'Value'],
+    seed: [
+      ['DIGEST_ENABLED', 'TRUE'],
+      ['NOTIFY_PROCESSED',
+       'Hello {FirstName},\n\nYour transcript from {College} has been processed. '
+       + 'Your prerequisite credit is being handled through the appropriate campus '
+       + 'process. No further action is needed from you at this time.\n\n'
+       + '— UCSC Anthropology Department'],
+      ['NOTIFY_NO_ARTICULATION',
+       'Hello {FirstName},\n\nWe reviewed your transcript from {College}. The '
+       + 'course(s) you submitted do not have an established articulation to the '
+       + 'required UCSC Anthropology prerequisite, so they cannot be applied as '
+       + 'prerequisite credit. Please contact the Anthropology undergraduate '
+       + 'advising office to discuss your options.\n\n'
+       + '— UCSC Anthropology Department'],
+    ],
+  },
 };
 
 
@@ -221,9 +278,11 @@ function setUp() {
   _setupTab(thesisSS, SETUP_SCHEMA.THESIS);
   _tidyDefaultSheet(thesisSS);
 
-  // Transcript / ASSIST-articulation spreadsheet gets its two tabs
+  // Transcript / ASSIST-articulation spreadsheet gets its tabs
   _setupTab(transcriptSS, SETUP_SCHEMA.ARTICULATIONS);
   _setupTab(transcriptSS, SETUP_SCHEMA.ARTICULATION_REVIEW);
+  _setupTab(transcriptSS, SETUP_SCHEMA.TRANSCRIPTS);
+  _setupTab(transcriptSS, SETUP_SCHEMA.TRANSCRIPT_SETTINGS);
   _tidyDefaultSheet(transcriptSS);
 
   // Submissions spreadsheet: tabs are created per form type on demand,
@@ -391,7 +450,7 @@ function checkSetup() {
     ['SUBMISSIONS',  CONFIG.SHEETS.SUBMISSIONS,  []],
     ['PLATFORM',     CONFIG.SHEETS.PLATFORM,     [SETUP_SCHEMA.TASKS.tab, SETUP_SCHEMA.REPORTS.tab]],
     ['THESIS',       CONFIG.SHEETS.THESIS,       [SETUP_SCHEMA.THESIS.tab]],
-    ['TRANSCRIPT',   CONFIG.SHEETS.TRANSCRIPT,   [SETUP_SCHEMA.ARTICULATIONS.tab, SETUP_SCHEMA.ARTICULATION_REVIEW.tab]],
+    ['TRANSCRIPT',   CONFIG.SHEETS.TRANSCRIPT,   [SETUP_SCHEMA.ARTICULATIONS.tab, SETUP_SCHEMA.ARTICULATION_REVIEW.tab, SETUP_SCHEMA.TRANSCRIPTS.tab, SETUP_SCHEMA.TRANSCRIPT_SETTINGS.tab]],
   ];
   Logger.log('=== Config check ===');
   checks.forEach(([key, id, tabs]) => {
@@ -430,6 +489,8 @@ function _schemaPlacement() {
     { sheetKey: 'THESIS',       def: SETUP_SCHEMA.THESIS },
     { sheetKey: 'TRANSCRIPT',   def: SETUP_SCHEMA.ARTICULATIONS },
     { sheetKey: 'TRANSCRIPT',   def: SETUP_SCHEMA.ARTICULATION_REVIEW },
+    { sheetKey: 'TRANSCRIPT',   def: SETUP_SCHEMA.TRANSCRIPTS },
+    { sheetKey: 'TRANSCRIPT',   def: SETUP_SCHEMA.TRANSCRIPT_SETTINGS },
   ];
 }
 

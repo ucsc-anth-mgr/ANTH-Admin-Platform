@@ -255,7 +255,9 @@ function getEventListeners() {
  */
 function getScheduledJobs() {
   return {
-    // (append frequency -> job entries here as modules ship)
+    daily: [
+      { name: 'Transcript:dailyDigest', fn: TranscriptModule.dailyDigest },
+    ],
   };
 }
 
