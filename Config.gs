@@ -33,6 +33,14 @@ const CONFIG = {
     // Platform-services operational data (owned by platform-wide services,
     // not by any single module). Tenants: Tasks, Reports.
     PLATFORM:      '1CyVapaV52tFWDGOC4fI7RNyVrcExevQeV7_gR_mpTNg',
+    // Class schedule service — its OWN spreadsheet (per-tier storage).
+    // Tabs: ClassSchedule, ClassScheduleImports. Blank until setUp()
+    // creates it and logs the id to paste back here.
+    CLASS_SCHEDULE: '1ioSQAEqax-dEROzHMaXvszFatp1FmABFt39QH7xFpzE',
+    // Undergraduate Individual Studies module — its OWN spreadsheet
+    // (per-module storage tier). Tab: Petitions. Blank until setUp()
+    // creates it and logs the id to paste back here.
+    INDIVIDUAL_STUDIES: '1YXEdMiRUhFILSKDSg-Y_IwETsNy7k3B3o03lgAz84Fo',
   },
 
   // Optional: Drive folder where setUp() creates new spreadsheets.
@@ -72,6 +80,11 @@ const CONFIG = {
     ARTICULATION_REVIEW:  'ArticulationReview',
     TRANSCRIPTS:          'Transcripts',
     TRANSCRIPT_SETTINGS:  'TranscriptSettings',
+    // Class schedule service tabs (live in SHEETS.CLASS_SCHEDULE)
+    CLASS_SCHEDULE:         'ClassSchedule',
+    CLASS_SCHEDULE_IMPORTS: 'ClassScheduleImports',
+    // Undergraduate Individual Studies module tab (lives in SHEETS.INDIVIDUAL_STUDIES)
+    INDIVIDUAL_STUDIES:     'Petitions',
   },
 
   // ── Storage convention (three tiers) ───────────────────────

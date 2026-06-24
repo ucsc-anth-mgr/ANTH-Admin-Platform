@@ -239,6 +239,54 @@ const SETUP_SCHEMA = {
        + '— UCSC Anthropology Department'],
     ],
   },
+  CLASS_SCHEDULE: {
+    tab: 'ClassSchedule',
+    // Class schedule service: one row per real individual-studies section
+    // parsed from the registrar's Schedule of Classes export. Term-wide
+    // (all courses admitted) so any consumer reads its own course slice.
+    // InstructorRaw is the verbatim report spelling; InstructorEmail is the
+    // resolved profile (blank for Staff/unmatched). Wholesale-replaced per
+    // term on re-import. Meta columns filled by DataService.
+    headers: ['RowID', 'Term', 'Course', 'Section', 'ClassNbr', 'Units',
+              'Component', 'InstructorRaw', 'InstructorEmail', 'MatchMethod',
+              'IsStaffPlaceholder',
+              'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
+  CLASS_SCHEDULE_IMPORTS: {
+    tab: 'ClassScheduleImports',
+    // Class schedule service: one row per committed import, for
+    // auditability — when a term's table was (re)built, by whom, and the
+    // matched/unmatched/staff counts. ReplacedExisting records whether the
+    // commit overwrote a prior table for the term.
+    headers: ['ImportID', 'Term', 'RowCount', 'MatchedCount', 'UnmatchedCount',
+              'StaffCount', 'ImportedBy', 'ReplacedExisting',
+              'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
+  INDIVIDUAL_STUDIES: {
+    tab: 'Petitions',
+    // Undergraduate Individual Studies petitions (one study per record;
+    // identity key is student + term + instructor + course). StudentEmail /
+    // SponsorEmail are routing keys — names and Student ID are read from
+    // Auth at display time. Petition-specific facts not on the profile
+    // (Phone, College, MajorStatus, ClassLevel) ARE stored here. The
+    // canonical PDF is generated at COMPLETE via ReportService; DriveFileID
+    // / DocumentLink are filled then. Meta columns filled by DataService.
+    headers: ['PetitionID', 'StudentEmail', 'Quarter', 'Year', 'Course', 'SponsorEmail',
+              'StudySiteAddress', 'Title', 'CourseDescription', 'EvidenceOfPreparation',
+              'WorkToBeSubmitted', 'ReportRequired', 'ReportDueDate',
+              'HoursWithSponsor', 'HoursIndependent',
+              'Phone', 'College', 'MajorStatus', 'ClassLevel',
+              'Stage',
+              'Credits', 'GradeOption', 'SponsorComments', 'SponsorDecidedBy', 'SponsorDecidedAt',
+              'ClassNumber', 'ClassSection', 'ClassNumberSource',
+              'TotalSpecialStudyCredits', 'MajorAuthRequired', 'MajorAuthorized',
+              'AdvisorComments', 'AdvisorProcessedBy', 'AdvisorProcessedAt',
+              'DriveFileID', 'FileName', 'DocumentLink', 'ReturnNote',
+              'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
 };
 
 
@@ -255,6 +303,8 @@ function setUp() {
   const platformSS = _resolveSpreadsheet(CONFIG.SHEETS.PLATFORM,    'Portal Platform Services',              'PLATFORM');
   const thesisSS = _resolveSpreadsheet(CONFIG.SHEETS.THESIS,        'Portal Senior Thesis',                  'THESIS');
   const transcriptSS = _resolveSpreadsheet(CONFIG.SHEETS.TRANSCRIPT, 'Portal Transcript / Articulations',    'TRANSCRIPT');
+  const classScheduleSS = _resolveSpreadsheet(CONFIG.SHEETS.CLASS_SCHEDULE, 'Portal Class Schedule',         'CLASS_SCHEDULE');
+  const indStudiesSS = _resolveSpreadsheet(CONFIG.SHEETS.INDIVIDUAL_STUDIES, 'Portal Individual Studies',     'INDIVIDUAL_STUDIES');
 
   // Config spreadsheet gets Users, Roles, Modules, Requests tabs
   _setupTab(usersSS, SETUP_SCHEMA.USERS);
@@ -284,6 +334,15 @@ function setUp() {
   _setupTab(transcriptSS, SETUP_SCHEMA.TRANSCRIPTS);
   _setupTab(transcriptSS, SETUP_SCHEMA.TRANSCRIPT_SETTINGS);
   _tidyDefaultSheet(transcriptSS);
+
+  // Class schedule service spreadsheet gets its two tabs
+  _setupTab(classScheduleSS, SETUP_SCHEMA.CLASS_SCHEDULE);
+  _setupTab(classScheduleSS, SETUP_SCHEMA.CLASS_SCHEDULE_IMPORTS);
+  _tidyDefaultSheet(classScheduleSS);
+
+  // Individual Studies module spreadsheet gets the Petitions tab
+  _setupTab(indStudiesSS, SETUP_SCHEMA.INDIVIDUAL_STUDIES);
+  _tidyDefaultSheet(indStudiesSS);
 
   // Submissions spreadsheet: tabs are created per form type on demand,
   // so we just ensure the spreadsheet exists and remove the default
@@ -451,6 +510,8 @@ function checkSetup() {
     ['PLATFORM',     CONFIG.SHEETS.PLATFORM,     [SETUP_SCHEMA.TASKS.tab, SETUP_SCHEMA.REPORTS.tab]],
     ['THESIS',       CONFIG.SHEETS.THESIS,       [SETUP_SCHEMA.THESIS.tab]],
     ['TRANSCRIPT',   CONFIG.SHEETS.TRANSCRIPT,   [SETUP_SCHEMA.ARTICULATIONS.tab, SETUP_SCHEMA.ARTICULATION_REVIEW.tab, SETUP_SCHEMA.TRANSCRIPTS.tab, SETUP_SCHEMA.TRANSCRIPT_SETTINGS.tab]],
+    ['CLASS_SCHEDULE', CONFIG.SHEETS.CLASS_SCHEDULE, [SETUP_SCHEMA.CLASS_SCHEDULE.tab, SETUP_SCHEMA.CLASS_SCHEDULE_IMPORTS.tab]],
+    ['INDIVIDUAL_STUDIES', CONFIG.SHEETS.INDIVIDUAL_STUDIES, [SETUP_SCHEMA.INDIVIDUAL_STUDIES.tab]],
   ];
   Logger.log('=== Config check ===');
   checks.forEach(([key, id, tabs]) => {
@@ -491,6 +552,9 @@ function _schemaPlacement() {
     { sheetKey: 'TRANSCRIPT',   def: SETUP_SCHEMA.ARTICULATION_REVIEW },
     { sheetKey: 'TRANSCRIPT',   def: SETUP_SCHEMA.TRANSCRIPTS },
     { sheetKey: 'TRANSCRIPT',   def: SETUP_SCHEMA.TRANSCRIPT_SETTINGS },
+    { sheetKey: 'CLASS_SCHEDULE', def: SETUP_SCHEMA.CLASS_SCHEDULE },
+    { sheetKey: 'CLASS_SCHEDULE', def: SETUP_SCHEMA.CLASS_SCHEDULE_IMPORTS },
+    { sheetKey: 'INDIVIDUAL_STUDIES', def: SETUP_SCHEMA.INDIVIDUAL_STUDIES },
   ];
 }
 
