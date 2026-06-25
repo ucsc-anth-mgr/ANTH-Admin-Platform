@@ -172,6 +172,25 @@ const Auth = (() => {
 
 
   /**
+   * Active users holding a given role, shaped { email, name } and sorted
+   * by display name — the dropdown shape modules need to offer "people who
+   * hold role X" (e.g. thesis_sponsor, thesis_reader,
+   * individual_studies_sponsor). Eligibility is now a plain role check, so
+   * this is the single place that turns a role into a picklist.
+   * @param {string} role
+   * @returns {Array<{email, name}>}
+   */
+  function usersWithRole(role) {
+    const want = String(role || '').trim().toLowerCase();
+    if (!want) return [];
+    return listUsers()
+      .filter(u => u.active && (u.roles || []).some(r => String(r).toLowerCase() === want))
+      .map(u => ({ email: u.email, name: u.nameLastFirst || u.name || u.email }))
+      .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  }
+
+
+  /**
    * Validates a student ID (7 digits) or employee ID (8 digits).
    * Public so self-registration and the importer reuse the same rules.
    */
@@ -382,7 +401,7 @@ const Auth = (() => {
 
   return {
     getRoles, isAuthorized, getAuthorizedModules,
-    getProfile, upsertUser, listUsers, listRoles,
+    getProfile, upsertUser, listUsers, listRoles, usersWithRole,
     validateStudentId, validateEmployeeId, idFormat,
     findByAnyId, findByEmail, attachAltName, fillEmptyId,
   };

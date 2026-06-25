@@ -57,11 +57,12 @@ const AdminModule = (() => {
   function getNotifySettings()       { return NotifyRules.getSettings(); }
   function saveNotifySettings(p)     { return NotifyRules.saveSettings(p); }
 
-  // ── Thesis sponsor/reader eligibility (faculty roster) ─────
-  function thesisRoster()            { return ThesisEligibility.roster(); }
-  function setThesisToggle(p)        { return ThesisEligibility.setToggle(p); }
-
   // ── Thesis operational settings ────────────────────────────
+  // NOTE: sponsor/reader and individual-studies sponsor eligibility are now
+  // plain identity ROLES (thesis_sponsor, thesis_reader,
+  // individual_studies_sponsor) assigned per-user in Admin → Users. There is
+  // no separate eligibility roster here anymore — the consuming modules read
+  // the roles directly via Auth.usersWithRole().
   function getThesisSettings()       { return ThesisSettings.get(); }
   function saveThesisSettings(p)     { return ThesisSettings.save(p); }
 
@@ -83,7 +84,6 @@ const AdminModule = (() => {
     listImportPolicy, upsertImportPolicy, removeImportPolicy,
     listNotifyRules, upsertNotifyRule, removeNotifyRule,
     getNotifySettings, saveNotifySettings,
-    thesisRoster, setThesisToggle,
     getThesisSettings, saveThesisSettings,
   };
 

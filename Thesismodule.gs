@@ -56,9 +56,10 @@ const ThesisModule = (() => {
   // never exists on the record and the student's view needs no rewriting.
   const HONORS  = { APPROVED: 'Honors approved' };
 
-  // Faculty eligible to sponsor or read are resolved at runtime from the
-  // ThesisEligibility config (Admin → Roles → faculty roster), not from a
-  // hard-coded role list — see ThesisEligibility.eligibleFor / isEligible.
+  // Faculty eligible to sponsor or read are the active users holding the
+  // 'thesis_sponsor' / 'thesis_reader' identity roles (assigned in
+  // Admin → Users), resolved at runtime via Auth.usersWithRole — not a
+  // hard-coded list. See listEligible / _holdsRole below.
 
   // The undergraduate advisor is whoever holds this role. Zero, one, or
   // several people may hold it; all holders share the advisor queue and are
@@ -73,13 +74,15 @@ const ThesisModule = (() => {
 
   /**
    * Users eligible for a thesis capability, shaped { email, name } for a
-   * dropdown. Resolved from the ThesisEligibility config so the set is
-   * admin-managed, never hard-coded.
+   * dropdown. Eligibility is a plain identity role — capability 'sponsor'
+   * maps to the 'thesis_sponsor' role, 'reader' to 'thesis_reader' —
+   * assigned per-user in Admin → Users.
    * @param {Object} payload - { capability: 'sponsor' | 'reader' }
    */
   function listEligible(payload) {
     const capability = String((payload || {}).capability || 'sponsor');
-    return ThesisEligibility.eligibleFor(capability);
+    const role = capability === 'reader' ? 'thesis_reader' : 'thesis_sponsor';
+    return Auth.usersWithRole(role);
   }
 
 
@@ -123,7 +126,7 @@ const ThesisModule = (() => {
     if (!abstract)     throw new Error('Thesis abstract is required.');
     if (!regions.length) throw new Error('Add at least one geographic region (country).');
     if (!sponsorEmail) throw new Error('Select a faculty sponsor.');
-    if (!ThesisEligibility.isEligible('sponsor', sponsorEmail)) {
+    if (!_holdsRole(sponsorEmail, 'thesis_sponsor')) {
       throw new Error('That person is not currently eligible to sponsor theses.');
     }
 
@@ -314,7 +317,7 @@ const ThesisModule = (() => {
     if (decision === SPONSOR.HONORS) {
       const readerEmail = String(payload.readerEmail || '').trim();
       if (!readerEmail) throw new Error('Select a faculty reader for honors review.');
-      if (!ThesisEligibility.isEligible('reader', readerEmail)) {
+      if (!_holdsRole(readerEmail, 'thesis_reader')) {
         throw new Error('That person is not currently eligible to be an honors reader.');
       }
       if (_norm(readerEmail) === _norm(user)) throw new Error('The honors reader must be someone other than the sponsor.');
@@ -1024,6 +1027,15 @@ const ThesisModule = (() => {
     const key = _norm(email);
     if (!key) return false;
     return _advisors().some(u => _norm(u.email) === key);
+  }
+
+  /** True if `email` belongs to an active user holding `role`. The
+   *  role-based replacement for the old ThesisEligibility.isEligible
+   *  check. Strict: a super_admin must actually hold the role to qualify
+   *  (consistent with eligibility being a plain identity role now). */
+  function _holdsRole(email, role) {
+    const p = Auth.getProfile(email);
+    return !!(p && p.active && (p.roles || []).some(r => _norm(r) === role));
   }
 
   function _studentLabel(profile) {

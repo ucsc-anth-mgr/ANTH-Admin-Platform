@@ -177,11 +177,16 @@ const App = (() => {
   function _setActiveNav(key) {
     document.querySelectorAll('.nav-item').forEach(a => a.classList.toggle('active', a.dataset.module === key));
   }
+
+  // Current module/page key, read by modules to detect whether they are still
+  // the live page before running deferred (async-callback) UI work.
+  function currentPage() { return _state.activePage; }
+
   function _esc(s) {
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
-  return { init, goDashboard, loadModule, call, toggleSidebar, openTask, refreshTasks };
+  return { init, goDashboard, loadModule, call, toggleSidebar, openTask, refreshTasks, currentPage };
 
 })();
 

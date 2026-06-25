@@ -273,17 +273,6 @@
     </div>
 
     <div class="card">
-      <div class="card-title between"><span><i class="ti ti-school"></i> Thesis sponsors &amp; readers</span>
-        <button class="btn btn-secondary btn-sm" onclick="AdminUI.loadThesisRoster()"><i class="ti ti-refresh"></i> Refresh</button>
-      </div>
-      <p class="text-muted text-sm" style="margin:-8px 0 16px;">
-        Faculty (senate faculty and lecturers) can sponsor and read senior theses by default. Turn either off
-        for a specific person, or turn someone on who isn't faculty. <strong>super_admin</strong> is always eligible.
-      </p>
-      <div id="thesis-roster"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
-    </div>
-
-    <div class="card">
       <div class="card-title"><span><i class="ti ti-settings"></i> Thesis settings</span></div>
       <p class="text-muted text-sm" style="margin:-8px 0 16px;">
         Operational settings for the Senior Thesis module. The undergraduate advisor is whoever holds the
@@ -355,13 +344,14 @@ window.AdminUI = (() => {
 
   function init() {
     loadModules();
-    App.call('admin', 'listRoles', {}, roles => { _roles = roles; _renderRoleCheckboxes(roles); });
+    App.call('admin', 'listRoles', {}, roles => { roles = roles || []; _roles = roles; _renderRoleCheckboxes(roles); });
     App.call('admin', 'iconChoices', {}, icons => { _iconChoices = icons; });
     _refreshRequestBadge();
   }
 
   function _refreshRequestBadge() {
     App.call('admin', 'listPendingRequests', {}, reqs => {
+      reqs = reqs || [];
       const badge = document.getElementById('req-badge');
       if (!badge) return;
       if (reqs.length) { badge.textContent = reqs.length; badge.style.display = 'inline-flex'; }
@@ -380,12 +370,17 @@ window.AdminUI = (() => {
       // Re-fetch roles fresh from server so roles created this session
       // appear in the import policy and notify rules dropdowns.
       App.call('admin', 'listRoles', {}, fresh => {
+        // Bail if the user has navigated away from the Admin module while this
+        // server call was in flight — otherwise the fan-out below runs against
+        // a torn-down DOM. (App.currentPage may be absent on an older shell;
+        // the per-loader container guards still protect us in that case.)
+        if (App.currentPage && App.currentPage() !== 'admin') return;
+        fresh = fresh || [];
         _roles = fresh;  // plain strings — no .map() needed
         _renderRoleCheckboxes(fresh);
         loadRoles();
         loadImportPolicy();
         loadNotifyRules();
-        loadThesisRoster();
         loadThesisSettings();
       });
     }
@@ -395,8 +390,10 @@ window.AdminUI = (() => {
   // ══ MODULE MANAGER ════════════════════════════════════
   function loadModules() {
     const el = document.getElementById('modules-table');
+    if (!el) return;
     el.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
     App.call('admin', 'listModules', {}, mods => {
+      mods = mods || [];
       const rows = mods.map(m => `
         <tr>
           <td><i class="ti ${m.icon}" style="font-size:18px;color:var(--ucsc-navy);vertical-align:middle;margin-right:8px;"></i><strong>${m.label}</strong>
@@ -548,6 +545,7 @@ window.AdminUI = (() => {
   // ══ USERS ═════════════════════════════════════════════
   function loadUsers() {
     const el = document.getElementById('users-table');
+    if (!el) return;
     el.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
     App.call('admin', 'listUsers', {}, users => {
       if (!document.getElementById('users-table')) return;
@@ -690,6 +688,7 @@ window.AdminUI = (() => {
   }
 
   function _renderRoleCheckboxes(roles) {
+    roles = roles || [];
     const c = document.getElementById('role-checkboxes'); if (!c) return;
     c.innerHTML = roles.map(r => `<label class="role-chip" id="chip-${r}"><input type="checkbox" value="${r}" onchange="AdminUI.onChip(this)"> ${r}</label>`).join('');
   }
@@ -745,8 +744,10 @@ window.AdminUI = (() => {
   // ══ REQUESTS ══════════════════════════════════════════
   function loadRequests() {
     const el = document.getElementById('requests-table');
+    if (!el) return;
     el.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
     App.call('admin', 'listPendingRequests', {}, reqs => {
+      reqs = reqs || [];
       _refreshRequestBadge();
       if (!reqs.length) { el.innerHTML = '<div class="empty-state"><i class="ti ti-inbox-off" style="font-size:32px;display:block;margin-bottom:8px;"></i>No pending requests</div>'; return; }
       el.innerHTML = reqs.map(r => _requestCard(r)).join('');
@@ -801,8 +802,10 @@ window.AdminUI = (() => {
   // ══ ROLES ═════════════════════════════════════════════
   function loadRoles() {
     const el = document.getElementById('roles-table');
+    if (!el) return;
     el.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
     App.call('admin', 'listRolesDetailed', {}, roles => {
+      roles = roles || [];
       if (!roles.length) { el.innerHTML = '<div class="empty-state">No roles defined yet.</div>'; return; }
       const rows = roles.map(r => {
         const inUse = r.userCount > 0 || r.moduleCount > 0;
@@ -890,8 +893,10 @@ window.AdminUI = (() => {
         .map(r => `<label class="role-chip" id="pchip-${r}"><input type="checkbox" value="${r}" onchange="this.closest('.role-chip').classList.toggle('checked', this.checked)"> ${r}</label>`).join('');
     }
     const el = document.getElementById('policy-table');
+    if (!el) return;
     el.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
     App.call('admin', 'listImportPolicy', {}, policy => {
+      policy = policy || [];
       if (!policy.length) { el.innerHTML = '<div class="empty-state text-sm">No import permissions configured. Only super admins can import.</div>'; return; }
       const rows = policy.map(p => `
         <tr>
@@ -945,6 +950,7 @@ window.AdminUI = (() => {
     el.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
     App.call('admin', 'listNotifyRules', {}, rules => {
       if (!document.getElementById('notify-table')) return;
+      rules = rules || [];
       const withEmails = rules.filter(r => r.emails && r.emails.length);
       if (!withEmails.length) { el.innerHTML = '<div class="empty-state text-sm">No notification rules yet. Only super admins are emailed about requests.</div>'; return; }
       const rows = withEmails.map(r => `
@@ -991,65 +997,6 @@ window.AdminUI = (() => {
     });
   }
 
-  // ══ THESIS SPONSOR / READER ROSTER ════════════════════
-  function loadThesisRoster() {
-    const el = document.getElementById('thesis-roster');
-    if (!el) return;
-    el.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
-    App.call('admin', 'thesisRoster', {}, people => {
-      if (!document.getElementById('thesis-roster')) return;
-      if (!people || !people.length) {
-        el.innerHTML = '<div class="empty-state text-sm">No people to show yet. Add faculty, staff, or other accounts in Users; they will appear here to toggle.</div>';
-        return;
-      }
-      // Group by category, in a fixed display order. Faculty are eligible
-      // by default; staff, admins, and others start off and can be toggled
-      // on (useful for testing before deployment).
-      const ORDER = ['Faculty', 'Staff', 'Super admins', 'Other'];
-      const groups = {};
-      people.forEach(p => { (groups[p.category] || (groups[p.category] = [])).push(p); });
-
-      const sections = ORDER.filter(cat => groups[cat] && groups[cat].length).map(cat => {
-        const rowsHtml = groups[cat].map(p => {
-          const roleText = (p.roles || []).join(', ') || '—';
-          return `<tr>
-            <td>${_escAttr(p.name)}<div class="text-muted text-sm">${_escAttr(p.email)}</div></td>
-            <td class="text-sm text-muted">${_escAttr(roleText)}</td>
-            <td>${_toggleCell(p.email, 'sponsor', p.sponsor)}</td>
-            <td>${_toggleCell(p.email, 'reader', p.reader)}</td>
-          </tr>`;
-        }).join('');
-        const hint = cat === 'Faculty' ? ' <span class="text-muted text-sm">(eligible by default)</span>'
-                   : (cat === 'Staff' || cat === 'Super admins' || cat === 'Other')
-                     ? ' <span class="text-muted text-sm">(off by default — toggle on to enable)</span>' : '';
-        return `<tr class="roster-group"><td colspan="4">${cat}${hint}</td></tr>${rowsHtml}`;
-      }).join('');
-
-      el.innerHTML = `<div class="table-wrap"><table class="data-table">
-        <thead><tr><th>Name</th><th>Roles</th><th>Sponsor</th><th>Honors reader</th></tr></thead>
-        <tbody>${sections}</tbody></table></div>`;
-    });
-  }
-
-  // One toggle cell. `state` = { eligible, byRole, override } from the server.
-  function _toggleCell(email, capability, state) {
-    const id = 'thtog-' + capability + '-' + _slugId(email);
-    const checked = state && state.eligible ? 'checked' : '';
-    const tag = (state && state.override)
-      ? ` <span class="text-muted text-sm" title="Overrides the role default">(override)</span>` : '';
-    return `<label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;">
-      <input type="checkbox" id="${id}" ${checked}
-        onchange="AdminUI.toggleThesis('${_escAttr(email)}','${capability}',this.checked)">
-      ${tag}</label>`;
-  }
-
-  function toggleThesis(email, capability, eligible) {
-    App.call('admin', 'setThesisToggle', { email, capability, eligible }, () => {
-      Toast.show((eligible ? 'Enabled ' : 'Disabled ') + capability + ' for ' + email, 'success');
-      loadThesisRoster();   // re-render so (override) tags stay accurate
-    }, () => loadThesisRoster());
-  }
-
   // ── Thesis settings ───────────────────────────────────
   function loadThesisSettings() {
     const cb = document.getElementById('th-notify-handoff');
@@ -1081,15 +1028,17 @@ window.AdminUI = (() => {
   // ══ AUDIT ═════════════════════════════════════════════
   function loadAudit() {
     const el = document.getElementById('audit-table');
+    if (!el) return;
     el.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
     App.call('admin', 'recentAudit', {}, rows => {
+      rows = rows || [];
       if (!rows.length) { el.innerHTML = '<div class="empty-state">No audit entries found.</div>'; return; }
       const body = rows.map(r => `<tr><td>${r.timestamp||''}</td><td>${r.user}</td><td>${r.module}</td><td>${r.action}</td><td><span class="badge ${r.status==='success'?'badge-success':'badge-danger'}">${r.status}</span></td></tr>`).join('');
       el.innerHTML = `<div class="table-wrap"><table class="data-table"><thead><tr><th>Time</th><th>User</th><th>Module</th><th>Action</th><th>Status</th></tr></thead><tbody>${body}</tbody></table></div>`;
     });
   }
 
-  return { init, switchTab, loadModules, toggleModule, deleteModule, openModuleForm, editModule, closeModuleForm, checkHandler, pickIcon, onModuleChip, saveModule, loadUsers, onUserFilterChange, clearUserFilters, sortUsersBy, onChip, editUser, saveUser, clearUserForm, loadAudit, loadRoles, editRole, saveRole, clearRoleForm, deleteRole, explainBlocked, loadRequests, approveRequest, rejectRequest, loadImportPolicy, editPolicy, savePolicy, deletePolicy, loadNotifyRules, editNotifyRule, saveNotifyRule, deleteNotifyRule, loadThesisRoster, toggleThesis, loadThesisSettings, saveThesisSettings };
+  return { init, switchTab, loadModules, toggleModule, deleteModule, openModuleForm, editModule, closeModuleForm, checkHandler, pickIcon, onModuleChip, saveModule, loadUsers, onUserFilterChange, clearUserFilters, sortUsersBy, onChip, editUser, saveUser, clearUserForm, loadAudit, loadRoles, editRole, saveRole, clearRoleForm, deleteRole, explainBlocked, loadRequests, approveRequest, rejectRequest, loadImportPolicy, editPolicy, savePolicy, deletePolicy, loadNotifyRules, editNotifyRule, saveNotifyRule, deleteNotifyRule, loadThesisSettings, saveThesisSettings };
 
 })();
 
