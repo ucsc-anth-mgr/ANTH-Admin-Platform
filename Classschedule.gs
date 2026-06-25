@@ -81,6 +81,7 @@ const ClassSchedule = (() => {
   // ignored. These are the headers seen in the sample export.
   const COL = {
     COURSE:     'Subject Cat Nbr',   // e.g. "ANTH 199"
+    TITLE:      'Class Title',        // e.g. "Tutorial", "Indep Field Study"
     SECTION:    'Section',           // e.g. "01", "01A"
     CLASS_NBR:  'Class Nbr',         // e.g. "13214"
     UNITS:      'Units',             // e.g. "5"
@@ -154,6 +155,7 @@ const ClassSchedule = (() => {
 
       rows.push({
         course:      course,
+        title:       String(_cell(raw, idx, COL.TITLE)).trim(),
         section:     String(_cell(raw, idx, COL.SECTION)).trim(),
         classNbr:    classNbr,
         units:       String(_cell(raw, idx, COL.UNITS)).trim(),
@@ -295,6 +297,7 @@ const ClassSchedule = (() => {
         RowID:           DataService.generateId('CS'),
         Term:            term,
         Course:          r.course || '',
+        Title:           r.title || '',
         Section:         r.section || '',
         ClassNbr:        r.classNbr || '',
         Units:           r.units || '',
@@ -403,6 +406,111 @@ const ClassSchedule = (() => {
     return DataService.query(sheetId, tab, 'Term', String(term || '').trim());
   }
 
+  /**
+   * The distinct terms that have committed schedule rows, each decoded to a
+   * human Quarter/Year label. Drives a consumer's term-first selection: a
+   * term with no imported schedule is simply not offered. Newest first.
+   *
+   * @returns {Array<{ term, quarter, year, label }>}
+   */
+  function availableTerms() {
+    const { sheetId, tab } = _cfg();
+    const seen = {};
+    DataService.getAll(sheetId, tab).forEach(r => {
+      const t = String(r.Term || '').trim();
+      if (t) seen[t] = true;
+    });
+    return Object.keys(seen)
+      .map(t => {
+        const d = decodeTermCode(t);
+        return { term: t, quarter: d.quarter, year: d.year, label: d.label };
+      })
+      // Sort by the numeric term code descending (newest first); codes sort
+      // chronologically because year digits precede the quarter digit.
+      .sort((a, b) => Number(b.term) - Number(a.term));
+  }
+
+  /**
+   * The distinct courses present in a term's schedule, each with the credit
+   * (Units) value carried by its sections. Optionally restricted to an
+   * allowlist of course tokens (so a consumer shows only its own slice —
+   * e.g. the undergraduate module excludes grad courses and 195S).
+   *
+   * Credits come from the schedule, not from code: a course's credit value
+   * is the Units of its sections. If a course's sections disagree on Units
+   * (they should not), the most common value wins and the rest are noted.
+   *
+   * @param {string} term
+   * @param {Object} [opts]
+   *   @param {string[]} [opts.allowlist]  course tokens to include (others dropped)
+   * @returns {Array<{ course, credits, sectionCount }>}
+   */
+  function coursesForTerm(term, opts) {
+    opts = opts || {};
+    const allow = opts.allowlist
+      ? opts.allowlist.map(c => String(c).trim().toUpperCase())
+      : null;
+    const rows = sectionsForTerm(term);
+    const byCourse = {};
+    rows.forEach(r => {
+      const course = String(r.Course || '').trim();
+      if (!course) return;
+      if (allow && allow.indexOf(course.toUpperCase()) === -1) return;
+      (byCourse[course] = byCourse[course] || []).push(r);
+    });
+    return Object.keys(byCourse)
+      .map(course => {
+        const units = byCourse[course]
+          .map(r => _unitsNum(r.Units))
+          .filter(n => n !== null);
+        const titles = byCourse[course]
+          .map(r => String(r.Title || '').trim())
+          .filter(t => t);
+        return {
+          course: course,
+          title: _mode(titles) || '',            // most common Class Title
+          credits: _mode(units),                 // most common Units value
+          sectionCount: byCourse[course].length,
+        };
+      })
+      .sort((a, b) => String(a.course).localeCompare(String(b.course),
+        undefined, { numeric: true, sensitivity: 'base' }));
+  }
+
+  /**
+   * Sections for (term, course), filtered to a target credit value when
+   * given (Units === credits). Each row is annotated so a consumer can
+   * render a single menu: isStaff / isAssigned (a named instructor) and the
+   * resolved instructor. Sorted unassigned-first, then by section.
+   *
+   * If a credit target is given and NO section matches it, returns ALL
+   * course sections with matchedCredits:false on the result, so the
+   * consumer can show everything with a "none match N credits" note rather
+   * than an empty list.
+   *
+   * @param {string} term
+   * @param {string} course
+   * @param {Object} [opts]
+   *   @param {number|string} [opts.units]  target credit value to match
+   * @returns {{ sections: Object[], matchedCredits: boolean, target: (number|null) }}
+   */
+  function sectionsForCourse(term, course, opts) {
+    opts = opts || {};
+    const all = _courseRows(term, course).map(_annotateSection).sort(_byAvailability);
+    const target = (opts.units === undefined || opts.units === null || opts.units === '')
+      ? null : _unitsNum(opts.units);
+
+    if (target === null) {
+      return { sections: all, matchedCredits: true, target: null };
+    }
+    const matched = all.filter(s => _unitsNum(s.units) === target);
+    if (matched.length) {
+      return { sections: matched, matchedCredits: true, target: target };
+    }
+    // No section at that credit value — return all, flagged, never empty.
+    return { sections: all, matchedCredits: false, target: target };
+  }
+
   /** Whether a committed table exists for a term. */
   function hasTerm(term) {
     return _termHasRows(String(term || '').trim());
@@ -412,6 +520,31 @@ const ClassSchedule = (() => {
   function importHistory() {
     const { sheetId, importsTab } = _cfg();
     return DataService.getAll(sheetId, importsTab).slice().reverse();
+  }
+
+  /**
+   * Decode a registrar term code to Quarter/Year. UCSC convention:
+   * first 3 digits are an abbreviated year ("225" -> 2025: leading 2 is the
+   * century marker, next two are the year), last digit is the quarter
+   * (0=Winter, 2=Spring, 4=Summer, 8=Fall). A code that does not match this
+   * shape degrades to { quarter:'', year:'', label:<raw code> } so a
+   * malformed code is shown rather than mislabeled.
+   *
+   * @param {string} code  e.g. "2258"
+   * @returns {{ term, quarter, year, label }}
+   */
+  function decodeTermCode(code) {
+    const s = String(code == null ? '' : code).trim();
+    const QUARTERS = { '0': 'Winter', '2': 'Spring', '4': 'Summer', '8': 'Fall' };
+    if (!/^\d{4}$/.test(s)) {
+      return { term: s, quarter: '', year: '', label: s };
+    }
+    const year = 2000 + Number(s.slice(1, 3));   // "225" -> 25 -> 2025
+    const quarter = QUARTERS[s.slice(3)] || '';
+    if (!quarter) {
+      return { term: s, quarter: '', year: String(year), label: s };
+    }
+    return { term: s, quarter: quarter, year: String(year), label: quarter + ' ' + year };
   }
 
 
@@ -601,6 +734,56 @@ const ClassSchedule = (() => {
       undefined, { numeric: true, sensitivity: 'base' });
   }
 
+  /**
+   * Shape one stored section row for a consumer's section list, annotating
+   * availability. isStaff = a placeholder/unassigned section (the free pool);
+   * isAssigned = a named, resolved instructor (relay or reassignment).
+   */
+  function _annotateSection(r) {
+    const hasInstructor = !!String(r.InstructorEmail || '').trim();
+    const isStaff = _isTrue(r.IsStaffPlaceholder) || !hasInstructor;
+    return {
+      rowId: r.RowID,
+      course: r.Course,
+      section: r.Section,
+      classNbr: r.ClassNbr,
+      units: r.Units,
+      component: r.Component,
+      instructorRaw: r.InstructorRaw,
+      instructorEmail: r.InstructorEmail,
+      matchMethod: r.MatchMethod,
+      isStaff: isStaff,
+      isAssigned: !isStaff,
+    };
+  }
+
+  /** Sort unassigned (Staff) sections first, then by section number. */
+  function _byAvailability(a, b) {
+    if (a.isStaff !== b.isStaff) return a.isStaff ? -1 : 1;
+    return String(a.section || '').localeCompare(String(b.section || ''),
+      undefined, { numeric: true, sensitivity: 'base' });
+  }
+
+  /** Parse a Units cell to a number, or null when blank/non-numeric. */
+  function _unitsNum(v) {
+    const s = String(v == null ? '' : v).trim();
+    if (!s) return null;
+    const n = Number(s);
+    return isFinite(n) ? n : null;
+  }
+
+  /** Most frequent value in an array of numbers (ties: first seen). null if empty. */
+  function _mode(nums) {
+    if (!nums || !nums.length) return null;
+    const count = {};
+    let best = nums[0], bestN = 0;
+    nums.forEach(n => {
+      count[n] = (count[n] || 0) + 1;
+      if (count[n] > bestN) { bestN = count[n]; best = n; }
+    });
+    return best;
+  }
+
   function _isTrue(v) { return String(v).toUpperCase() === 'TRUE'; }
   function _norm(s)   { return String(s == null ? '' : s).trim().toLowerCase(); }
 
@@ -610,7 +793,9 @@ const ClassSchedule = (() => {
     parsePreview, resolveUnmatched, commit,
     // lookup / assign face
     findPreassigned, availablePool, reassignable,
-    sectionsForTerm, hasTerm, importHistory,
+    sectionsForTerm, sectionsForCourse,
+    availableTerms, coursesForTerm, decodeTermCode,
+    hasTerm, importHistory,
   };
 
 })();

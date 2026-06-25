@@ -247,7 +247,7 @@ const SETUP_SCHEMA = {
     // InstructorRaw is the verbatim report spelling; InstructorEmail is the
     // resolved profile (blank for Staff/unmatched). Wholesale-replaced per
     // term on re-import. Meta columns filled by DataService.
-    headers: ['RowID', 'Term', 'Course', 'Section', 'ClassNbr', 'Units',
+    headers: ['RowID', 'Term', 'Course', 'Title', 'Section', 'ClassNbr', 'Units',
               'Component', 'InstructorRaw', 'InstructorEmail', 'MatchMethod',
               'IsStaffPlaceholder',
               'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
@@ -273,7 +273,13 @@ const SETUP_SCHEMA = {
     // (Phone, College, MajorStatus, ClassLevel) ARE stored here. The
     // canonical PDF is generated at COMPLETE via ReportService; DriveFileID
     // / DocumentLink are filled then. Meta columns filled by DataService.
-    headers: ['PetitionID', 'StudentEmail', 'Quarter', 'Year', 'Course', 'SponsorEmail',
+    // TermCode is the canonical registrar term key (e.g. "2258"); Quarter/
+    // Year are the human-readable labels derived from it for display. The
+    // course list and a course's Credits both come from the imported
+    // schedule (ClassSchedule), not from code. Syllabus* hold an optional
+    // supporting document (student or sponsor supplied); the canonical
+    // petition PDF is generated at COMPLETE (DriveFileID/DocumentLink).
+    headers: ['PetitionID', 'StudentEmail', 'TermCode', 'Quarter', 'Year', 'Course', 'SponsorEmail',
               'StudySiteAddress', 'Title', 'CourseDescription', 'EvidenceOfPreparation',
               'WorkToBeSubmitted', 'ReportRequired', 'ReportDueDate',
               'HoursWithSponsor', 'HoursIndependent',
@@ -283,6 +289,7 @@ const SETUP_SCHEMA = {
               'ClassNumber', 'ClassSection', 'ClassNumberSource',
               'TotalSpecialStudyCredits', 'MajorAuthRequired', 'MajorAuthorized',
               'AdvisorComments', 'AdvisorProcessedBy', 'AdvisorProcessedAt',
+              'SyllabusFileID', 'SyllabusLink', 'SyllabusName',
               'DriveFileID', 'FileName', 'DocumentLink', 'ReturnNote',
               'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
     seed: [],

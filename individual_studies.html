@@ -14,7 +14,7 @@
       <i class="ti ti-file-plus"></i> New Petition
     </button>
     <? } ?>
-    <? if (isRoles.includes('senate_faculty') || isRoles.includes('lecturer') || isRoles.includes('super_admin')) { ?>
+    <? if (isRoles.includes('individual_studies_sponsor') || isRoles.includes('super_admin')) { ?>
     <button class="module-tab" data-tab="review" onclick="IndividualStudiesUI.switchTab('review')">
       <i class="ti ti-gavel"></i> Review Queue
     </button>
@@ -39,7 +39,7 @@
         <span><i class="ti ti-list"></i> My Petitions</span>
         <button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.loadMine()" aria-label="Refresh"><i class="ti ti-refresh"></i></button>
       </div>
-      <div id="is-mine-list"><div class="empty-state">No petitions yet.</div></div>
+      <div id="is-mine-list"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
     </div>
   </div>
 
@@ -48,8 +48,8 @@
     <div class="card" style="margin-top:20px;">
       <div class="card-title"><i class="ti ti-file-plus"></i> New Individual Studies Petition</div>
 
-      <!-- Course interceptor lives here: choosing 195S swaps in a redirect panel -->
-      <div id="is-redirect-panel" style="display:none;" class="card" >
+      <!-- Course interceptor: choosing a redirect course (e.g. 195S) swaps in this panel -->
+      <div id="is-redirect-panel" style="display:none;" class="card">
         <div class="card-title" style="font-size:14px;"><i class="ti ti-info-circle"></i> Handled elsewhere</div>
         <p id="is-redirect-msg" class="text-muted" style="font-size:13.5px;margin-top:0;"></p>
         <div id="is-redirect-action"></div>
@@ -57,39 +57,61 @@
 
       <div id="is-form-wrap">
         <div id="is-form">
+
+          <!-- Term first: the term drives which courses (and their credits) are available -->
           <div class="form-row">
             <div class="form-group">
-              <label class="form-label" for="is-course">Course <span class="required">*</span></label>
-              <select class="form-select" id="is-course" name="course" onchange="IndividualStudiesUI.onCourseChange(this.value)">
-                <option value="">— Select a course —</option>
+              <label class="form-label" for="is-term">Term <span class="required">*</span></label>
+              <select class="form-select" id="is-term" name="termCode" onchange="IndividualStudiesUI.onTermChange(this.value)">
+                <option value="">— Select a term —</option>
               </select>
-              <div class="form-hint">Independent study: lab tutorial (197), field study (198), or tutorial (199).</div>
+              <div class="form-hint">Only terms with an imported class schedule are listed.</div>
             </div>
+            <div class="form-group">
+              <label class="form-label" for="is-course">Course <span class="required">*</span></label>
+              <select class="form-select" id="is-course" name="course" onchange="IndividualStudiesUI.onCourseChange(this.value)" disabled>
+                <option value="">— Select a term first —</option>
+              </select>
+              <div class="form-hint" id="is-course-hint">Credits are set by the course.</div>
+              <a id="is-course-catalog" href="#" target="_blank" rel="noopener" style="display:none;font-size:12.5px;margin-top:2px;">
+                <i class="ti ti-info-circle"></i> View course description in the catalog
+              </a>
+            </div>
+          </div>
+
+          <div class="form-row">
             <div class="form-group">
               <label class="form-label" for="is-sponsor">Faculty sponsor <span class="required">*</span></label>
               <select class="form-select" id="is-sponsor" name="sponsorEmail">
                 <option value="">— Select a sponsor —</option>
               </select>
             </div>
-          </div>
-
-          <div class="form-row">
             <div class="form-group">
-              <label class="form-label" for="is-quarter">Quarter <span class="required">*</span></label>
-              <select class="form-select" id="is-quarter" name="quarter">
+              <label class="form-label" for="is-grade">Grade option <span class="required">*</span></label>
+              <select class="form-select" id="is-grade" name="gradeOption">
                 <option value="">—</option>
+                <option value="Letter">Letter</option>
+                <option value="Pass/No Pass">Pass / No Pass</option>
               </select>
-            </div>
-            <div class="form-group">
-              <label class="form-label" for="is-year">Year <span class="required">*</span></label>
-              <input class="form-input" id="is-year" name="year" placeholder="e.g. 2026" inputmode="numeric">
             </div>
           </div>
 
           <div class="form-row">
             <div class="form-group">
               <label class="form-label" for="is-college">College</label>
-              <input class="form-input" id="is-college" name="college" placeholder="e.g. Crown">
+              <select class="form-select" id="is-college" name="college">
+                <option value="">— Select your college —</option>
+                <option value="Cowell">Cowell</option>
+                <option value="Stevenson">Stevenson</option>
+                <option value="Crown">Crown</option>
+                <option value="Merrill">Merrill</option>
+                <option value="Porter">Porter</option>
+                <option value="Kresge">Kresge</option>
+                <option value="Oakes">Oakes</option>
+                <option value="Rachel Carson">Rachel Carson</option>
+                <option value="College Nine">College Nine</option>
+                <option value="John R. Lewis">John R. Lewis</option>
+              </select>
             </div>
             <div class="form-group">
               <label class="form-label" for="is-classlevel">Class level</label>
@@ -103,15 +125,15 @@
             </div>
           </div>
 
-          <div class="form-row">
-            <div class="form-group">
-              <label class="form-label" for="is-major">Major status</label>
-              <input class="form-input" id="is-major" name="majorStatus" placeholder="Undeclared, or your major">
-            </div>
-            <div class="form-group">
-              <label class="form-label" for="is-phone">Phone</label>
-              <input class="form-input" id="is-phone" name="phone" placeholder="e.g. 831-555-0100">
-            </div>
+          <div class="form-group">
+            <label class="form-label" for="is-major">Major status</label>
+            <select class="form-select" id="is-major" name="majorStatus">
+              <option value="">— Select your status —</option>
+              <option value="Declared Major">Declared Major</option>
+              <option value="Proposed Major">Proposed Major</option>
+              <option value="Minor">Minor</option>
+              <option value="Non-Major">Non-Major</option>
+            </select>
           </div>
 
           <div class="form-group">
@@ -120,8 +142,8 @@
           </div>
 
           <div class="form-group">
-            <label class="form-label" for="is-title">Title and description of proposed course <span class="required">*</span></label>
-            <input class="form-input" id="is-title" name="title" placeholder="A short title">
+            <label class="form-label" for="is-title">Course title <span class="text-muted">(optional)</span></label>
+            <input class="form-input" id="is-title" name="title" placeholder="A short title for the study">
           </div>
           <div class="form-group">
             <label class="form-label" for="is-desc">Description of proposed course <span class="required">*</span></label>
@@ -135,6 +157,14 @@
           <div class="form-group">
             <label class="form-label" for="is-work">Description of work to be submitted <span class="required">*</span></label>
             <textarea class="form-textarea" id="is-work" name="workToBeSubmitted" rows="3"></textarea>
+          </div>
+
+          <!-- Syllabus sits right after the work description -->
+          <div class="form-group">
+            <label class="form-label" for="is-syllabus">Syllabus <span class="text-muted">(optional)</span></label>
+            <input class="form-input" type="file" id="is-syllabus" accept=".pdf,application/pdf" onchange="IndividualStudiesUI.onSyllabusChange(event)">
+            <div class="form-hint">Optional supporting document; it will be linked on the completed petition.</div>
+            <div id="is-syllabus-current" class="text-sm text-muted" style="display:none;margin-top:4px;"></div>
           </div>
 
           <div class="form-row">
@@ -179,7 +209,7 @@
         <span><i class="ti ti-gavel"></i> Petitions awaiting your review</span>
         <button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.loadReview()" aria-label="Refresh"><i class="ti ti-refresh"></i></button>
       </div>
-      <div id="is-review-list"><div class="empty-state">Nothing awaiting you right now.</div></div>
+      <div id="is-review-list"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
     </div>
   </div>
 
@@ -190,7 +220,7 @@
         <span><i class="ti ti-user-check"></i> Studies I've sponsored</span>
         <button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.loadSponsored()" aria-label="Refresh"><i class="ti ti-refresh"></i></button>
       </div>
-      <div id="is-sponsored-list"><div class="empty-state">No sponsored studies yet.</div></div>
+      <div id="is-sponsored-list"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
     </div>
   </div>
 
@@ -204,7 +234,7 @@
       <p class="text-muted" style="font-size:13px;margin-top:0;">
         For each: confirm the pre-assigned class number or assign one, authorize any over-limit credit load, and complete.
       </p>
-      <div id="is-advisor-list"><div class="empty-state">Nothing awaiting processing.</div></div>
+      <div id="is-advisor-list"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
     </div>
   </div>
 
@@ -288,6 +318,11 @@
     border: 1px solid var(--color-border); border-radius: var(--radius);
     padding: 8px 10px; margin: 6px 0; font-size: 13px;
   }
+  /* Section list: unassigned (Staff) rows highlighted as the ready-to-take pool */
+  .is-section { display:flex; align-items:center; justify-content:space-between; gap:10px;
+    border:1px solid var(--color-border); border-radius: var(--radius); padding:7px 10px; margin:5px 0; font-size:13px; }
+  .is-section.is-unassigned { background:#eaf7ee; border-color:#9ed3b0; }
+  .is-section .is-section-meta { color: var(--color-muted); font-size:12px; }
 </style>
 
 <script>
@@ -296,7 +331,7 @@ window.IndividualStudiesUI = (() => {
   const _roles = <?!= userRoles ?>;
   const _me    = <?!= JSON.stringify(currentUser) ?>;
   const _isStudent = _roles.indexOf('undergraduate_student') !== -1 || _roles.indexOf('undergraduate_non_major') !== -1;
-  const _isSponsor = _roles.indexOf('senate_faculty') !== -1 || _roles.indexOf('lecturer') !== -1;
+  const _isSponsor = _roles.indexOf('individual_studies_sponsor') !== -1;
   const _isAdvisor = _roles.indexOf('staff_undergrad') !== -1;
   const _isSuper   = _roles.indexOf('super_admin') !== -1;
 
@@ -307,8 +342,10 @@ window.IndividualStudiesUI = (() => {
     COMPLETE:        { cls: 'badge-success', label: 'Complete' },
   };
 
-  let _formData = null;       // bootstrap (courses, sponsors, quarters, redirect)
+  let _formData = null;       // bootstrap (terms[with courses], sponsors, redirect)
+  let _termsByCode = {};      // termCode -> { label, courses:[{course,credits}] }
   let _resubmitId = null;
+  let _syllabus = null;       // { syllabusBase64, syllabusName, syllabusMimeType } for the next submit
   let _csvPayload = null;     // { csvBase64 }
   let _preview = null;        // parsed import preview being resolved
   let _lastFocus = null;
@@ -379,6 +416,8 @@ window.IndividualStudiesUI = (() => {
   function _loadFormData(cb) {
     App.call('individual_studies', 'formData', {}, function (data) {
       _formData = data;
+      _termsByCode = {};
+      (data.terms || []).forEach(function (t) { _termsByCode[t.term] = t; });
       _populateForm(data);
       if (cb) cb();
     }, function () { if (cb) cb(); });
@@ -388,48 +427,97 @@ window.IndividualStudiesUI = (() => {
     _loadFormData();
   }
   function _populateForm(data) {
-    const courseSel = document.getElementById('is-course');
-    if (courseSel) {
-      let opts = '<option value="">— Select a course —</option>';
-      (data.courses || []).forEach(function (c) { opts += '<option value="' + esc(c) + '">' + esc(c) + '</option>'; });
-      // Redirect courses appear as interceptor options.
-      Object.keys(data.redirectCourses || {}).forEach(function (c) {
-        opts += '<option value="__redirect__' + esc(c) + '">' + esc(c) + ' (handled elsewhere)</option>';
-      });
-      courseSel.innerHTML = opts;
+    // Term dropdown (only imported terms are present)
+    const termSel = document.getElementById('is-term');
+    if (termSel) {
+      let opts = '<option value="">— Select a term —</option>';
+      (data.terms || []).forEach(function (t) { opts += '<option value="' + esc(t.term) + '">' + esc(t.label) + '</option>'; });
+      termSel.innerHTML = opts;
     }
+    // Sponsor dropdown
     const sponsorSel = document.getElementById('is-sponsor');
     if (sponsorSel) {
       let opts = '<option value="">— Select a sponsor —</option>';
       (data.sponsors || []).forEach(function (s) { opts += '<option value="' + esc(s.email) + '">' + esc(s.name) + '</option>'; });
       sponsorSel.innerHTML = opts;
     }
-    const qSel = document.getElementById('is-quarter');
-    if (qSel) {
-      let opts = '<option value="">—</option>';
-      (data.quarters || []).forEach(function (q) { opts += '<option value="' + esc(q) + '">' + esc(q) + '</option>'; });
-      qSel.innerHTML = opts;
-    }
+    // Course starts disabled until a term is chosen
+    _resetCourseSelect('— Select a term first —');
   }
 
-  // Course interceptor: a "__redirect__ANTH 195S" choice swaps in the panel.
+  function _resetCourseSelect(placeholder) {
+    const courseSel = document.getElementById('is-course');
+    if (!courseSel) return;
+    courseSel.innerHTML = '<option value="">' + esc(placeholder || '— Select a course —') + '</option>';
+    courseSel.disabled = true;
+    const hint = document.getElementById('is-course-hint');
+    if (hint) hint.textContent = 'Credits are set by the course.';
+    const link = document.getElementById('is-course-catalog');
+    if (link) link.style.display = 'none';
+    _hideRedirect();
+  }
+
+  // Term chosen → populate that term's courses (with credits from the schedule)
+  function onTermChange(termCode) {
+    const t = _termsByCode[termCode];
+    const courseSel = document.getElementById('is-course');
+    if (!courseSel) return;
+    _hideRedirect();
+    if (!t) { _resetCourseSelect('— Select a term first —'); return; }
+
+    let opts = '<option value="">— Select a course —</option>';
+    (t.courses || []).forEach(function (c) {
+      opts += '<option value="' + esc(c.course) + '" data-credits="' + esc(c.credits) + '"'
+            + ' data-title="' + esc(c.title || '') + '" data-url="' + esc(c.catalogUrl || '') + '">'
+            + esc(c.course) + (c.title ? ' — ' + esc(c.title) : '')
+            + ' — ' + esc(c.credits) + ' credit' + (Number(c.credits) === 1 ? '' : 's') + '</option>';
+    });
+    // Redirect courses (e.g. 195S) appear as interceptor options regardless of term.
+    Object.keys((data => data || {})(_formData && _formData.redirectCourses)).forEach(function (rc) {
+      opts += '<option value="__redirect__' + esc(rc) + '">' + esc(rc) + ' (handled elsewhere)</option>';
+    });
+    courseSel.innerHTML = opts;
+    courseSel.disabled = false;
+  }
+
   function onCourseChange(value) {
-    const panel = document.getElementById('is-redirect-panel');
-    const formWrap = document.getElementById('is-form-wrap');
     if (value && value.indexOf('__redirect__') === 0) {
       const course = value.replace('__redirect__', '');
       const cfg = (_formData && _formData.redirectCourses && _formData.redirectCourses[course]) || {};
       document.getElementById('is-redirect-msg').textContent =
         cfg.label || (course + ' is handled in another module.');
-      // Inert until the target module exists; the button is informational.
       document.getElementById('is-redirect-action').innerHTML =
         '<p class="text-sm text-muted" style="margin:0;">Senior thesis enrollment will be handled in the Thesis module.</p>';
-      panel.style.display = 'block';
-      formWrap.style.display = 'none';
-    } else {
-      panel.style.display = 'none';
-      formWrap.style.display = 'block';
+      document.getElementById('is-redirect-panel').style.display = 'block';
+      document.getElementById('is-form-wrap').style.display = 'none';
+      return;
     }
+    _hideRedirect();
+    // Reflect the course's title + credits in the hint, and surface the
+    // catalog-description link for the selected course.
+    const hint = document.getElementById('is-course-hint');
+    const sel = document.getElementById('is-course');
+    const link = document.getElementById('is-course-catalog');
+    const opt = (sel && sel.selectedIndex >= 0) ? sel.options[sel.selectedIndex] : null;
+    const cr = opt ? opt.getAttribute('data-credits') : '';
+    const title = opt ? opt.getAttribute('data-title') : '';
+    const url = opt ? opt.getAttribute('data-url') : '';
+    if (hint) {
+      hint.textContent = cr
+        ? (value + (title ? ' (' + title + ')' : '') + ' is ' + cr + ' credit' + (Number(cr) === 1 ? '' : 's') + '.')
+        : 'Credits are set by the course.';
+    }
+    if (link) {
+      if (value && url) { link.href = url; link.style.display = 'inline-block'; }
+      else { link.style.display = 'none'; }
+    }
+  }
+
+  function _hideRedirect() {
+    const p = document.getElementById('is-redirect-panel');
+    const w = document.getElementById('is-form-wrap');
+    if (p) p.style.display = 'none';
+    if (w) w.style.display = 'block';
   }
 
   function onReportToggle() {
@@ -437,20 +525,37 @@ window.IndividualStudiesUI = (() => {
     document.getElementById('is-report-due-group').style.display = on ? 'block' : 'none';
   }
 
+  // ── Syllabus (optional) — read file to base64 for the next submit ──
+  function onSyllabusChange(e) {
+    _syllabus = null;
+    const file = e.target.files && e.target.files[0];
+    const cur = document.getElementById('is-syllabus-current');
+    if (!file) { if (cur) cur.style.display = 'none'; return; }
+    const reader = new FileReader();
+    reader.onload = function () {
+      const b64 = String(reader.result).split(',')[1] || '';
+      _syllabus = { syllabusBase64: b64, syllabusName: file.name, syllabusMimeType: file.type || 'application/pdf' };
+      if (cur) { cur.textContent = 'Attached: ' + file.name; cur.style.display = 'block'; }
+    };
+    reader.onerror = function () { Toast.show('Could not read that file.', 'error'); };
+    reader.readAsDataURL(file);
+  }
+
   // ── Submit / resubmit ─────────────────────────────
   function submit() {
+    const termCode = document.getElementById('is-term').value;
     const course = document.getElementById('is-course').value;
+    if (!termCode) { Toast.show('Choose a term.', 'error'); return; }
     if (!course || course.indexOf('__redirect__') === 0) { Toast.show('Choose a course.', 'error'); return; }
 
     const payload = {
+      termCode: termCode,
       course: course,
       sponsorEmail: document.getElementById('is-sponsor').value,
-      quarter: document.getElementById('is-quarter').value,
-      year: document.getElementById('is-year').value.trim(),
+      gradeOption: document.getElementById('is-grade').value,
       college: document.getElementById('is-college').value.trim(),
       classLevel: document.getElementById('is-classlevel').value,
       majorStatus: document.getElementById('is-major').value.trim(),
-      phone: document.getElementById('is-phone').value.trim(),
       studySiteAddress: document.getElementById('is-site').value.trim(),
       title: document.getElementById('is-title').value.trim(),
       courseDescription: document.getElementById('is-desc').value.trim(),
@@ -462,10 +567,14 @@ window.IndividualStudiesUI = (() => {
       reportDueDate: document.getElementById('is-report-due').value.trim(),
     };
     if (!payload.sponsorEmail) { Toast.show('Select a faculty sponsor.', 'error'); return; }
-    if (!/^\d{4}$/.test(payload.year)) { Toast.show('Year must be a 4-digit year.', 'error'); return; }
-    if (!payload.title) { Toast.show('Add a title and description.', 'error'); return; }
+    if (!payload.gradeOption) { Toast.show('Choose a grade option.', 'error'); return; }
     if (!payload.courseDescription) { Toast.show('Add a course description.', 'error'); return; }
     if (!payload.workToBeSubmitted) { Toast.show('Describe the work to be submitted.', 'error'); return; }
+    if (_syllabus) {
+      payload.syllabusBase64 = _syllabus.syllabusBase64;
+      payload.syllabusName = _syllabus.syllabusName;
+      payload.syllabusMimeType = _syllabus.syllabusMimeType;
+    }
     if (_resubmitId) payload.petitionId = _resubmitId;
 
     FormHelper.setLoading('is-submit-btn', true, _resubmitId ? 'Resubmitting…' : 'Submitting…');
@@ -480,13 +589,16 @@ window.IndividualStudiesUI = (() => {
   }
 
   function resetForm() {
-    ['is-year','is-college','is-major','is-phone','is-site','is-title','is-desc','is-evidence','is-work','is-hours-sponsor','is-hours-indep','is-report-due']
+    ['is-college','is-major','is-site','is-title','is-desc','is-evidence','is-work','is-hours-sponsor','is-hours-indep','is-report-due']
       .forEach(function (id) { const el = document.getElementById(id); if (el) el.value = ''; });
-    ['is-course','is-sponsor','is-quarter','is-classlevel'].forEach(function (id) { const el = document.getElementById(id); if (el) el.value = ''; });
+    ['is-term','is-course','is-sponsor','is-grade','is-classlevel'].forEach(function (id) { const el = document.getElementById(id); if (el) el.value = ''; });
+    _resetCourseSelect('— Select a term first —');
     const rep = document.getElementById('is-report'); if (rep) rep.checked = false;
     document.getElementById('is-report-due-group').style.display = 'none';
-    document.getElementById('is-redirect-panel').style.display = 'none';
-    document.getElementById('is-form-wrap').style.display = 'block';
+    const syl = document.getElementById('is-syllabus'); if (syl) syl.value = '';
+    const sylCur = document.getElementById('is-syllabus-current'); if (sylCur) sylCur.style.display = 'none';
+    _syllabus = null;
+    _hideRedirect();
     _resubmitId = null;
     document.getElementById('is-resubmit-banner').style.display = 'none';
     document.getElementById('is-cancel-resubmit').style.display = 'none';
@@ -500,14 +612,15 @@ window.IndividualStudiesUI = (() => {
     switchTab('new');
     // Defer field population until the form bootstrap has populated selects.
     setTimeout(function () {
+      _setVal('is-term', rec.termCode);
+      onTermChange(rec.termCode);            // populate that term's courses
       _setVal('is-course', rec.course);
+      onCourseChange(rec.course);
       _setVal('is-sponsor', rec.sponsorEmail);
-      _setVal('is-quarter', rec.quarter);
-      _setVal('is-year', rec.year);
+      _setVal('is-grade', rec.gradeOption);
       _setVal('is-college', rec.college);
       _setVal('is-classlevel', rec.classLevel);
       _setVal('is-major', rec.majorStatus);
-      _setVal('is-phone', rec.phone);
       _setVal('is-site', rec.studySiteAddress);
       _setVal('is-title', rec.title);
       _setVal('is-desc', rec.courseDescription);
@@ -527,20 +640,36 @@ window.IndividualStudiesUI = (() => {
   function _setVal(id, v) { const el = document.getElementById(id); if (el) el.value = v == null ? '' : v; }
 
   // ── Lists ─────────────────────────────────────────
+  function _listLoading(elId) {
+    const el = document.getElementById(elId);
+    if (el) el.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
+  }
+  function _listError(elId) {
+    const el = document.getElementById(elId);
+    if (el) el.innerHTML = '<div class="empty-state">Couldn\'t load this list. Use the refresh button to try again.</div>';
+  }
+
   function loadMine(cb) {
+    _listLoading('is-mine-list');
     App.call('individual_studies', 'mine', {}, function (rows) {
       _renderList('is-mine-list', rows, 'mine');
       if (cb) cb(rows);
-    }, function () { if (cb) cb([]); });
+    }, function () { _listError('is-mine-list'); if (cb) cb([]); });
   }
   function loadReview() {
-    App.call('individual_studies', 'sponsorQueue', {}, function (rows) { _renderList('is-review-list', rows, 'review'); });
+    _listLoading('is-review-list');
+    App.call('individual_studies', 'sponsorQueue', {}, function (rows) { _renderList('is-review-list', rows, 'review'); },
+      function () { _listError('is-review-list'); });
   }
   function loadSponsored() {
-    App.call('individual_studies', 'sponsored', {}, function (rows) { _renderList('is-sponsored-list', rows, 'sponsored'); });
+    _listLoading('is-sponsored-list');
+    App.call('individual_studies', 'sponsored', {}, function (rows) { _renderList('is-sponsored-list', rows, 'sponsored'); },
+      function () { _listError('is-sponsored-list'); });
   }
   function loadAdvisor() {
-    App.call('individual_studies', 'advisorQueue', {}, function (rows) { _renderList('is-advisor-list', rows, 'advisor'); });
+    _listLoading('is-advisor-list');
+    App.call('individual_studies', 'advisorQueue', {}, function (rows) { _renderList('is-advisor-list', rows, 'advisor'); },
+      function () { _listError('is-advisor-list'); });
   }
 
   function _renderList(elId, rows, context) {
@@ -589,9 +718,10 @@ window.IndividualStudiesUI = (() => {
     let html = '<dl class="is-detail-grid">'
       + _row('Status', '<span class="badge ' + meta.cls + '">' + esc(meta.label) + '</span>')
       + _row('Student', esc(rec.studentName))
-      + _row('Course', esc(rec.course))
+      + _row('Course', esc(rec.course) + (rec.credits ? ' · ' + esc(rec.credits) + ' cr' : ''))
       + _row('Term', esc(rec.term))
       + _row('Sponsor', esc(rec.sponsorName))
+      + (rec.gradeOption ? _row('Grade option', esc(rec.gradeOption)) : '')
       + (rec.title ? _row('Title', esc(rec.title)) : '')
       + (rec.courseDescription ? _row('Description', esc(rec.courseDescription)) : '')
       + (rec.workToBeSubmitted ? _row('Work to submit', esc(rec.workToBeSubmitted)) : '')
@@ -599,7 +729,7 @@ window.IndividualStudiesUI = (() => {
       + (rec.studySiteAddress ? _row('Study site', esc(rec.studySiteAddress)) : '')
       + (rec.hoursWithSponsor || rec.hoursIndependent ? _row('Hours/week', esc(rec.hoursWithSponsor || '0') + ' with sponsor · ' + esc(rec.hoursIndependent || '0') + ' independent') : '')
       + (rec.reportRequired ? _row('Written report', 'Required' + (rec.reportDueDate ? ' · due ' + esc(rec.reportDueDate) : '')) : '')
-      + (rec.credits ? _row('Credits', esc(rec.credits) + (rec.gradeOption ? ' · ' + esc(rec.gradeOption) : '')) : '')
+      + (rec.syllabusLink ? _row('Syllabus', '<a href="' + esc(rec.syllabusLink) + '" target="_blank" rel="noopener">' + esc(rec.syllabusName || 'View syllabus') + ' <i class="ti ti-external-link"></i></a>') : '')
       + (rec.sponsorComments ? _row('Sponsor comments', esc(rec.sponsorComments)) : '')
       + (rec.classNumber ? _row('Class number', esc(rec.classNumber) + (rec.classSection ? ' · sec ' + esc(rec.classSection) : '')) : '')
       + (rec.advisorComments ? _row('Advisor comments', esc(rec.advisorComments)) : '')
@@ -617,44 +747,49 @@ window.IndividualStudiesUI = (() => {
   function _actionsFor(rec) {
     const out = [];
 
-    // Student revising a returned petition.
     if (rec.stage === 'RETURNED' && _isMe(rec.studentEmail)) {
       out.push('<button class="btn btn-primary" onclick=\'IndividualStudiesUI.startResubmitFromModal(' + JSON.stringify(rec) + ')\'><i class="ti ti-refresh"></i> Revise & resubmit</button>');
     }
-    // Student withdrawing a non-terminal petition.
     if (rec.stage !== 'COMPLETE' && _isMe(rec.studentEmail)) {
       out.push('<button class="btn btn-secondary" onclick="IndividualStudiesUI.withdraw(\'' + esc(rec.petitionId) + '\')"><i class="ti ti-trash"></i> Withdraw</button>');
     }
-    // Sponsor acting on a submitted petition.
     if (rec.stage === 'SUBMITTED' && (_isMe(rec.sponsorEmail) || _isSuper)) {
       out.push(_sponsorPanel(rec));
     }
-    // Advisor acting on a pending petition.
     if (rec.stage === 'PENDING_ADVISOR' && (_isAdvisor || _isSuper)) {
       out.push('<div id="is-advisor-panel"><div class="text-sm text-muted">Loading class-number options…</div></div>');
-      // Fetch decision context after the modal renders.
       setTimeout(function () { _loadAdvisorPanel(rec); }, 50);
+    }
+
+    // super_admin test cleanup: delete at any stage. Server-enforced too.
+    if (_isSuper) {
+      out.push('<div style="margin-top:16px;border-top:1px solid var(--color-border);padding-top:12px;">'
+        + '<button class="btn btn-danger btn-sm" onclick="IndividualStudiesUI.deletePetition(\'' + esc(rec.petitionId) + '\')">'
+        + '<i class="ti ti-trash"></i> Delete petition</button>'
+        + ' <span class="text-muted" style="font-size:12px;">Removes the record, its tasks, the PDF, and any syllabus. Irreversible.</span>'
+        + '</div>');
     }
 
     return out.length ? '<div style="margin-top:8px;">' + out.join(' ') + '</div>' : '';
   }
 
+  // Sponsor panel: review/approve. No credit or grade fields (credits are
+  // course-derived; grade option is the student's choice). The sponsor may
+  // revise the two descriptions, leave comments, and optionally attach a syllabus.
   function _sponsorPanel(rec) {
     return '<div class="card" style="margin-top:8px;">'
-      + '<div class="card-title" style="font-size:14px;"><i class="ti ti-gavel"></i> Instructor approval</div>'
-      + '<div class="form-row">'
-      +   '<div class="form-group"><label class="form-label">Credits</label>'
-      +     '<input class="form-input" id="is-sp-credits" inputmode="numeric" placeholder="e.g. 5"></div>'
-      +   '<div class="form-group"><label class="form-label">Grade option</label>'
-      +     '<select class="form-select" id="is-sp-grade"><option value="">—</option>'
-      +       '<option value="Letter">Letter</option><option value="Pass/No Pass">Pass/No Pass</option></select></div>'
-      + '</div>'
+      + '<div class="card-title" style="font-size:14px;"><i class="ti ti-gavel"></i> Sponsor review</div>'
+      + '<div class="text-sm text-muted" style="margin-bottom:6px;">'
+      +   esc(rec.course) + (rec.credits ? ' · ' + esc(rec.credits) + ' credits' : '') + ' · '
+      +   (rec.gradeOption ? esc(rec.gradeOption) : 'grade option not set') + '</div>'
       + '<div class="form-group"><label class="form-label">Revise description (optional)</label>'
       +   '<textarea class="form-textarea" id="is-sp-desc" rows="2">' + esc(rec.courseDescription || '') + '</textarea></div>'
       + '<div class="form-group"><label class="form-label">Revise work to be submitted (optional)</label>'
       +   '<textarea class="form-textarea" id="is-sp-work" rows="2">' + esc(rec.workToBeSubmitted || '') + '</textarea></div>'
       + '<div class="form-group"><label class="form-label">Comments</label>'
       +   '<textarea class="form-textarea" id="is-sp-comments" rows="2"></textarea></div>'
+      + '<div class="form-group"><label class="form-label">Attach / replace syllabus (optional)</label>'
+      +   '<input class="form-input" type="file" id="is-sp-syllabus" accept=".pdf,application/pdf" onchange="IndividualStudiesUI.onSponsorSyllabusChange(event)"></div>'
       + '<div class="form-actions">'
       +   '<button class="btn btn-primary" onclick="IndividualStudiesUI.sponsorApprove(\'' + esc(rec.petitionId) + '\')"><i class="ti ti-check"></i> Approve</button>'
       +   '<button class="btn btn-danger" onclick="IndividualStudiesUI.sponsorReturn(\'' + esc(rec.petitionId) + '\')"><i class="ti ti-arrow-back-up"></i> Return to student</button>'
@@ -666,7 +801,6 @@ window.IndividualStudiesUI = (() => {
       const panel = document.getElementById('is-advisor-panel');
       if (!panel) return;
       panel.innerHTML = _advisorPanelHtml(rec, ctx);
-      // Pre-fill class number from a pre-assignment, if any.
       if (ctx.preassigned) {
         _setVal('is-adv-classnum', ctx.preassigned.classNbr);
         _setVal('is-adv-section', ctx.preassigned.section);
@@ -674,7 +808,8 @@ window.IndividualStudiesUI = (() => {
       }
     }, function () {
       const panel = document.getElementById('is-advisor-panel');
-      if (panel) panel.innerHTML = '<div class="text-sm text-muted">Could not load class-number options. You can still enter a number below.</div>' + _advisorPanelHtml(rec, { otherPetitions: [], pool: [], reassignable: [] });
+      if (panel) panel.innerHTML = '<div class="text-sm text-muted">Could not load class-number options. You can still enter a number below.</div>'
+        + _advisorPanelHtml(rec, { sections: [], otherPetitions: [] });
     });
   }
 
@@ -699,34 +834,42 @@ window.IndividualStudiesUI = (() => {
         + '</div>';
     }
 
-    // Class-number options
-    let opts = '';
+    // Pre-assigned callout (sponsor + course match) as the shortcut.
+    let pre = '';
     if (ctx.preassigned) {
-      opts += '<div class="is-classnum-opt"><strong>Pre-assigned:</strong> #' + esc(ctx.preassigned.classNbr)
+      pre = '<div class="is-classnum-opt"><strong>Pre-assigned to this sponsor:</strong> #' + esc(ctx.preassigned.classNbr)
         + ' · sec ' + esc(ctx.preassigned.section) + ' — ' + esc(ctx.preassigned.instructorName)
-        + '<br><button class="btn btn-secondary btn-sm" style="margin-top:4px;" onclick="IndividualStudiesUI.pickClass(\''
-        + esc(ctx.preassigned.classNbr) + '\',\'' + esc(ctx.preassigned.section) + '\',\'preassigned\')">Use this number</button></div>';
+        + ' <button class="btn btn-secondary btn-sm" style="margin-left:6px;" onclick="IndividualStudiesUI.pickClass(\''
+        + esc(ctx.preassigned.classNbr) + '\',\'' + esc(ctx.preassigned.section) + '\',\'preassigned\')">Use</button></div>';
     }
-    if (ctx.pool && ctx.pool.length) {
-      opts += '<div class="is-classnum-opt"><strong>Unassigned pool:</strong> '
-        + ctx.pool.map(function (p) {
-            return '<button class="btn btn-secondary btn-sm" style="margin:2px;" onclick="IndividualStudiesUI.pickClass(\''
-              + esc(p.classNbr) + '\',\'' + esc(p.section) + '\',\'pool\')">#' + esc(p.classNbr) + ' (sec ' + esc(p.section) + ')</button>';
-          }).join('')
-        + '</div>';
-    }
-    if (ctx.reassignable && ctx.reassignable.length) {
-      opts += '<div class="is-classnum-opt"><strong>Reassignable (not sponsoring a study):</strong> '
-        + ctx.reassignable.map(function (p) {
-            return '<button class="btn btn-secondary btn-sm" style="margin:2px;" onclick="IndividualStudiesUI.pickClass(\''
-              + esc(p.classNbr) + '\',\'' + esc(p.section) + '\',\'reassigned\')">#' + esc(p.classNbr) + ' (' + esc(p.instructorName) + ')</button>';
-          }).join('')
-        + '<div class="text-sm text-muted" style="margin-top:4px;">Reassigning a listed instructor\'s number asks for confirmation.</div></div>';
+
+    // The full course+credit section list; unassigned (Staff) highlighted.
+    let list = '';
+    const secs = ctx.sections || [];
+    if (secs.length) {
+      if (ctx.sectionsMatchedCredits === false) {
+        list += '<div class="text-sm text-muted" style="margin:6px 0;">No sections match this course\'s credits — showing all sections for the course.</div>';
+      }
+      list += secs.map(function (s) {
+        const who = s.isStaff ? 'Unassigned (Staff)' : esc(s.instructorName);
+        const src = s.isStaff ? 'pool' : 'reassigned';
+        return '<div class="is-section' + (s.isStaff ? ' is-unassigned' : '') + '">'
+          + '<span>#' + esc(s.classNbr) + ' · sec ' + esc(s.section)
+          + ' <span class="is-section-meta">' + esc(s.units) + ' units · ' + who + '</span></span>'
+          + '<button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.pickClass(\''
+          + esc(s.classNbr) + '\',\'' + esc(s.section) + '\',\'' + src + '\')">Use</button>'
+          + '</div>';
+      }).join('');
+    } else {
+      list = '<div class="text-sm text-muted" style="margin:6px 0;">No sections found for this course in the term schedule. Enter a class number manually.</div>';
     }
 
     return '<div class="card" style="margin-top:8px;">'
       + '<div class="card-title" style="font-size:14px;"><i class="ti ti-hash"></i> Assign class number</div>'
-      + creditBlock + others + opts
+      + '<div class="text-sm text-muted" style="margin-bottom:4px;">' + esc(rec.course)
+        + (rec.credits ? ' · ' + esc(rec.credits) + ' credits' : '') + '</div>'
+      + creditBlock + others + pre
+      + '<div style="margin:6px 0;">' + list + '</div>'
       + '<div class="form-row">'
       +   '<div class="form-group"><label class="form-label">Class number</label>'
       +     '<input class="form-input" id="is-adv-classnum"></div>'
@@ -760,19 +903,45 @@ window.IndividualStudiesUI = (() => {
     }, function () { _idle(); });
   }
 
+  function deletePetition(petitionId) {
+    if (!window.confirm('Permanently delete this petition? This removes the record, its tasks, the generated PDF, and any syllabus. This cannot be undone.')) return;
+    _busy('Deleting petition…');
+    App.call('individual_studies', 'deletePetition', { petitionId: petitionId }, function () {
+      _idle(); closeModal(); Toast.show('Petition deleted.', 'success'); _afterAction();
+    }, function () { _idle(); });
+  }
+
+  // Sponsor syllabus attach (in the review panel) — held until Approve.
+  let _sponsorSyllabus = null;
+  function onSponsorSyllabusChange(e) {
+    _sponsorSyllabus = null;
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function () {
+      const b64 = String(reader.result).split(',')[1] || '';
+      _sponsorSyllabus = { syllabusBase64: b64, syllabusName: file.name, syllabusMimeType: file.type || 'application/pdf' };
+    };
+    reader.onerror = function () { Toast.show('Could not read that file.', 'error'); };
+    reader.readAsDataURL(file);
+  }
+
   function sponsorApprove(petitionId) {
-    const credits = document.getElementById('is-sp-credits').value.trim();
-    const gradeOption = document.getElementById('is-sp-grade').value;
-    if (!credits) { Toast.show('Enter the number of credits.', 'error'); return; }
-    if (!gradeOption) { Toast.show('Choose a grade option.', 'error'); return; }
-    _busy('Recording your approval…');
-    App.call('individual_studies', 'sponsorApprove', {
-      petitionId: petitionId, credits: credits, gradeOption: gradeOption,
+    const payload = {
+      petitionId: petitionId,
       courseDescription: document.getElementById('is-sp-desc').value.trim(),
       workToBeSubmitted: document.getElementById('is-sp-work').value.trim(),
       comments: document.getElementById('is-sp-comments').value.trim(),
-    }, function () { _idle(); closeModal(); Toast.show('Approved and sent to the advisor.', 'success'); _afterAction(); },
-       function () { _idle(); });
+    };
+    if (_sponsorSyllabus) {
+      payload.syllabusBase64 = _sponsorSyllabus.syllabusBase64;
+      payload.syllabusName = _sponsorSyllabus.syllabusName;
+      payload.syllabusMimeType = _sponsorSyllabus.syllabusMimeType;
+    }
+    _busy('Recording your approval…');
+    App.call('individual_studies', 'sponsorApprove', payload,
+      function () { _idle(); _sponsorSyllabus = null; closeModal(); Toast.show('Approved and sent to the advisor.', 'success'); _afterAction(); },
+      function () { _idle(); });
   }
 
   function sponsorReturn(petitionId) {
@@ -804,7 +973,7 @@ window.IndividualStudiesUI = (() => {
     }
     _busy('Completing the petition…');
     App.call('individual_studies', 'advisorComplete', payload,
-      function (res) { _idle(); closeModal(); Toast.show('Petition complete.' + (res.documentLink ? '' : ''), 'success'); _afterAction(); },
+      function () { _idle(); closeModal(); Toast.show('Petition complete.', 'success'); _afterAction(); },
       function () { _idle(); });
   }
 
@@ -819,7 +988,6 @@ window.IndividualStudiesUI = (() => {
   }
 
   function _afterAction() {
-    // Refresh whichever list is visible.
     document.querySelectorAll('#is-module .module-tab').forEach(function (b) {
       if (b.classList.contains('active')) switchTab(b.dataset.tab);
     });
@@ -833,7 +1001,7 @@ window.IndividualStudiesUI = (() => {
   // ── Class schedule import ─────────────────────────
   function onCsvChange(e) {
     const errEl = document.getElementById('is-csv-error');
-    errEl.classList.remove('visible');
+    if (errEl) errEl.classList.remove('visible');
     _csvPayload = null;
     const file = e.target.files && e.target.files[0];
     if (!file) return;
@@ -842,7 +1010,7 @@ window.IndividualStudiesUI = (() => {
       const b64 = String(reader.result).split(',')[1] || '';
       _csvPayload = { csvBase64: b64 };
     };
-    reader.onerror = function () { errEl.textContent = 'Could not read that file.'; errEl.classList.add('visible'); };
+    reader.onerror = function () { if (errEl) { errEl.textContent = 'Could not read that file.'; errEl.classList.add('visible'); } };
     reader.readAsDataURL(file);
   }
 
@@ -898,7 +1066,6 @@ window.IndividualStudiesUI = (() => {
     App.call('individual_studies', 'importResolve', { instructorRaw: instructorRaw, email: email }, function (res) {
       _idle();
       Toast.show('Bound to ' + res.name + (res.addedAltName ? ' (alt name saved).' : '.'), 'success');
-      // Re-preview so the row moves into matched.
       previewImport();
     }, function () { _idle(); });
   }
@@ -916,7 +1083,7 @@ window.IndividualStudiesUI = (() => {
       Toast.show('Committed ' + res.rowCount + ' sections for ' + res.term + '.', 'success');
       document.getElementById('is-import-preview').innerHTML = '';
       _preview = null; _csvPayload = null;
-      document.getElementById('is-csv').value = '';
+      const csv = document.getElementById('is-csv'); if (csv) csv.value = '';
       loadImportHistory();
     }, function () { _idle(); });
   }
@@ -941,11 +1108,12 @@ window.IndividualStudiesUI = (() => {
 
   return {
     init, switchTab,
-    onCourseChange, onReportToggle, submit, resetForm, cancelResubmit,
+    onTermChange, onCourseChange, onReportToggle, onSyllabusChange,
+    submit, resetForm, cancelResubmit,
     startResubmit, startResubmitFromModal,
     loadMine, loadReview, loadSponsored, loadAdvisor,
     open, rowKey, closeModal,
-    withdraw, sponsorApprove, sponsorReturn,
+    withdraw, deletePetition, onSponsorSyllabusChange, sponsorApprove, sponsorReturn,
     pickClass, advisorComplete, advisorReturn,
     onCsvChange, previewImport, resolveInstructor, commitImport, loadImportHistory,
   };

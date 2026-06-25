@@ -177,6 +177,15 @@ const CONFIG = {
     DRIVE_FOLDER_ID: '1dbJnmVURcoUS7hePNG-fV16LDmtnuX7L',
   },
 
+  // ── Undergraduate Individual Studies module ────────────────
+  // Drive folder for module documents: uploaded syllabi and the generated
+  // petition PDFs. Replace-in-place on syllabus re-upload benefits from the
+  // Advanced Drive Service (Apps Script editor -> Services (+) -> Drive API),
+  // but works without it.
+  INDIVIDUAL_STUDIES: {
+    DRIVE_FOLDER_ID: '1goPXXH3b0v4k4Pn_qyonPJHZW67jOfLn',
+  },
+
 };
 
 

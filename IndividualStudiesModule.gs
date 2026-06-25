@@ -18,7 +18,7 @@
 // DESIGN NOTES (platform contracts honored here):
 //   - Identity is NOT copied onto the record. StudentEmail / SponsorEmail
 //     are routing keys; names and Student ID are read from Auth at display
-//     time. Petition-specific facts not on the profile (phone, college,
+//     time. Petition-specific facts not on the profile (college,
 //     major status, class level) ARE stored on the record — they are not
 //     platform identity.
 //   - One study per petition; a student may file several. Duplicate guard
@@ -63,6 +63,11 @@ const IndividualStudiesModule = (() => {
   // address (zero, one, or several holders).
   const ADVISOR_ROLE = 'staff_undergrad';
 
+  // Identity role whose active holders may sponsor an individual study.
+  // Assigned per-instructor in Admin -> Users (faculty status alone does
+  // not qualify), mirroring the thesis module's role-based eligibility.
+  const SPONSOR_ROLE = 'individual_studies_sponsor';
+
   // Roles that may enter the module as petition-filing students.
   const STUDENT_ROLES = ['undergraduate_student', 'undergraduate_non_major'];
 
@@ -75,8 +80,6 @@ const IndividualStudiesModule = (() => {
   const REDIRECT_COURSES = {
     'ANTH 195S': { module: 'thesis', label: 'Senior Thesis (ANTH 195S) is handled in the Thesis module.' },
   };
-
-  const QUARTERS = ['Fall', 'Winter', 'Spring', 'Summer'];
 
   const GRADE_OPTIONS = ['Letter', 'Pass/No Pass'];
 
@@ -92,17 +95,40 @@ const IndividualStudiesModule = (() => {
   // ============================================================
 
   /**
-   * Bootstrap data for the New Petition form: the course list, eligible
-   * faculty sponsors, quarter/year options, grade options, the student's
-   * profile prefill (identity read from Auth), and the 195S redirect
-   * interceptor config.
+   * Bootstrap data for the New Petition form. Term-first and schedule-
+   * driven: the only terms offered are those with an imported schedule, and
+   * each term's courses (with their credit values) come from that schedule —
+   * a student can only file for a term/course the registrar has published
+   * and the advisor has imported. Also returns eligible sponsors, grade
+   * options, the student's identity prefill, and the 195S redirect config.
+   *
+   * Shape:
+   *   terms:   [{ term: '2258', label: 'Fall 2025', quarter, year,
+   *               courses: [{ course:'ANTH 198', credits:5 }, ...] }]
    */
   function formData(payload, user, roles) {
     const profile = Auth.getProfile(user) || {};
+    let terms = [];
+    try {
+      terms = ClassSchedule.availableTerms().map(t => {
+        const courses = ClassSchedule.coursesForTerm(t.term, { allowlist: COURSES })
+          // Drop courses with no resolvable credit value (nothing to file against).
+          .filter(c => c.credits !== null && c.credits !== undefined)
+          // Attach the catalog URL, derived from the course number.
+          .map(c => Object.assign({}, c, { catalogUrl: _catalogUrl(c.course) }));
+        return {
+          term: t.term, label: t.label, quarter: t.quarter, year: t.year,
+          courses: courses,
+        };
+      // Only offer terms that actually have at least one undergrad course.
+      }).filter(t => t.courses.length);
+    } catch (e) {
+      Logger.log('IndividualStudiesModule.formData: schedule lookup failed: ' + e);
+      terms = [];
+    }
     return {
-      courses: COURSES.slice(),
+      terms: terms,
       redirectCourses: REDIRECT_COURSES,
-      quarters: QUARTERS.slice(),
       gradeOptions: GRADE_OPTIONS.slice(),
       sponsors: _eligibleSponsors(),
       profile: {
@@ -153,7 +179,6 @@ const IndividualStudiesModule = (() => {
    *   @param {string} [payload.reportDueDate]
    *   @param {string} payload.hoursWithSponsor
    *   @param {string} payload.hoursIndependent
-   *   @param {string} payload.phone
    *   @param {string} payload.college
    *   @param {string} payload.majorStatus   - "Undeclared" or major name
    *   @param {string} payload.classLevel    - FR | SO | JR | SR
@@ -161,21 +186,34 @@ const IndividualStudiesModule = (() => {
    */
   function submit(payload, user, roles) {
     payload = payload || {};
-    const quarter = _requireOneOf(payload.quarter, QUARTERS, 'Quarter');
-    const year    = _validYear(payload.year);
-    const course  = _requireOneOf(payload.course, COURSES, 'Course');
+    const termCode = String(payload.termCode || payload.term || '').trim();
+    if (!termCode) throw new Error('Select a term.');
+    const course  = String(payload.course || '').trim();
+    if (!course) throw new Error('Select a course.');
     const sponsorEmail = String(payload.sponsorEmail || '').trim();
     const title   = String(payload.title || '').trim();
     const courseDescription = String(payload.courseDescription || '').trim();
     const workToBeSubmitted = String(payload.workToBeSubmitted || '').trim();
 
     if (!sponsorEmail) throw new Error('Select a faculty sponsor.');
-    if (!title) throw new Error('Title and description of the proposed course is required.');
     if (!courseDescription) throw new Error('A description of the proposed course is required.');
     if (!workToBeSubmitted) throw new Error('A description of the work to be submitted is required.');
     if (!_isEligibleSponsor(sponsorEmail)) {
       throw new Error('That person is not currently eligible to sponsor an individual study.');
     }
+    // Grade option is the student's choice, set at submission.
+    const gradeOption = _requireOneOf(payload.gradeOption, GRADE_OPTIONS, 'Grade option');
+
+    // The term must have an imported schedule, and the course must be one of
+    // this module's undergrad courses present in that term's schedule. The
+    // course's credit value comes from the schedule — not typed, not coded.
+    const offered = _coursesForTerm(termCode);
+    const match = offered.find(c => String(c.course).trim().toUpperCase() === course.toUpperCase());
+    if (!match) {
+      throw new Error('That course is not available for the selected term. The schedule may not be imported yet.');
+    }
+    const credits = match.credits;            // intrinsic to the course (from schedule)
+    const decoded = ClassSchedule.decodeTermCode(termCode);
 
     const profile = Auth.getProfile(user);
     if (!profile) throw new Error('Your profile could not be found.');
@@ -184,17 +222,21 @@ const IndividualStudiesModule = (() => {
     }
 
     const fields = {
-      Quarter: quarter, Year: year, Course: course, SponsorEmail: sponsorEmail,
+      TermCode: termCode,
+      Quarter: decoded.quarter, Year: decoded.year,   // derived, for display
+      Course: course,
+      Credits: String(credits),                       // derived from the course
+      SponsorEmail: sponsorEmail,
       StudySiteAddress: String(payload.studySiteAddress || '').trim(),
       Title: title,
       CourseDescription: courseDescription,
       EvidenceOfPreparation: String(payload.evidenceOfPreparation || '').trim(),
       WorkToBeSubmitted: workToBeSubmitted,
+      GradeOption: gradeOption,
       ReportRequired: _boolStr(payload.reportRequired),
       ReportDueDate: String(payload.reportDueDate || '').trim(),
       HoursWithSponsor: String(payload.hoursWithSponsor || '').trim(),
       HoursIndependent: String(payload.hoursIndependent || '').trim(),
-      Phone: String(payload.phone || '').trim(),
       College: String(payload.college || '').trim(),
       MajorStatus: String(payload.majorStatus || '').trim(),
       ClassLevel: String(payload.classLevel || '').trim(),
@@ -218,6 +260,9 @@ const IndividualStudiesModule = (() => {
         ReturnNote: '',
       }));
 
+      // Optional syllabus (replace-in-place keeps the same Drive file id).
+      _maybeSaveSyllabus(existingId, payload, user);
+
       Tasks.resolveForSource(MODULE, existingId, { resolvedBy: user });
       _routeToSponsor(existingId, sponsorEmail, profile, course, /*resubmitted*/ true);
       EventBus.emit(MODULE + '.resubmitted', { recordId: existingId, sponsorEmail: sponsorEmail }, { user: user });
@@ -225,15 +270,16 @@ const IndividualStudiesModule = (() => {
     }
 
     // ── New petition: enforce the four-part duplicate key ──
-    _assertNoDuplicate(user, quarter, year, sponsorEmail, course);
+    _assertNoDuplicate(user, termCode, sponsorEmail, course);
 
     const petitionId = DataService.generateId('IS');
     DataService.insert(SHEET(), TAB(), Object.assign({
       PetitionID: petitionId,
       StudentEmail: user,
       Stage: STAGE.SUBMITTED,
-      // Sponsor fields (set at sponsor stage)
-      Credits: '', GradeOption: '', SponsorComments: '',
+      // Sponsor fields (set at sponsor stage; Credits is course-derived and
+      // GradeOption is student-chosen, both supplied via fields below)
+      SponsorComments: '',
       SponsorDecidedBy: '', SponsorDecidedAt: '',
       // Advisor fields (set at advisor stage)
       ClassNumber: '', ClassSection: '', ClassNumberSource: '',
@@ -241,8 +287,13 @@ const IndividualStudiesModule = (() => {
       AdvisorComments: '', AdvisorProcessedBy: '', AdvisorProcessedAt: '',
       // Drive (filled at COMPLETE)
       DriveFileID: '', DocumentLink: '', FileName: '',
+      // Syllabus (optional, set below if supplied)
+      SyllabusFileID: '', SyllabusLink: '', SyllabusName: '',
       ReturnNote: '',
     }, fields));
+
+    // Optional syllabus upload.
+    _maybeSaveSyllabus(petitionId, payload, user);
 
     _routeToSponsor(petitionId, sponsorEmail, profile, course, /*resubmitted*/ false);
     EventBus.emit(MODULE + '.submitted', { recordId: petitionId, sponsorEmail: sponsorEmail }, { user: user });
@@ -264,6 +315,38 @@ const IndividualStudiesModule = (() => {
     DataService.remove(SHEET(), TAB(), 'PetitionID', rec.PetitionID);
     EventBus.emit(MODULE + '.withdrawn', { recordId: rec.PetitionID }, { user: user });
     return { withdrawn: true };
+  }
+
+  /**
+   * Permanently deletes a petition: resolves its open tasks, trashes its
+   * generated PDF and its syllabus (both best-effort), and removes the row.
+   * super_admin only, any stage. Built for clearing test/mistaken records;
+   * irreversible, so the UI confirms before calling. Audit-log entries are
+   * deliberately left intact (append-only history).
+   */
+  function deletePetition(payload, user, roles) {
+    if (roles.indexOf('super_admin') === -1) {
+      throw new Error('Only a super admin can delete a petition.');
+    }
+    const rec = _byId(String((payload || {}).petitionId || '').trim());
+    if (!rec) throw new Error('Petition not found.');
+
+    // Clear dashboard pointers first so nothing references a gone record.
+    Tasks.resolveForSource(MODULE, rec.PetitionID, { resolvedBy: user });
+
+    // Trash both Drive files if present; a missing file must not block deletion.
+    [rec.DriveFileID, rec.SyllabusFileID].forEach(fid => {
+      const id = String(fid || '').trim();
+      if (!id) return;
+      try { DriveApp.getFileById(id).setTrashed(true); }
+      catch (err) { Logger.log('deletePetition: could not trash file ' + id + ' (' + err + ')'); }
+    });
+
+    const removed = DataService.remove(SHEET(), TAB(), 'PetitionID', rec.PetitionID);
+    if (!removed) throw new Error('Delete failed — the record could not be removed.');
+
+    EventBus.emit(MODULE + '.deleted', { recordId: rec.PetitionID }, { user: user });
+    return { petitionId: rec.PetitionID, deleted: true };
   }
 
 
@@ -288,9 +371,11 @@ const IndividualStudiesModule = (() => {
   }
 
   /**
-   * Sponsor records the instructor-approval decision: credits + grade
-   * option (and may revise the two description fields), then approves.
-   * Advances to PENDING_ADVISOR.
+   * Sponsor records the instructor-approval decision: grade option (and may
+   * revise the two description fields, and optionally attach a syllabus),
+   * then approves. Credits are NOT set here — they are intrinsic to the
+   * course (from the schedule) and were recorded at submission. Advances to
+   * PENDING_ADVISOR.
    */
   function sponsorApprove(payload, user, roles) {
     const rec = _byId((payload || {}).petitionId);
@@ -298,19 +383,15 @@ const IndividualStudiesModule = (() => {
     _assertSponsor(rec, user, roles);
     if (rec.Stage !== STAGE.SUBMITTED) throw new Error('This petition is not awaiting a sponsor decision.');
 
-    const credits = _validCredits(payload.credits);
-    const gradeOption = _requireOneOf(payload.gradeOption, GRADE_OPTIONS, 'Grade option');
-
     // The sponsor may edit the two description fields; preserve existing
-    // text when not supplied.
+    // text when not supplied. Grade option is the student's choice and is
+    // not changed here; credits are intrinsic to the course.
     const courseDescription = payload.courseDescription !== undefined
       ? String(payload.courseDescription || '').trim() : rec.CourseDescription;
     const workToBeSubmitted = payload.workToBeSubmitted !== undefined
       ? String(payload.workToBeSubmitted || '').trim() : rec.WorkToBeSubmitted;
 
     DataService.update(SHEET(), TAB(), 'PetitionID', rec.PetitionID, {
-      Credits: String(credits),
-      GradeOption: gradeOption,
       SponsorComments: String(payload.comments || '').trim(),
       CourseDescription: courseDescription,
       WorkToBeSubmitted: workToBeSubmitted,
@@ -318,6 +399,9 @@ const IndividualStudiesModule = (() => {
       SponsorDecidedAt: new Date().toISOString(),
       Stage: STAGE.PENDING_ADVISOR,
     });
+
+    // Sponsor may attach/replace the syllabus as part of their review.
+    _maybeSaveSyllabus(rec.PetitionID, payload, user);
 
     Tasks.resolveForSource(MODULE, rec.PetitionID, { resolvedBy: user });
     _routeToAdvisor(rec.PetitionID, rec);
@@ -462,7 +546,7 @@ const IndividualStudiesModule = (() => {
 
     DataService.update(SHEET(), TAB(), 'PetitionID', rec.PetitionID, {
       Stage: STAGE.SUBMITTED,
-      Credits: '', GradeOption: '', SponsorComments: '',
+      SponsorComments: '',
       SponsorDecidedBy: '', SponsorDecidedAt: '',
       ReturnNote: note,
     });
@@ -579,12 +663,13 @@ const IndividualStudiesModule = (() => {
   // ============================================================
 
   function _advisorContext(rec) {
-    const term = _termKey(rec.Quarter, rec.Year);
+    const term = _recTerm(rec);
+    const credits = _toNum(rec.Credits);
 
     // The student's individual-studies petitions for this term (this module
     // only — the grad/thesis credit picture is out of scope here).
     const studentTermPetitions = DataService.query(SHEET(), TAB(), 'StudentEmail', rec.StudentEmail)
-      .filter(r => _termKey(r.Quarter, r.Year) === term && r.Stage !== STAGE.RETURNED);
+      .filter(r => _recTerm(r) === term && r.Stage !== STAGE.RETURNED);
 
     let creditTotal = 0;
     const others = [];
@@ -600,44 +685,34 @@ const IndividualStudiesModule = (() => {
     });
 
     // Class-number options from the ClassSchedule service.
-    let preassigned = null, pool = [], reassignableRows = [];
+    let preassigned = null, allSections = [], sectionsMatchedCredits = true;
     try {
-      // Sponsors with a petition this term that is NOT returned (submitted,
-      // pending advisor, or complete all mean that faculty member is
-      // sponsoring a study) — excluded from reassignment candidates so we
-      // don't repurpose a number from someone actively sponsoring.
-      const liveSponsors = _liveSponsorEmails(term);
-
       const pre = ClassSchedule.findPreassigned(term, rec.Course, rec.SponsorEmail);
       preassigned = pre ? _classRow(pre) : null;
-      pool = ClassSchedule.availablePool(term, rec.Course).map(_classRow);
-      reassignableRows = ClassSchedule.reassignable(term, rec.Course, liveSponsors).map(_classRow);
+
+      // The authoritative menu: every section for this course at the
+      // petition's credit value, unassigned (Staff) sections first/
+      // highlighted. Falls back to all course sections (flagged) if none
+      // match the credit value, so the advisor is never stuck.
+      const res = ClassSchedule.sectionsForCourse(term, rec.Course, { units: credits });
+      sectionsMatchedCredits = res.matchedCredits;
+      allSections = (res.sections || []).map(_sectionRow);
     } catch (e) {
       Logger.log('IndividualStudiesModule._advisorContext: ClassSchedule lookup failed: ' + e);
     }
 
     return {
       term: term,
+      termLabel: _termLabel(rec),
+      credits: credits,
       creditTotal: creditTotal,
       creditCap: SPECIAL_STUDY_CREDIT_CAP,
       overCap: creditTotal > SPECIAL_STUDY_CREDIT_CAP,
       otherPetitions: others,
       preassigned: preassigned,
-      pool: pool,
-      reassignable: reassignableRows,
+      sections: allSections,
+      sectionsMatchedCredits: sectionsMatchedCredits,
     };
-  }
-
-  /** Emails of sponsors with a non-terminal, non-returned petition in term. */
-  function _liveSponsorEmails(term) {
-    const live = {};
-    DataService.getAll(SHEET(), TAB()).forEach(r => {
-      if (_termKey(r.Quarter, r.Year) !== term) return;
-      if (r.Stage === STAGE.RETURNED) return;
-      const e = _norm(r.SponsorEmail);
-      if (e) live[e] = true;
-    });
-    return Object.keys(live);
   }
 
   function _classRow(r) {
@@ -646,6 +721,21 @@ const IndividualStudiesModule = (() => {
       instructorRaw: r.InstructorRaw, instructorEmail: r.InstructorEmail,
       instructorName: r.InstructorEmail ? _facultyLabel(r.InstructorEmail) : (r.InstructorRaw || 'Staff'),
       matchMethod: r.MatchMethod,
+    };
+  }
+
+  /**
+   * Shape an annotated section (from ClassSchedule.sectionsForCourse) for
+   * the advisor's unified pick list. isStaff/isAssigned drive the UI
+   * highlight (unassigned = ready to take; assigned = relay/reassign).
+   */
+  function _sectionRow(s) {
+    return {
+      classNbr: s.classNbr, section: s.section, units: s.units,
+      instructorRaw: s.instructorRaw, instructorEmail: s.instructorEmail,
+      instructorName: s.instructorEmail ? _facultyLabel(s.instructorEmail) : (s.instructorRaw || 'Staff'),
+      isStaff: s.isStaff, isAssigned: s.isAssigned,
+      matchMethod: s.matchMethod,
     };
   }
 
@@ -663,7 +753,7 @@ const IndividualStudiesModule = (() => {
       reportKey: 'petition',
       title: 'Individual Studies Petition — ' + (student.name || rec.StudentEmail),
       sourceId: rec.PetitionID,
-      params: { petitionId: rec.PetitionID, term: _termKey(rec.Quarter, rec.Year), course: rec.Course },
+      params: { petitionId: rec.PetitionID, term: _recTerm(rec), course: rec.Course },
       html: html,
       fileName: fileName,
       orientation: 'portrait',
@@ -724,7 +814,6 @@ const IndividualStudiesModule = (() => {
       +   row('Name', e(studentName))
       +   row('Student ID', e(student.studentId || ''))
       +   row('Email', e(rec.StudentEmail))
-      +   row('Phone', e(rec.Phone))
       +   row('College', e(rec.College))
       +   row('Status', e(rec.MajorStatus) + (rec.ClassLevel ? ' · ' + e(rec.ClassLevel) : ''))
       +   row('Quarter / Year', e(rec.Quarter) + ' ' + e(rec.Year))
@@ -739,6 +828,10 @@ const IndividualStudiesModule = (() => {
           (rec.CourseDescription ? '<br><br>' + e(rec.CourseDescription) : ''))
       + _block('Evidence of preparation for special study', e(rec.EvidenceOfPreparation))
       + _block('Description of work to be submitted', e(rec.WorkToBeSubmitted))
+      + (String(rec.SyllabusLink || '').trim()
+          ? _block('Syllabus', '<a href="' + e(rec.SyllabusLink) + '">' +
+              e(rec.SyllabusName || 'View syllabus') + '</a>')
+          : '')
 
       + '<table style="width:100%;border-collapse:collapse;margin-bottom:10px;">'
       +   row('Written report required', _isTrueStr(rec.ReportRequired) ? 'Yes' : 'No')
@@ -817,10 +910,11 @@ const IndividualStudiesModule = (() => {
   // PRIVATE — eligibility, duplicate guard, record shaping, helpers
   // ============================================================
 
-  /** Eligible faculty sponsors: senate_faculty / lecturer (active). */
+  /** Eligible sponsors: active holders of the SPONSOR_ROLE. Implemented
+   *  with Auth.listUsers() (Auth exposes no usersWithRole helper). */
   function _eligibleSponsors() {
     return Auth.listUsers()
-      .filter(u => u.active && (u.roles || []).some(r => r === 'senate_faculty' || r === 'lecturer'))
+      .filter(u => u.active && (u.roles || []).indexOf(SPONSOR_ROLE) !== -1)
       .map(u => ({ email: u.email, name: u.nameLastFirst || u.name || u.email }))
       .sort((a, b) => String(a.name).localeCompare(String(b.name)));
   }
@@ -838,20 +932,20 @@ const IndividualStudiesModule = (() => {
   }
 
   /**
-   * Blocks an exact (student, term, instructor, course) duplicate. A
-   * RETURNED record on the same key is not a duplicate (the student should
-   * resubmit it), so it is excluded.
+   * Blocks an exact (student, term, instructor, course) duplicate, keyed on
+   * the canonical term code. A RETURNED record on the same key is not a
+   * duplicate (the student should resubmit it), so it is excluded.
    */
-  function _assertNoDuplicate(student, quarter, year, sponsorEmail, course) {
-    const term = _termKey(quarter, year);
+  function _assertNoDuplicate(student, termCode, sponsorEmail, course) {
     const dup = DataService.query(SHEET(), TAB(), 'StudentEmail', student).find(r =>
-      _termKey(r.Quarter, r.Year) === term &&
+      _recTerm(r) === String(termCode).trim() &&
       _norm(r.SponsorEmail) === _norm(sponsorEmail) &&
       String(r.Course).trim() === String(course).trim() &&
       r.Stage !== STAGE.RETURNED);
     if (dup) {
+      const label = ClassSchedule.decodeTermCode(termCode).label;
       throw new Error('You already have a ' + course + ' petition with this sponsor for ' +
-        quarter + ' ' + year + '. Use it rather than filing a duplicate.');
+        label + '. Use it rather than filing a duplicate.');
     }
   }
 
@@ -860,7 +954,9 @@ const IndividualStudiesModule = (() => {
       petitionId: r.PetitionID,
       studentEmail: r.StudentEmail,
       studentName: _studentLabel(r.StudentEmail),
-      quarter: r.Quarter, year: r.Year, term: _termKey(r.Quarter, r.Year),
+      termCode: _recTerm(r),
+      quarter: r.Quarter, year: r.Year,
+      term: _termLabel(r),                 // human label for display
       course: r.Course,
       sponsorEmail: r.SponsorEmail,
       sponsorName: _facultyLabel(r.SponsorEmail),
@@ -873,7 +969,7 @@ const IndividualStudiesModule = (() => {
       reportDueDate: r.ReportDueDate,
       hoursWithSponsor: r.HoursWithSponsor,
       hoursIndependent: r.HoursIndependent,
-      phone: r.Phone, college: r.College, majorStatus: r.MajorStatus, classLevel: r.ClassLevel,
+      college: r.College, majorStatus: r.MajorStatus, classLevel: r.ClassLevel,
       credits: r.Credits, gradeOption: r.GradeOption, sponsorComments: r.SponsorComments,
       sponsorDecidedAt: r.SponsorDecidedAt ? _fmtDate(r.SponsorDecidedAt) : '',
       classNumber: r.ClassNumber, classSection: r.ClassSection,
@@ -885,6 +981,8 @@ const IndividualStudiesModule = (() => {
       advisorProcessedAt: r.AdvisorProcessedAt ? _fmtDate(r.AdvisorProcessedAt) : '',
       stage: r.Stage,
       documentLink: r.DocumentLink || '',
+      syllabusLink: r.SyllabusLink || '',
+      syllabusName: r.SyllabusName || '',
       returnNote: r.ReturnNote || '',
       createdAt: r.CreatedAt ? _fmtDate(r.CreatedAt) : '',
       _created: r.CreatedAt ? new Date(r.CreatedAt).getTime() : 0,
@@ -938,8 +1036,118 @@ const IndividualStudiesModule = (() => {
     return base + sep + 'page=' + MODULE + '&focus=' + encodeURIComponent(petitionId);
   }
 
-  function _termKey(quarter, year) {
-    return String(quarter || '').trim() + ' ' + String(year || '').trim();
+  // ── Term helpers (canonical key is the registrar term code) ──
+
+  /** The record's canonical term code. Falls back to deriving from
+   *  Quarter/Year for any legacy row written before TermCode existed. */
+  function _recTerm(r) {
+    const code = String(r.TermCode || '').trim();
+    if (code) return code;
+    return _encodeTermCode(r.Quarter, r.Year);   // legacy fallback
+  }
+
+  /** Human label for a record: prefer stored Quarter/Year, else decode. */
+  function _termLabel(r) {
+    const q = String(r.Quarter || '').trim();
+    const y = String(r.Year || '').trim();
+    if (q && y) return q + ' ' + y;
+    return ClassSchedule.decodeTermCode(_recTerm(r)).label;
+  }
+
+  /** Encode Quarter/Year back to a term code (legacy-row fallback only). */
+  function _encodeTermCode(quarter, year) {
+    const q = { 'winter': '0', 'spring': '2', 'summer': '4', 'fall': '8' };
+    const qd = q[String(quarter || '').trim().toLowerCase()];
+    const y = String(year || '').trim();
+    if (!qd || !/^\d{4}$/.test(y)) return '';
+    return '2' + y.slice(2) + qd;     // 2025 -> "25", prefixed with century 2
+  }
+
+  /** Undergrad courses (with credits) offered in a term, from the schedule. */
+  /**
+   * Builds the UCSC catalog URL for a course from its token. The catalog
+   * pages follow a fixed pattern keyed by the level band (the hundreds
+   * bucket of the number) and the lowercased course slug, e.g.
+   *   ANTH 197F -> .../courses/anth-anthropology/100/anth-197f
+   *   ANTH 297  -> .../courses/anth-anthropology/200/anth-297
+   * The F/G suffixes have their own catalog pages, so the slug is just the
+   * full course number lowercased. Returns '' if the number can't be read.
+   */
+  function _catalogUrl(course) {
+    const s = String(course || '').trim();
+    const m = s.match(/^ANTH\s+(\d+)([A-Z]*)$/i);
+    if (!m) return '';
+    const band = Math.floor(Number(m[1]) / 100) * 100;
+    const slug = 'anth-' + m[1] + (m[2] || '').toLowerCase();
+    return 'https://catalog.ucsc.edu/en/current/general-catalog/courses/anth-anthropology/'
+      + band + '/' + slug;
+  }
+
+  /** This module's undergrad courses present in a term's schedule, each with
+   *  credits (and title) from the schedule. Empty if the term isn't imported. */
+  function _coursesForTerm(termCode) {
+    try {
+      return ClassSchedule.coursesForTerm(termCode, { allowlist: COURSES })
+        .filter(c => c.credits !== null && c.credits !== undefined);
+    } catch (e) {
+      Logger.log('IndividualStudiesModule._coursesForTerm failed: ' + e);
+      return [];
+    }
+  }
+
+  // ── Syllabus (optional supporting document) ──
+
+  /**
+   * Save an optional syllabus upload onto a petition, if one is present in
+   * the payload (payload.syllabusBase64 + payload.syllabusName). Replace-in-
+   * place: a re-upload reuses the existing Drive file id. Grants the student
+   * viewer on the file. Best-effort — a syllabus failure never blocks the
+   * submit/approve it rides along with; it is logged.
+   */
+  function _maybeSaveSyllabus(petitionId, payload, user) {
+    const b64 = String((payload && payload.syllabusBase64) || '').trim();
+    if (!b64) return;     // no syllabus supplied — nothing to do
+    try {
+      const rec = _byId(petitionId);
+      if (!rec) return;
+      const folderId = (CONFIG.INDIVIDUAL_STUDIES && CONFIG.INDIVIDUAL_STUDIES.DRIVE_FOLDER_ID) || '';
+      if (!folderId) { Logger.log('IndividualStudiesModule: no syllabus folder configured.'); return; }
+
+      const name = String(payload.syllabusName || ('syllabus-' + petitionId + '.pdf')).trim();
+      const bytes = Utilities.base64Decode(b64);
+      const blob = Utilities.newBlob(bytes, payload.syllabusMimeType || 'application/pdf', name);
+
+      const existingId = String(rec.SyllabusFileID || '').trim();
+      let file;
+      if (existingId) {
+        // Replace contents in place, keep the same file id.
+        try {
+          file = DriveApp.getFileById(existingId);
+          file.setContent('');                 // clear; then overwrite via Drive
+        } catch (e) { file = null; }
+      }
+      if (!file) {
+        const folder = DriveApp.getFolderById(folderId);
+        file = folder.createFile(blob);
+      } else {
+        // Overwrite by creating anew in the same folder and trashing the old,
+        // since DriveApp can't replace bytes directly without Advanced Drive.
+        const folder = DriveApp.getFolderById(folderId);
+        const fresh = folder.createFile(blob);
+        try { file.setTrashed(true); } catch (e) {}
+        file = fresh;
+      }
+      file.setName(name);
+      const fileId = file.getId();
+      const link = 'https://drive.google.com/file/d/' + fileId + '/view';
+
+      DataService.update(SHEET(), TAB(), 'PetitionID', petitionId, {
+        SyllabusFileID: fileId, SyllabusLink: link, SyllabusName: name,
+      });
+      _grantStudentViewer(fileId, rec.StudentEmail);
+    } catch (e) {
+      Logger.log('IndividualStudiesModule._maybeSaveSyllabus failed for ' + petitionId + ': ' + e);
+    }
   }
 
   function _requireOneOf(value, allowed, label) {
@@ -948,18 +1156,6 @@ const IndividualStudiesModule = (() => {
       throw new Error(label + ' must be one of: ' + allowed.join(', ') + '.');
     }
     return v;
-  }
-
-  function _validYear(year) {
-    const y = String(year || '').trim();
-    if (!/^\d{4}$/.test(y)) throw new Error('Year must be a 4-digit year.');
-    return y;
-  }
-
-  function _validCredits(credits) {
-    const n = Number(credits);
-    if (!isFinite(n) || n <= 0) throw new Error('Enter the number of credits.');
-    return n;
   }
 
   function _byCreatedDesc(a, b) { return (b._created || 0) - (a._created || 0); }
@@ -985,7 +1181,7 @@ const IndividualStudiesModule = (() => {
 
   return {
     // student
-    formData, mine, get, submit, withdraw,
+    formData, mine, get, submit, withdraw, deletePetition,
     // sponsor
     sponsorQueue, sponsored, sponsorApprove, sponsorReturn,
     // advisor
