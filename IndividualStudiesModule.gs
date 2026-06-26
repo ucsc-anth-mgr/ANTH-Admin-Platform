@@ -50,6 +50,7 @@ const IndividualStudiesModule = (() => {
   const MODULE = 'individual_studies';
   const TAB    = function () { return CONFIG.TABS.INDIVIDUAL_STUDIES || 'Petitions'; };
   const SHEET  = function () { return CONFIG.SHEETS.INDIVIDUAL_STUDIES; };
+  const TPL_TAB = function () { return CONFIG.TABS.INDIVIDUAL_STUDIES_TEMPLATES || 'Templates'; };
 
   const STAGE = {
     SUBMITTED:       'SUBMITTED',
@@ -62,6 +63,11 @@ const IndividualStudiesModule = (() => {
   // advisor stage and the major-approval owner. Role-derived, not a fixed
   // address (zero, one, or several holders).
   const ADVISOR_ROLE = 'staff_undergrad';
+
+  // A sponsor can request room/lab-space access for any petition (at approval
+  // or later from the detail view); facilities staff are tasked + emailed so
+  // they can program access. Role-resolved, not a fixed address.
+  const FACILITIES_ROLE = 'staff_facilities';
 
   // Identity role whose active holders may sponsor an individual study.
   // Assigned per-instructor in Admin -> Users (faculty status alone does
@@ -88,6 +94,43 @@ const IndividualStudiesModule = (() => {
   const SPECIAL_STUDY_CREDIT_CAP = 7;
 
   const SOURCE_TYPE = 'individual_studies_petition';
+
+  // Senate Regulation 760: 1 credit = 30 hours of work over the term. Weekly
+  // load = (30 x credits) / weeks. Regular quarters run 10 weeks; summer is
+  // compressed to 5. The total is fixed by policy — students and sponsors
+  // only set the split (with-sponsor vs. independent); independent is the
+  // remainder. Summer is detected from the term code's quarter digit.
+  const SR760_HOURS_PER_CREDIT = 30;
+  function _termWeeks(termCode) {
+    try { return ClassSchedule.decodeTermCode(termCode).quarter === 'Summer' ? 5 : 10; }
+    catch (e) { return 10; }
+  }
+  function _weeklyHoursTotal(credits, termCode) {
+    const c = Number(credits);
+    if (!isFinite(c) || c <= 0) return 0;
+    const weeks = _termWeeks(termCode);
+    return Math.round((SR760_HOURS_PER_CREDIT * c) / weeks);   // 3*cr normal, 6*cr summer
+  }
+  /**
+   * Validates and normalizes the hours split against the SR 760 total.
+   * Returns { withSponsor, independent } where independent = total - withSponsor.
+   * Throws if with-sponsor is negative or exceeds the policy total.
+   */
+  function _resolveHoursSplit(withSponsorRaw, credits, termCode) {
+    const total = _weeklyHoursTotal(credits, termCode);
+    const ws = Number(String(withSponsorRaw == null ? '' : withSponsorRaw).trim() || 0);
+    if (!isFinite(ws) || ws < 0) throw new Error('Enter a valid number of hours with the sponsor.');
+    if (ws > total) {
+      throw new Error('Hours with the sponsor (' + ws + ') cannot exceed the ' + total +
+        ' hours/week total required for ' + credits + ' credits (Senate Regulation 760).');
+    }
+    return { withSponsor: ws, independent: total - ws, total: total };
+  }
+
+  // Room-access tasks use a distinct source type + id suffix so the normal
+  // workflow's Tasks.resolveForSource(petitionId) calls never resolve them.
+  const ROOM_ACCESS_SOURCE_TYPE = 'individual_studies_room_access';
+  function _roomAccessSourceId(petitionId) { return String(petitionId) + ':room'; }
 
 
   // ============================================================
@@ -118,6 +161,8 @@ const IndividualStudiesModule = (() => {
           .map(c => Object.assign({}, c, { catalogUrl: _catalogUrl(c.course) }));
         return {
           term: t.term, label: t.label, quarter: t.quarter, year: t.year,
+          weeks: _termWeeks(t.term), isSummer: _termWeeks(t.term) === 5,
+          hoursPerCredit: SR760_HOURS_PER_CREDIT,
           courses: courses,
         };
       // Only offer terms that actually have at least one undergrad course.
@@ -215,6 +260,10 @@ const IndividualStudiesModule = (() => {
     const credits = match.credits;            // intrinsic to the course (from schedule)
     const decoded = ClassSchedule.decodeTermCode(termCode);
 
+    // SR 760: total weekly hours are fixed by credits + term length; the
+    // student sets only the with-sponsor portion, the rest is independent.
+    const _hoursSplit = _resolveHoursSplit(payload.hoursWithSponsor, credits, termCode);
+
     const profile = Auth.getProfile(user);
     if (!profile) throw new Error('Your profile could not be found.');
     if (!profile.studentId) {
@@ -235,8 +284,8 @@ const IndividualStudiesModule = (() => {
       GradeOption: gradeOption,
       ReportRequired: _boolStr(payload.reportRequired),
       ReportDueDate: String(payload.reportDueDate || '').trim(),
-      HoursWithSponsor: String(payload.hoursWithSponsor || '').trim(),
-      HoursIndependent: String(payload.hoursIndependent || '').trim(),
+      HoursWithSponsor: String(_hoursSplit.withSponsor),
+      HoursIndependent: String(_hoursSplit.independent),
       College: String(payload.college || '').trim(),
       MajorStatus: String(payload.majorStatus || '').trim(),
       ClassLevel: String(payload.classLevel || '').trim(),
@@ -333,6 +382,8 @@ const IndividualStudiesModule = (() => {
 
     // Clear dashboard pointers first so nothing references a gone record.
     Tasks.resolveForSource(MODULE, rec.PetitionID, { resolvedBy: user });
+    // The room-access task uses a distinct source id; resolve it too.
+    Tasks.resolveForSource(MODULE, _roomAccessSourceId(rec.PetitionID), { resolvedBy: user });
 
     // Trash both Drive files if present; a missing file must not block deletion.
     [rec.DriveFileID, rec.SyllabusFileID].forEach(fid => {
@@ -391,17 +442,42 @@ const IndividualStudiesModule = (() => {
     const workToBeSubmitted = payload.workToBeSubmitted !== undefined
       ? String(payload.workToBeSubmitted || '').trim() : rec.WorkToBeSubmitted;
 
-    DataService.update(SHEET(), TAB(), 'PetitionID', rec.PetitionID, {
+    // The sponsor may adjust the hours split (with-sponsor vs independent);
+    // the SR 760 total stays locked to the course credits + term. If they
+    // don't supply a value, the student's split is kept.
+    const hoursPatch = {};
+    if (payload.hoursWithSponsor !== undefined) {
+      const split = _resolveHoursSplit(payload.hoursWithSponsor, rec.Credits, rec.TermCode);
+      hoursPatch.HoursWithSponsor = String(split.withSponsor);
+      hoursPatch.HoursIndependent = String(split.independent);
+    }
+
+    // The written-report requirement is the sponsor's to set (the student
+    // never sees it; it first appears on the completed PDF). If a template
+    // carried a value onto the petition, it's pre-checked for the sponsor.
+    const reportPatch = {};
+    if (payload.reportRequired !== undefined) {
+      const req = payload.reportRequired === true || payload.reportRequired === 'true';
+      reportPatch.ReportRequired = req ? 'TRUE' : '';
+      reportPatch.ReportDueDate = req ? String(payload.reportDueDate || '').trim() : '';
+    }
+
+    DataService.update(SHEET(), TAB(), 'PetitionID', rec.PetitionID, Object.assign({
       SponsorComments: String(payload.comments || '').trim(),
       CourseDescription: courseDescription,
       WorkToBeSubmitted: workToBeSubmitted,
       SponsorDecidedBy: user,
       SponsorDecidedAt: new Date().toISOString(),
       Stage: STAGE.PENDING_ADVISOR,
-    });
+    }, hoursPatch, reportPatch));
 
     // Sponsor may attach/replace the syllabus as part of their review.
     _maybeSaveSyllabus(rec.PetitionID, payload, user);
+
+    // Sponsor may request room/lab-space access at approval (checkbox + room).
+    if (payload.requestRoomAccess === true) {
+      _fireRoomAccessRequest(_byId(rec.PetitionID), user, payload.roomAccessRoom, payload.roomAccessNote);
+    }
 
     Tasks.resolveForSource(MODULE, rec.PetitionID, { resolvedBy: user });
     _routeToAdvisor(rec.PetitionID, rec);
@@ -430,6 +506,24 @@ const IndividualStudiesModule = (() => {
     return { petitionId: rec.PetitionID, stage: STAGE.RETURNED };
   }
 
+  /**
+   * Sponsor requests (or updates) room/lab-space access for a petition,
+   * from the detail view, at any stage. Re-requesting replaces the prior
+   * facilities task and re-notifies with the corrected room. super_admin
+   * may also trigger it. The room/space is required so facilities can act.
+   */
+  function requestRoomAccess(payload, user, roles) {
+    const rec = _byId((payload || {}).petitionId);
+    if (!rec) throw new Error('Petition not found.');
+    if (roles.indexOf('super_admin') === -1 && _norm(rec.SponsorEmail) !== _norm(user)) {
+      throw new Error('Only the petition\'s faculty sponsor can request room access.');
+    }
+    const room = String((payload || {}).roomAccessRoom || '').trim();
+    if (!room) throw new Error('Enter the room or lab space access is needed for.');
+    _fireRoomAccessRequest(rec, user, room, (payload || {}).roomAccessNote);
+    return { petitionId: rec.PetitionID, roomAccessRequested: true, room: room };
+  }
+
 
   // ============================================================
   // ADVISOR ACTIONS
@@ -441,6 +535,55 @@ const IndividualStudiesModule = (() => {
     return DataService.query(SHEET(), TAB(), 'Stage', STAGE.PENDING_ADVISOR)
       .map(_publicRecord)
       .sort(_byCreatedDesc);
+  }
+
+  /**
+   * Every petition at any stage, newest first — the undergraduate advisor's
+   * (staff_undergrad) management/history view, and where super_admin reaches
+   * completed petitions to delete. Search/filter/sort happen client-side on
+   * this full list. Advisor role-holders and super_admin only.
+   */
+  function allPetitions(payload, user, roles) {
+    _assertAdvisor(roles);
+    return DataService.getAll(SHEET(), TAB())
+      .map(_publicRecord)
+      .sort(_byCreatedDesc);
+  }
+
+  /**
+   * Advisor (or super_admin) nudges whoever a petition is currently waiting
+   * on: the sponsor (SUBMITTED), the undergraduate advisor pool
+   * (PENDING_ADVISOR), or the student (RETURNED). A deliberate manual
+   * reminder always goes out. Mirrors the thesis module's remindResponsible.
+   */
+  function remindResponsible(payload, user, roles) {
+    _assertAdvisor(roles);
+    const rec = _byId(String((payload || {}).petitionId || '').trim());
+    if (!rec) throw new Error('Petition not found.');
+
+    let to, ask;
+    if (rec.Stage === STAGE.SUBMITTED) {
+      to = [rec.SponsorEmail]; ask = 'review it as the faculty sponsor';
+    } else if (rec.Stage === STAGE.PENDING_ADVISOR) {
+      to = _advisorEmails(); ask = 'assign a class number and complete it';
+    } else if (rec.Stage === STAGE.RETURNED) {
+      to = [rec.StudentEmail]; ask = 'revise and resubmit it';
+    } else {
+      throw new Error('This petition is not waiting on anyone to remind.');
+    }
+    to = (to || []).filter(e => String(e || '').trim());
+    if (!to.length) throw new Error('No one is assigned at this stage to remind.');
+
+    const who = _facultyLabel(user) || user;
+    Notify.send({
+      to: to,
+      subject: 'Reminder: individual study awaiting your action',
+      body: 'A reminder from ' + who + ': the ' + rec.Course + ' individual-studies petition for ' +
+        _studentLabel(rec.StudentEmail) + ' is waiting for you to ' + ask + '.\n\n' +
+        'Open it in the portal: ' + _deepLink(rec.PetitionID),
+    });
+    EventBus.emit(MODULE + '.reminded', { recordId: rec.PetitionID, remindedTo: to }, { user: user });
+    return { petitionId: rec.PetitionID, remindedTo: to };
   }
 
   /**
@@ -625,6 +768,64 @@ const IndividualStudiesModule = (() => {
       });
     }
   }
+
+  /**
+   * Records a room-access request on the petition and notifies facilities.
+   * Idempotent on re-request: resolves any prior room-access task for this
+   * petition first (distinct source id, so the workflow's own task is
+   * untouched), then creates a fresh one and re-emails with the current
+   * room. Best-effort — a notify failure must not break the calling action.
+   */
+  function _fireRoomAccessRequest(rec, user, room, note) {
+    room = String(room || '').trim();
+    note = String(note || '').trim();
+    try {
+      DataService.update(SHEET(), TAB(), 'PetitionID', rec.PetitionID, {
+        RoomAccessRequested: 'TRUE',
+        RoomAccessRoom: room,
+        RoomAccessNote: note,
+        RoomAccessRequestedBy: user,
+        RoomAccessRequestedAt: new Date().toISOString(),
+      });
+
+      const sourceId = _roomAccessSourceId(rec.PetitionID);
+      // Replace any prior request task so a re-request doesn't stack.
+      Tasks.resolveForSource(MODULE, sourceId, { resolvedBy: user, note: 'Superseded by updated request' });
+      Tasks.create({
+        module: MODULE, sourceType: ROOM_ACCESS_SOURCE_TYPE, sourceId: sourceId,
+        label: 'Room access requested: ' + rec.Course + (room ? ' — ' + room : ''),
+        assignedRole: FACILITIES_ROLE,
+      });
+
+      const to = Notify.resolveRecipients({ superAdmins: [], explicit: _facilitiesEmails() });
+      if (to.length) {
+        const student = _studentLabel(rec.StudentEmail);
+        const lines = [
+          'A faculty sponsor has requested room/lab-space access for an individual study.',
+          '',
+          'Student: ' + student,
+          'Course: ' + rec.Course,
+          'Term: ' + _termLabel(rec),
+          'Space: ' + (room || '(not specified)'),
+        ];
+        if (note) lines.push('Note: ' + note);
+        if (rec.ClassNumber) lines.push('Class number: ' + rec.ClassNumber);
+        lines.push('Requested by: ' + (_facultyLabel(user) || user));
+        lines.push('', 'Petition: ' + _deepLink(rec.PetitionID));
+        Notify.send({ to: to, subject: 'Room access requested — ' + rec.Course, body: lines.join('\n') });
+      }
+    } catch (e) {
+      Logger.log('IndividualStudiesModule._fireRoomAccessRequest failed for ' + rec.PetitionID + ': ' + e);
+    }
+  }
+
+  /** Active staff_facilities holders' emails. */
+  function _facilitiesEmails() {
+    return Auth.listUsers()
+      .filter(u => u.active && (u.roles || []).indexOf(FACILITIES_ROLE) !== -1)
+      .map(u => u.email);
+  }
+
 
   function _routeToStudent(petitionId, rec, note) {
     Tasks.create({
@@ -983,6 +1184,9 @@ const IndividualStudiesModule = (() => {
       documentLink: r.DocumentLink || '',
       syllabusLink: r.SyllabusLink || '',
       syllabusName: r.SyllabusName || '',
+      roomAccessRequested: _isTrueStr(r.RoomAccessRequested),
+      roomAccessRoom: r.RoomAccessRoom || '',
+      roomAccessNote: r.RoomAccessNote || '',
       returnNote: r.ReturnNote || '',
       createdAt: r.CreatedAt ? _fmtDate(r.CreatedAt) : '',
       _created: r.CreatedAt ? new Date(r.CreatedAt).getTime() : 0,
@@ -1178,16 +1382,230 @@ const IndividualStudiesModule = (() => {
       .replace(/"/g, '&quot;');
   }
 
+  // ── Sponsor-owned templates ───────────────────────
+  // A sponsor saves recurring study fields; on the New Petition form the
+  // student picks a sponsor and that sponsor's templates appear, with the
+  // IsDefault one auto-applied. super_admin may author on a sponsor's
+  // behalf (transitional). Templates live in a sibling tab; credits/title
+  // still resolve from the schedule at apply time.
+
+  const TEMPLATE_FIELDS = ['Course', 'Title', 'CourseDescription', 'WorkToBeSubmitted',
+    'EvidenceOfPreparation', 'GradeOption', 'HoursWithSponsor',
+    'ReportRequired', 'ReportDueText', 'RoomAccessRoom'];
+
+  function _templateRecord(r) {
+    return {
+      templateId: r.TemplateID,
+      sponsorEmail: r.SponsorEmail,
+      sponsorName: _facultyLabel(r.SponsorEmail) || r.SponsorEmail,
+      name: r.Name || '(untitled)',
+      isDefault: _isTrueStr(r.IsDefault),
+      course: r.Course || '',
+      title: r.Title || '',
+      courseDescription: r.CourseDescription || '',
+      workToBeSubmitted: r.WorkToBeSubmitted || '',
+      evidenceOfPreparation: r.EvidenceOfPreparation || '',
+      gradeOption: r.GradeOption || '',
+      hoursWithSponsor: r.HoursWithSponsor || '',
+      reportRequired: _isTrueStr(r.ReportRequired),
+      reportDueText: r.ReportDueText || '',
+      roomAccessRoom: r.RoomAccessRoom || '',
+      active: _isTrueStr(r.Active),
+    };
+  }
+
+  function _templateById(id) {
+    const rows = DataService.query(SHEET(), TPL_TAB(), 'TemplateID', String(id || '').trim());
+    return rows && rows.length ? rows[0] : null;
+  }
+
+  /** Owner check: the template's sponsor, or super_admin. */
+  function _assertTemplateOwner(tplRow, user, roles) {
+    if (roles.indexOf('super_admin') === -1 && _norm(tplRow.SponsorEmail) !== _norm(user)) {
+      throw new Error('You can only manage your own templates.');
+    }
+  }
+
+  /**
+   * Lists templates. A sponsor sees their own; super_admin sees all (or one
+   * sponsor's, if payload.sponsorEmail is given). Active and inactive both
+   * returned so the owner can manage them.
+   */
+  function myTemplates(payload, user, roles) {
+    const isSuper = roles.indexOf('super_admin') === -1 ? false : true;
+    const all = DataService.getAll(SHEET(), TPL_TAB());
+    let rows;
+    if (isSuper) {
+      const filter = _norm((payload || {}).sponsorEmail);
+      rows = filter ? all.filter(r => _norm(r.SponsorEmail) === filter) : all;
+    } else {
+      if (roles.indexOf(SPONSOR_ROLE) === -1) {
+        throw new Error('Only a faculty sponsor can manage templates.');
+      }
+      rows = all.filter(r => _norm(r.SponsorEmail) === _norm(user));
+    }
+    return rows.map(_templateRecord)
+      .sort((a, b) => (b.isDefault ? 1 : 0) - (a.isDefault ? 1 : 0)
+        || String(a.name).localeCompare(String(b.name)));
+  }
+
+  /**
+   * Active templates for one sponsor, for the student's New Petition form.
+   * Read-only; any signed-in user may call it (they're choosing a sponsor).
+   * Default first.
+   */
+  function templatesForSponsor(payload, user, roles) {
+    const sponsor = _norm((payload || {}).sponsorEmail);
+    if (!sponsor) return [];
+    return DataService.getAll(SHEET(), TPL_TAB())
+      .filter(r => _norm(r.SponsorEmail) === sponsor && _isTrueStr(r.Active))
+      .map(_templateRecord)
+      .sort((a, b) => (b.isDefault ? 1 : 0) - (a.isDefault ? 1 : 0)
+        || String(a.name).localeCompare(String(b.name)));
+  }
+
+  /**
+   * Creates or updates a template from the management form. Sponsors own
+   * theirs; super_admin may set SponsorEmail to assign it to an instructor.
+   * If isDefault is set, clears the flag on that sponsor's other templates.
+   */
+  function saveTemplate(payload, user, roles) {
+    payload = payload || {};
+    const isSuper = roles.indexOf('super_admin') !== -1;
+    const isSponsor = roles.indexOf(SPONSOR_ROLE) !== -1;
+    if (!isSuper && !isSponsor) throw new Error('Only a faculty sponsor can save templates.');
+
+    // Determine the owner. Sponsors always own their own; super_admin may
+    // assign to a chosen instructor (must be an eligible sponsor).
+    let owner;
+    if (isSuper && payload.sponsorEmail) {
+      owner = String(payload.sponsorEmail).trim();
+      if (!_isEligibleSponsor(owner)) {
+        throw new Error('That person is not an eligible individual-studies sponsor.');
+      }
+    } else {
+      owner = user;
+    }
+
+    const name = String(payload.name || '').trim();
+    if (!name) throw new Error('Give the template a name.');
+
+    const fields = {
+      SponsorEmail: owner,
+      Name: name,
+      Course: String(payload.course || '').trim(),
+      Title: String(payload.title || '').trim(),
+      CourseDescription: String(payload.courseDescription || '').trim(),
+      WorkToBeSubmitted: String(payload.workToBeSubmitted || '').trim(),
+      EvidenceOfPreparation: String(payload.evidenceOfPreparation || '').trim(),
+      GradeOption: String(payload.gradeOption || '').trim(),
+      HoursWithSponsor: String(payload.hoursWithSponsor || '').trim(),
+      ReportRequired: _boolStr(payload.reportRequired),
+      ReportDueText: String(payload.reportDueText || '').trim(),
+      RoomAccessRoom: String(payload.roomAccessRoom || '').trim(),
+      Active: 'TRUE',
+    };
+
+    let templateId;
+    if (payload.templateId) {
+      const existing = _templateById(payload.templateId);
+      if (!existing) throw new Error('Template not found.');
+      _assertTemplateOwner(existing, user, roles);
+      // Keep the original owner unless super_admin explicitly reassigns.
+      if (!(isSuper && payload.sponsorEmail)) fields.SponsorEmail = existing.SponsorEmail;
+      DataService.update(SHEET(), TPL_TAB(), 'TemplateID', existing.TemplateID, fields);
+      templateId = existing.TemplateID;
+    } else {
+      templateId = DataService.generateId('TPL');
+      DataService.insert(SHEET(), TPL_TAB(), Object.assign({ TemplateID: templateId, IsDefault: '' }, fields));
+    }
+
+    if (payload.isDefault === true || payload.isDefault === 'true') {
+      _applyDefault(fields.SponsorEmail, templateId);
+    }
+    return { templateId: templateId, saved: true };
+  }
+
+  /**
+   * Saves an existing petition's reusable fields as a new template owned by
+   * the petition's sponsor (or, for super_admin, the petition's sponsor).
+   * Asks for a name; may flag default.
+   */
+  function saveAsTemplate(payload, user, roles) {
+    payload = payload || {};
+    const rec = _byId(String(payload.petitionId || '').trim());
+    if (!rec) throw new Error('Petition not found.');
+    if (roles.indexOf('super_admin') === -1 && _norm(rec.SponsorEmail) !== _norm(user)) {
+      throw new Error('Only the petition\'s sponsor can save it as a template.');
+    }
+    const name = String(payload.name || '').trim();
+    if (!name) throw new Error('Give the template a name.');
+
+    const templateId = DataService.generateId('TPL');
+    DataService.insert(SHEET(), TPL_TAB(), {
+      TemplateID: templateId,
+      SponsorEmail: rec.SponsorEmail,
+      Name: name,
+      IsDefault: '',
+      Course: rec.Course || '',
+      Title: rec.Title || '',
+      CourseDescription: rec.CourseDescription || '',
+      WorkToBeSubmitted: rec.WorkToBeSubmitted || '',
+      EvidenceOfPreparation: rec.EvidenceOfPreparation || '',
+      GradeOption: rec.GradeOption || '',
+      HoursWithSponsor: rec.HoursWithSponsor || '',
+      ReportRequired: _boolStr(_isTrueStr(rec.ReportRequired)),
+      ReportDueText: rec.ReportDueDate || '',
+      RoomAccessRoom: rec.RoomAccessRoom || '',
+      Active: 'TRUE',
+    });
+    if (payload.isDefault === true || payload.isDefault === 'true') {
+      _applyDefault(rec.SponsorEmail, templateId);
+    }
+    return { templateId: templateId, saved: true };
+  }
+
+  /** Flags one template as the sponsor's default, clearing the others. */
+  function setDefaultTemplate(payload, user, roles) {
+    const tpl = _templateById((payload || {}).templateId);
+    if (!tpl) throw new Error('Template not found.');
+    _assertTemplateOwner(tpl, user, roles);
+    _applyDefault(tpl.SponsorEmail, tpl.TemplateID);
+    return { templateId: tpl.TemplateID, isDefault: true };
+  }
+
+  function _applyDefault(sponsorEmail, defaultId) {
+    DataService.getAll(SHEET(), TPL_TAB())
+      .filter(r => _norm(r.SponsorEmail) === _norm(sponsorEmail))
+      .forEach(r => {
+        const shouldBe = String(r.TemplateID) === String(defaultId) ? 'TRUE' : '';
+        if ((r.IsDefault || '') !== shouldBe) {
+          DataService.update(SHEET(), TPL_TAB(), 'TemplateID', r.TemplateID, { IsDefault: shouldBe });
+        }
+      });
+  }
+
+  /** Deletes (hard-removes) a template. Owner or super_admin. */
+  function deleteTemplate(payload, user, roles) {
+    const tpl = _templateById((payload || {}).templateId);
+    if (!tpl) throw new Error('Template not found.');
+    _assertTemplateOwner(tpl, user, roles);
+    DataService.remove(SHEET(), TPL_TAB(), 'TemplateID', tpl.TemplateID);
+    return { templateId: tpl.TemplateID, deleted: true };
+  }
+
 
   return {
     // student
     formData, mine, get, submit, withdraw, deletePetition,
     // sponsor
-    sponsorQueue, sponsored, sponsorApprove, sponsorReturn,
+    sponsorQueue, sponsored, sponsorApprove, sponsorReturn, requestRoomAccess,
     // advisor
-    advisorQueue, advisorContext, advisorComplete, advisorReturn,
+    advisorQueue, allPetitions, remindResponsible, advisorContext, advisorComplete, advisorReturn,
     // import (advisor admin)
     importPreview, importResolve, importCommit, importHistory,
+    // templates (sponsor-owned)
+    myTemplates, templatesForSponsor, saveTemplate, saveAsTemplate, setDefaultTemplate, deleteTemplate,
   };
 
 })();

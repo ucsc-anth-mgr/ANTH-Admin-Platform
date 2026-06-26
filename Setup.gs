@@ -290,7 +290,27 @@ const SETUP_SCHEMA = {
               'TotalSpecialStudyCredits', 'MajorAuthRequired', 'MajorAuthorized',
               'AdvisorComments', 'AdvisorProcessedBy', 'AdvisorProcessedAt',
               'SyllabusFileID', 'SyllabusLink', 'SyllabusName',
+              'RoomAccessRequested', 'RoomAccessRoom', 'RoomAccessNote',
+              'RoomAccessRequestedBy', 'RoomAccessRequestedAt',
               'DriveFileID', 'FileName', 'DocumentLink', 'ReturnNote',
+              'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
+
+  INDIVIDUAL_STUDIES_TEMPLATES: {
+    tab: 'Templates',
+    // Sponsor-owned petition templates. A sponsor (or super_admin authoring
+    // on their behalf) saves recurring study fields here; on the New Petition
+    // form, choosing that sponsor surfaces their templates and the one flagged
+    // IsDefault auto-applies. SponsorEmail is the owner/routing key. Course is
+    // stored as a default; credits/title still resolve from the term schedule
+    // at apply time. ReportRequired/ReportDueText are sponsor-owned and ride
+    // silently onto the petition at submit. Lives in the same spreadsheet as
+    // Petitions. Meta columns filled by DataService.
+    headers: ['TemplateID', 'SponsorEmail', 'Name', 'IsDefault',
+              'Course', 'Title', 'CourseDescription', 'WorkToBeSubmitted',
+              'EvidenceOfPreparation', 'GradeOption', 'HoursWithSponsor',
+              'ReportRequired', 'ReportDueText', 'RoomAccessRoom', 'Active',
               'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
     seed: [],
   },
@@ -349,6 +369,7 @@ function setUp() {
 
   // Individual Studies module spreadsheet gets the Petitions tab
   _setupTab(indStudiesSS, SETUP_SCHEMA.INDIVIDUAL_STUDIES);
+  _setupTab(indStudiesSS, SETUP_SCHEMA.INDIVIDUAL_STUDIES_TEMPLATES);
   _tidyDefaultSheet(indStudiesSS);
 
   // Submissions spreadsheet: tabs are created per form type on demand,
@@ -518,7 +539,7 @@ function checkSetup() {
     ['THESIS',       CONFIG.SHEETS.THESIS,       [SETUP_SCHEMA.THESIS.tab]],
     ['TRANSCRIPT',   CONFIG.SHEETS.TRANSCRIPT,   [SETUP_SCHEMA.ARTICULATIONS.tab, SETUP_SCHEMA.ARTICULATION_REVIEW.tab, SETUP_SCHEMA.TRANSCRIPTS.tab, SETUP_SCHEMA.TRANSCRIPT_SETTINGS.tab]],
     ['CLASS_SCHEDULE', CONFIG.SHEETS.CLASS_SCHEDULE, [SETUP_SCHEMA.CLASS_SCHEDULE.tab, SETUP_SCHEMA.CLASS_SCHEDULE_IMPORTS.tab]],
-    ['INDIVIDUAL_STUDIES', CONFIG.SHEETS.INDIVIDUAL_STUDIES, [SETUP_SCHEMA.INDIVIDUAL_STUDIES.tab]],
+    ['INDIVIDUAL_STUDIES', CONFIG.SHEETS.INDIVIDUAL_STUDIES, [SETUP_SCHEMA.INDIVIDUAL_STUDIES.tab, SETUP_SCHEMA.INDIVIDUAL_STUDIES_TEMPLATES.tab]],
   ];
   Logger.log('=== Config check ===');
   checks.forEach(([key, id, tabs]) => {
@@ -562,6 +583,7 @@ function _schemaPlacement() {
     { sheetKey: 'CLASS_SCHEDULE', def: SETUP_SCHEMA.CLASS_SCHEDULE },
     { sheetKey: 'CLASS_SCHEDULE', def: SETUP_SCHEMA.CLASS_SCHEDULE_IMPORTS },
     { sheetKey: 'INDIVIDUAL_STUDIES', def: SETUP_SCHEMA.INDIVIDUAL_STUDIES },
+    { sheetKey: 'INDIVIDUAL_STUDIES', def: SETUP_SCHEMA.INDIVIDUAL_STUDIES_TEMPLATES },
   ];
 }
 

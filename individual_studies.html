@@ -21,10 +21,16 @@
     <button class="module-tab" data-tab="sponsored" onclick="IndividualStudiesUI.switchTab('sponsored')">
       <i class="ti ti-user-check"></i> Sponsored
     </button>
+    <button class="module-tab" data-tab="templates" onclick="IndividualStudiesUI.switchTab('templates')">
+      <i class="ti ti-template"></i> My Templates
+    </button>
     <? } ?>
     <? if (isRoles.includes('staff_undergrad') || isRoles.includes('super_admin')) { ?>
     <button class="module-tab" data-tab="advisor" onclick="IndividualStudiesUI.switchTab('advisor')">
       <i class="ti ti-clipboard-check"></i> Advisor Queue
+    </button>
+    <button class="module-tab" data-tab="all" onclick="IndividualStudiesUI.switchTab('all')">
+      <i class="ti ti-list-search"></i> All Petitions
     </button>
     <button class="module-tab" data-tab="schedule" onclick="IndividualStudiesUI.switchTab('schedule')">
       <i class="ti ti-table-import"></i> Class Schedule
@@ -82,9 +88,16 @@
           <div class="form-row">
             <div class="form-group">
               <label class="form-label" for="is-sponsor">Faculty sponsor <span class="required">*</span></label>
-              <select class="form-select" id="is-sponsor" name="sponsorEmail">
+              <select class="form-select" id="is-sponsor" name="sponsorEmail" onchange="IndividualStudiesUI.onSponsorChange(this.value)">
                 <option value="">— Select a sponsor —</option>
               </select>
+              <div class="form-group" id="is-tpl-pick-group" style="display:none;margin-top:8px;margin-bottom:0;">
+                <label class="form-label" for="is-tpl-pick">Start from a template</label>
+                <select class="form-select" id="is-tpl-pick" onchange="IndividualStudiesUI.onTemplatePick(this.value)">
+                  <option value="">— None (start blank) —</option>
+                </select>
+                <div class="form-hint">Your sponsor's template fills the fields below; you can edit anything before submitting.</div>
+              </div>
             </div>
             <div class="form-group">
               <label class="form-label" for="is-grade">Grade option <span class="required">*</span></label>
@@ -167,25 +180,24 @@
             <div id="is-syllabus-current" class="text-sm text-muted" style="display:none;margin-top:4px;"></div>
           </div>
 
-          <div class="form-row">
-            <div class="form-group">
-              <label class="form-label" for="is-hours-sponsor">Hours/week with sponsor</label>
-              <input class="form-input" id="is-hours-sponsor" name="hoursWithSponsor" inputmode="numeric">
-            </div>
-            <div class="form-group">
-              <label class="form-label" for="is-hours-indep">Hours/week independent</label>
-              <input class="form-input" id="is-hours-indep" name="hoursIndependent" inputmode="numeric">
-            </div>
-          </div>
-
           <div class="form-group">
-            <label style="display:inline-flex;align-items:center;gap:8px;font-weight:normal;cursor:pointer;">
-              <input type="checkbox" id="is-report" onchange="IndividualStudiesUI.onReportToggle()"> A written report will be required before credit
-            </label>
-          </div>
-          <div class="form-group" id="is-report-due-group" style="display:none;">
-            <label class="form-label" for="is-report-due">Last day to receive the report</label>
-            <input class="form-input" id="is-report-due" name="reportDueDate" placeholder="e.g. last day of instruction">
+            <label class="form-label">Hours per week (Senate Regulation 760)</label>
+            <p class="form-hint" id="is-hours-policy" style="margin-top:0;">
+              Select a term and course to see the required weekly hours.
+            </p>
+            <div class="form-row">
+              <div class="form-group">
+                <label class="form-label" for="is-hours-sponsor">With faculty sponsor</label>
+                <input class="form-input" id="is-hours-sponsor" name="hoursWithSponsor" inputmode="numeric"
+                  oninput="IndividualStudiesUI.onHoursChange()">
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="is-hours-indep">Independent <span class="text-muted">(auto)</span></label>
+                <input class="form-input" id="is-hours-indep" name="hoursIndependent" inputmode="numeric" readonly
+                  style="background:var(--color-surface-2,#f4f5f7);">
+              </div>
+            </div>
+            <p class="form-hint" id="is-hours-derived" style="display:none;"></p>
           </div>
 
           <div class="form-actions">
@@ -220,11 +232,119 @@
         <span><i class="ti ti-user-check"></i> Studies I've sponsored</span>
         <button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.loadSponsored()" aria-label="Refresh"><i class="ti ti-refresh"></i></button>
       </div>
+      <div class="form-row" style="align-items:flex-end;">
+        <div class="form-group" style="flex:2;">
+          <label class="form-label" for="is-sp-search">Search</label>
+          <input class="form-input" id="is-sp-search" placeholder="Student, course, or term" oninput="IndividualStudiesUI.renderSponsored()">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="is-sp-stage">Stage</label>
+          <select class="form-select" id="is-sp-stage" onchange="IndividualStudiesUI.renderSponsored()">
+            <option value="">All stages</option>
+            <option value="SUBMITTED">Awaiting sponsor</option>
+            <option value="PENDING_ADVISOR">Awaiting class number</option>
+            <option value="RETURNED">Returned</option>
+            <option value="COMPLETE">Complete</option>
+          </select>
+        </div>
+      </div>
       <div id="is-sponsored-list"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
     </div>
   </div>
 
-  <!-- ── Tab: Advisor Queue ──────────────────────────── -->
+  <!-- ── Tab: My Templates (sponsor + super_admin) ───── -->
+  <div id="is-tab-templates" class="tab-panel" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title" style="justify-content:space-between;">
+        <span><i class="ti ti-template"></i> My templates</span>
+        <button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.loadTemplates()" aria-label="Refresh"><i class="ti ti-refresh"></i></button>
+      </div>
+      <p class="text-muted" style="font-size:13px;margin-top:0;">
+        Templates pre-fill the petition form for students who choose you as sponsor. The one marked
+        default applies automatically; students can still edit before submitting.
+      </p>
+      <div id="is-tpl-list"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
+      <div class="form-actions" style="margin-top:12px;">
+        <button class="btn btn-primary" onclick="IndividualStudiesUI.newTemplate()"><i class="ti ti-plus"></i> New template</button>
+      </div>
+    </div>
+
+    <div class="card" id="is-tpl-form-card" style="display:none;">
+      <div class="card-title" id="is-tpl-form-title"><i class="ti ti-edit"></i> New template</div>
+      <input type="hidden" id="is-tpl-id">
+
+      <!-- super_admin only: assign to an instructor -->
+      <div class="form-group" id="is-tpl-sponsor-group" style="display:none;">
+        <label class="form-label" for="is-tpl-sponsor">Owner (instructor)</label>
+        <select class="form-select" id="is-tpl-sponsor"><option value="">— Select instructor —</option></select>
+        <div class="form-hint">As a super admin you can create a template on an instructor's behalf.</div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group" style="flex:2;">
+          <label class="form-label" for="is-tpl-name">Template name <span class="required">*</span></label>
+          <input class="form-input" id="is-tpl-name" placeholder="e.g. Zooarch Lab Internship">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="is-tpl-course">Course</label>
+          <input class="form-input" id="is-tpl-course" placeholder="e.g. ANTH 197F">
+        </div>
+      </div>
+      <div class="form-group">
+        <label style="display:inline-flex;align-items:center;gap:8px;font-weight:normal;cursor:pointer;">
+          <input type="checkbox" id="is-tpl-default"> Make this my default template
+        </label>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="is-tpl-title">Course title</label>
+        <input class="form-input" id="is-tpl-title">
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="is-tpl-desc">Description of proposed course</label>
+        <textarea class="form-textarea" id="is-tpl-desc" rows="2"></textarea>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="is-tpl-evidence">Evidence of preparation</label>
+        <textarea class="form-textarea" id="is-tpl-evidence" rows="2"></textarea>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="is-tpl-work">Description of work to be submitted</label>
+        <textarea class="form-textarea" id="is-tpl-work" rows="2"></textarea>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label" for="is-tpl-grade">Grade option</label>
+          <select class="form-select" id="is-tpl-grade">
+            <option value="">—</option>
+            <option value="Letter">Letter</option>
+            <option value="Pass/No Pass">Pass / No Pass</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="is-tpl-hours">Hours/week with sponsor</label>
+          <input class="form-input" id="is-tpl-hours" inputmode="numeric">
+        </div>
+      </div>
+      <div class="form-group">
+        <label style="display:inline-flex;align-items:center;gap:8px;font-weight:normal;cursor:pointer;">
+          <input type="checkbox" id="is-tpl-report" onchange="IndividualStudiesUI.onTplReportToggle()"> A written report is required before credit
+        </label>
+      </div>
+      <div class="form-group" id="is-tpl-report-due-group" style="display:none;">
+        <label class="form-label" for="is-tpl-report-due">Last day to receive the report</label>
+        <input class="form-input" id="is-tpl-report-due" placeholder="e.g. last day of instruction">
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="is-tpl-room">Room / lab space (for access requests)</label>
+        <input class="form-input" id="is-tpl-room" placeholder="Leave blank if none">
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-primary" id="is-tpl-save-btn" onclick="IndividualStudiesUI.saveTemplate()"><i class="ti ti-check"></i> Save template</button>
+        <button class="btn btn-secondary" onclick="IndividualStudiesUI.cancelTemplate()">Cancel</button>
+      </div>
+    </div>
+  </div>
+
   <div id="is-tab-advisor" class="tab-panel" style="display:none;">
     <div class="card" style="margin-top:20px;">
       <div class="card-title" style="justify-content:space-between;">
@@ -235,6 +355,39 @@
         For each: confirm the pre-assigned class number or assign one, authorize any over-limit credit load, and complete.
       </p>
       <div id="is-advisor-list"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
+    </div>
+  </div>
+
+  <!-- ── Tab: All Petitions (advisor + super_admin) ──── -->
+  <div id="is-tab-all" class="tab-panel" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title" style="justify-content:space-between;">
+        <span><i class="ti ti-list-search"></i> All petitions</span>
+        <button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.loadAll()" aria-label="Refresh"><i class="ti ti-refresh"></i></button>
+      </div>
+      <div class="form-row" style="align-items:flex-end;">
+        <div class="form-group" style="flex:2;">
+          <label class="form-label" for="is-all-search">Search</label>
+          <input class="form-input" id="is-all-search" placeholder="Student, course, term, or sponsor" oninput="IndividualStudiesUI.renderAll()">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="is-all-stage">Stage</label>
+          <select class="form-select" id="is-all-stage" onchange="IndividualStudiesUI.renderAll()">
+            <option value="">All stages</option>
+            <option value="SUBMITTED">Awaiting sponsor</option>
+            <option value="PENDING_ADVISOR">Awaiting class number</option>
+            <option value="RETURNED">Returned</option>
+            <option value="COMPLETE">Complete</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="is-all-term">Term</label>
+          <select class="form-select" id="is-all-term" onchange="IndividualStudiesUI.renderAll()">
+            <option value="">All terms</option>
+          </select>
+        </div>
+      </div>
+      <div id="is-all-list"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
     </div>
   </div>
 
@@ -343,9 +496,15 @@ window.IndividualStudiesUI = (() => {
   };
 
   let _formData = null;       // bootstrap (terms[with courses], sponsors, redirect)
+  let _allRows = [];          // cached allPetitions for client filter/sort
+  let _sponsoredRows = [];    // cached sponsored for client filter/sort
+  let _sortAll = { key: 'created', dir: 'desc' };
+  let _sortSponsored = { key: 'created', dir: 'desc' };
   let _termsByCode = {};      // termCode -> { label, courses:[{course,credits}] }
   let _resubmitId = null;
   let _syllabus = null;       // { syllabusBase64, syllabusName, syllabusMimeType } for the next submit
+  let _sponsorTemplates = []; // templates for the currently-selected sponsor
+  let _carriedReport = null;  // { required, dueText } carried silently from a template (student never sees it)
   let _csvPayload = null;     // { csvBase64 }
   let _preview = null;        // parsed import preview being resolved
   let _lastFocus = null;
@@ -409,6 +568,8 @@ window.IndividualStudiesUI = (() => {
     if (tab === 'review')    loadReview();
     if (tab === 'sponsored') loadSponsored();
     if (tab === 'advisor')   loadAdvisor();
+    if (tab === 'all')       loadAll();
+    if (tab === 'templates') loadTemplates();
     if (tab === 'schedule')  loadImportHistory();
   }
 
@@ -422,9 +583,9 @@ window.IndividualStudiesUI = (() => {
       if (cb) cb();
     }, function () { if (cb) cb(); });
   }
-  function _ensureFormData() {
-    if (_formData) return;
-    _loadFormData();
+  function _ensureFormData(cb) {
+    if (_formData) { if (cb) cb(); return; }
+    _loadFormData(cb);
   }
   function _populateForm(data) {
     // Term dropdown (only imported terms are present)
@@ -478,6 +639,71 @@ window.IndividualStudiesUI = (() => {
     });
     courseSel.innerHTML = opts;
     courseSel.disabled = false;
+    _updateHoursPolicy();
+  }
+
+  // When the student picks a sponsor, fetch that sponsor's templates; show
+  // the picker if any exist, and auto-apply the default.
+  function onSponsorChange(sponsorEmail) {
+    const group = document.getElementById('is-tpl-pick-group');
+    const pick = document.getElementById('is-tpl-pick');
+    _sponsorTemplates = [];
+    _carriedReport = null;
+    if (pick) pick.innerHTML = '<option value="">— None (start blank) —</option>';
+    if (group) group.style.display = 'none';
+    if (!sponsorEmail) return;
+
+    App.call('individual_studies', 'templatesForSponsor', { sponsorEmail: sponsorEmail }, function (rows) {
+      _sponsorTemplates = rows || [];
+      if (!_sponsorTemplates.length) return;
+      let opts = '<option value="">— None (start blank) —</option>';
+      _sponsorTemplates.forEach(function (t) {
+        opts += '<option value="' + esc(t.templateId) + '">' + esc(t.name) + (t.isDefault ? ' (default)' : '') + '</option>';
+      });
+      if (pick) pick.innerHTML = opts;
+      if (group) group.style.display = 'block';
+      // Auto-apply the default, if there is one.
+      const def = _sponsorTemplates.find(function (t) { return t.isDefault; });
+      if (def) {
+        if (pick) pick.value = def.templateId;
+        _applyTemplate(def);
+      }
+    }, function () { /* templates are optional; ignore errors */ });
+  }
+
+  function onTemplatePick(templateId) {
+    if (!templateId) { _carriedReport = null; return; }
+    const t = _sponsorTemplates.find(function (x) { return x.templateId === templateId; });
+    if (t) _applyTemplate(t);
+  }
+
+  // Fills the editable form fields from a template. The course is set if it's
+  // available in the selected term (credits/title resolve from the schedule);
+  // the report flag is carried silently for the sponsor, never shown here.
+  function _applyTemplate(t) {
+    if (t.title) _setVal('is-title', t.title);
+    if (t.courseDescription) _setVal('is-desc', t.courseDescription);
+    if (t.evidenceOfPreparation) _setVal('is-evidence', t.evidenceOfPreparation);
+    if (t.workToBeSubmitted) _setVal('is-work', t.workToBeSubmitted);
+    if (t.gradeOption) _setVal('is-grade', t.gradeOption);
+
+    // Course: only apply if it's offered in the selected term, so credits and
+    // the SR 760 hours total resolve correctly.
+    if (t.course) {
+      const courseSel = document.getElementById('is-course');
+      const has = courseSel && Array.prototype.some.call(courseSel.options, function (o) { return o.value === t.course; });
+      if (has) {
+        courseSel.value = t.course;
+        onCourseChange(t.course);
+      } else if (document.getElementById('is-term').value) {
+        Toast.show(t.course + ' isn’t offered in the selected term — pick a course manually.', 'info');
+      }
+    }
+    // Hours: set the with-sponsor portion, then derive the split.
+    if (t.hoursWithSponsor) { _setVal('is-hours-sponsor', t.hoursWithSponsor); onHoursChange(); }
+
+    // Report flag rides silently to the sponsor (student never sees it).
+    _carriedReport = t.reportRequired ? { required: true, dueText: t.reportDueText || '' } : null;
   }
 
   function onCourseChange(value) {
@@ -511,6 +737,7 @@ window.IndividualStudiesUI = (() => {
       if (value && url) { link.href = url; link.style.display = 'inline-block'; }
       else { link.style.display = 'none'; }
     }
+    _updateHoursPolicy();
   }
 
   function _hideRedirect() {
@@ -520,11 +747,81 @@ window.IndividualStudiesUI = (() => {
     if (w) w.style.display = 'block';
   }
 
-  function onReportToggle() {
-    const on = document.getElementById('is-report').checked;
-    document.getElementById('is-report-due-group').style.display = on ? 'block' : 'none';
+  // ── SR 760 hours policy ───────────────────────────
+  // Total weekly hours = (30 x credits) / weeks; 10-week quarters, 5-week
+  // summer. Student/sponsor set only the with-sponsor portion; the rest is
+  // independent. Returns 0 if course/term not both chosen yet.
+  function _selectedCredits() {
+    const sel = document.getElementById('is-course');
+    const opt = (sel && sel.selectedIndex >= 0) ? sel.options[sel.selectedIndex] : null;
+    const cr = opt ? Number(opt.getAttribute('data-credits')) : 0;
+    return isFinite(cr) ? cr : 0;
+  }
+  function _selectedTermWeeks() {
+    const t = _termsByCode[document.getElementById('is-term').value];
+    return (t && t.weeks) ? t.weeks : 0;
+  }
+  function _weeklyHoursTotal() {
+    const cr = _selectedCredits(), weeks = _selectedTermWeeks();
+    if (!cr || !weeks) return 0;
+    return Math.round((30 * cr) / weeks);
+  }
+  function _updateHoursPolicy() {
+    const total = _weeklyHoursTotal();
+    const cr = _selectedCredits(), weeks = _selectedTermWeeks();
+    const policy = document.getElementById('is-hours-policy');
+    if (policy) {
+      if (total) {
+        policy.textContent = 'Per Senate Regulation 760, 1 credit = 30 hours of work over the term. '
+          + 'This ' + cr + '-credit course = ' + total + ' hours/week over a ' + weeks + '-week '
+          + (weeks === 5 ? 'summer session' : 'quarter') + ' (' + (30 * cr) + ' hours total). '
+          + 'Enter the hours with your sponsor; the remainder is independent. '
+          + 'Your syllabus should estimate how these hours are distributed.';
+      } else {
+        policy.textContent = 'Select a term and course to see the required weekly hours.';
+      }
+    }
+    onHoursChange();
+  }
+  function onHoursChange() {
+    const total = _weeklyHoursTotal();
+    const wsEl = document.getElementById('is-hours-sponsor');
+    const indEl = document.getElementById('is-hours-indep');
+    const derived = document.getElementById('is-hours-derived');
+    if (!total) { if (indEl) indEl.value = ''; if (derived) derived.style.display = 'none'; return; }
+    let ws = Number((wsEl && wsEl.value).toString().trim() || 0);
+    if (!isFinite(ws) || ws < 0) ws = 0;
+    if (ws > total) ws = total;
+    const ind = total - ws;
+    if (indEl) indEl.value = String(ind);
+    if (derived) {
+      derived.style.display = 'block';
+      derived.textContent = ws + ' with sponsor + ' + ind + ' independent = ' + total + ' hours/week.';
+    }
   }
 
+  // Sponsor-side hours: same SR 760 rule, total derived from the petition's
+  // credits + term (summer = quarter digit 4 in the term code → 5 weeks).
+  function onSponsorReportToggle() {
+    const on = document.getElementById('is-sp-report').checked;
+    const g = document.getElementById('is-sp-report-due-group');
+    if (g) g.style.display = on ? 'block' : 'none';
+  }
+  function _termWeeksFromCode(termCode) {
+    const q = String(termCode || '').trim().slice(-1);
+    return q === '4' ? 5 : 10;
+  }
+  function onSponsorHoursChange(termCode, credits) {
+    const weeks = _termWeeksFromCode(termCode);
+    const total = (credits && weeks) ? Math.round((30 * Number(credits)) / weeks) : 0;
+    const hint = document.getElementById('is-sp-hours-hint');
+    const el = document.getElementById('is-sp-hours');
+    if (!total) { if (hint) hint.textContent = ''; return; }
+    let ws = Number((el && el.value).toString().trim() || 0);
+    if (!isFinite(ws) || ws < 0) ws = 0;
+    if (ws > total) { ws = total; if (el) el.value = String(total); }
+    if (hint) hint.textContent = ws + ' with sponsor + ' + (total - ws) + ' independent = ' + total + ' hrs/week (SR 760).';
+  }
   // ── Syllabus (optional) — read file to base64 for the next submit ──
   function onSyllabusChange(e) {
     _syllabus = null;
@@ -563,8 +860,6 @@ window.IndividualStudiesUI = (() => {
       workToBeSubmitted: document.getElementById('is-work').value.trim(),
       hoursWithSponsor: document.getElementById('is-hours-sponsor').value.trim(),
       hoursIndependent: document.getElementById('is-hours-indep').value.trim(),
-      reportRequired: document.getElementById('is-report').checked,
-      reportDueDate: document.getElementById('is-report-due').value.trim(),
     };
     if (!payload.sponsorEmail) { Toast.show('Select a faculty sponsor.', 'error'); return; }
     if (!payload.gradeOption) { Toast.show('Choose a grade option.', 'error'); return; }
@@ -574,6 +869,12 @@ window.IndividualStudiesUI = (() => {
       payload.syllabusBase64 = _syllabus.syllabusBase64;
       payload.syllabusName = _syllabus.syllabusName;
       payload.syllabusMimeType = _syllabus.syllabusMimeType;
+    }
+    // A template may carry a report requirement; it rides silently to the
+    // sponsor (the student never sees report fields on this form).
+    if (_carriedReport && _carriedReport.required) {
+      payload.reportRequired = true;
+      payload.reportDueDate = _carriedReport.dueText || '';
     }
     if (_resubmitId) payload.petitionId = _resubmitId;
 
@@ -589,15 +890,17 @@ window.IndividualStudiesUI = (() => {
   }
 
   function resetForm() {
-    ['is-college','is-major','is-site','is-title','is-desc','is-evidence','is-work','is-hours-sponsor','is-hours-indep','is-report-due']
+    ['is-college','is-major','is-site','is-title','is-desc','is-evidence','is-work','is-hours-sponsor','is-hours-indep']
       .forEach(function (id) { const el = document.getElementById(id); if (el) el.value = ''; });
     ['is-term','is-course','is-sponsor','is-grade','is-classlevel'].forEach(function (id) { const el = document.getElementById(id); if (el) el.value = ''; });
     _resetCourseSelect('— Select a term first —');
-    const rep = document.getElementById('is-report'); if (rep) rep.checked = false;
-    document.getElementById('is-report-due-group').style.display = 'none';
     const syl = document.getElementById('is-syllabus'); if (syl) syl.value = '';
     const sylCur = document.getElementById('is-syllabus-current'); if (sylCur) sylCur.style.display = 'none';
     _syllabus = null;
+    // Clear template picker + carried report.
+    _sponsorTemplates = []; _carriedReport = null;
+    const tplPick = document.getElementById('is-tpl-pick'); if (tplPick) tplPick.innerHTML = '<option value="">— None (start blank) —</option>';
+    const tplGroup = document.getElementById('is-tpl-pick-group'); if (tplGroup) tplGroup.style.display = 'none';
     _hideRedirect();
     _resubmitId = null;
     document.getElementById('is-resubmit-banner').style.display = 'none';
@@ -628,9 +931,7 @@ window.IndividualStudiesUI = (() => {
       _setVal('is-work', rec.workToBeSubmitted);
       _setVal('is-hours-sponsor', rec.hoursWithSponsor);
       _setVal('is-hours-indep', rec.hoursIndependent);
-      const rep = document.getElementById('is-report');
-      if (rep) { rep.checked = !!rec.reportRequired; onReportToggle(); }
-      _setVal('is-report-due', rec.reportDueDate);
+      onHoursChange();
       const banner = document.getElementById('is-resubmit-banner');
       banner.textContent = 'Revising a returned petition. ' + (rec.returnNote ? 'Note: ' + rec.returnNote : '');
       banner.style.display = 'block';
@@ -663,8 +964,131 @@ window.IndividualStudiesUI = (() => {
   }
   function loadSponsored() {
     _listLoading('is-sponsored-list');
-    App.call('individual_studies', 'sponsored', {}, function (rows) { _renderList('is-sponsored-list', rows, 'sponsored'); },
-      function () { _listError('is-sponsored-list'); });
+    App.call('individual_studies', 'sponsored', {}, function (rows) {
+      _sponsoredRows = rows || [];
+      renderSponsored();
+    }, function () { _listError('is-sponsored-list'); });
+  }
+  function renderSponsored() {
+    const q = (document.getElementById('is-sp-search') || {}).value || '';
+    const stage = (document.getElementById('is-sp-stage') || {}).value || '';
+    const rows = _filterRows(_sponsoredRows, q, stage, '');
+    _renderSortable('is-sponsored-list', rows, { who: 'student', sortState: _sortSponsored, sortSetter: function (s) { _sortSponsored = s; renderSponsored(); }, remind: false });
+  }
+
+  function loadAll() {
+    _listLoading('is-all-list');
+    App.call('individual_studies', 'allPetitions', {}, function (rows) {
+      _allRows = rows || [];
+      _populateTermFilter('is-all-term', _allRows);
+      renderAll();
+    }, function () { _listError('is-all-list'); });
+  }
+  function renderAll() {
+    const q = (document.getElementById('is-all-search') || {}).value || '';
+    const stage = (document.getElementById('is-all-stage') || {}).value || '';
+    const term = (document.getElementById('is-all-term') || {}).value || '';
+    const rows = _filterRows(_allRows, q, stage, term);
+    _renderSortable('is-all-list', rows, { who: 'student', sortState: _sortAll, sortSetter: function (s) { _sortAll = s; renderAll(); }, remind: true });
+  }
+
+  function _populateTermFilter(selId, rows) {
+    const sel = document.getElementById(selId);
+    if (!sel) return;
+    const terms = [];
+    const seen = {};
+    rows.forEach(function (r) { if (r.term && !seen[r.term]) { seen[r.term] = true; terms.push(r.term); } });
+    const cur = sel.value;
+    let opts = '<option value="">All terms</option>';
+    terms.forEach(function (t) { opts += '<option value="' + esc(t) + '">' + esc(t) + '</option>'; });
+    sel.innerHTML = opts;
+    sel.value = cur;
+  }
+
+  function _filterRows(rows, q, stage, term) {
+    q = String(q || '').trim().toLowerCase();
+    return (rows || []).filter(function (r) {
+      if (stage && r.stage !== stage) return false;
+      if (term && r.term !== term) return false;
+      if (q) {
+        const hay = (esc(r.studentName) + ' ' + r.course + ' ' + r.term + ' ' + (r.sponsorName || '')).toLowerCase();
+        if (hay.indexOf(q) === -1) return false;
+      }
+      return true;
+    });
+  }
+
+  // Sortable table shared by All Petitions and Sponsored. opts.who = 'student'
+  // or 'sponsor' (the people column); opts.remind adds a nudge button.
+  function _renderSortable(elId, rows, opts) {
+    const el = document.getElementById(elId);
+    if (!el) return;
+    opts = opts || {};
+    const sort = opts.sortState || { key: 'created', dir: 'desc' };
+    const whoField = opts.who === 'sponsor' ? 'sponsorName' : 'studentName';
+    const whoLabel = opts.who === 'sponsor' ? 'Sponsor' : 'Student';
+
+    const sorted = rows.slice().sort(function (a, b) {
+      let av, bv;
+      switch (sort.key) {
+        case 'course': av = a.course; bv = b.course; break;
+        case 'term': av = a.term; bv = b.term; break;
+        case 'who': av = a[whoField]; bv = b[whoField]; break;
+        case 'stage': av = a.stage; bv = b.stage; break;
+        default: av = a._created || 0; bv = b._created || 0;
+      }
+      if (av < bv) return sort.dir === 'asc' ? -1 : 1;
+      if (av > bv) return sort.dir === 'asc' ? 1 : -1;
+      return 0;
+    });
+
+    if (!sorted.length) { el.innerHTML = '<div class="empty-state">No petitions match.</div>'; return; }
+
+    function arrow(key) { return sort.key === key ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : ''; }
+    function th(key, label) {
+      return '<th scope="col" style="cursor:pointer;user-select:none;" onclick="IndividualStudiesUI._sortBy(\'' + elId + '\',\'' + key + '\')">' + label + arrow(key) + '</th>';
+    }
+
+    let body = '';
+    sorted.forEach(function (r) {
+      const meta = STAGE_META[r.stage] || { cls: 'badge-neutral', label: r.stage };
+      let remindCell = '';
+      if (opts.remind) {
+        const canRemind = r.stage === 'SUBMITTED' || r.stage === 'PENDING_ADVISOR' || r.stage === 'RETURNED';
+        remindCell = '<td onclick="event.stopPropagation();">'
+          + (canRemind
+              ? '<button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.remind(\'' + esc(r.petitionId) + '\')"><i class="ti ti-bell"></i> Nudge</button>'
+              : '') + '</td>';
+      }
+      body += '<tr tabindex="0" style="cursor:pointer;" onclick="IndividualStudiesUI.open(\'' + esc(r.petitionId) + '\')" '
+        + 'onkeydown="IndividualStudiesUI.rowKey(event,\'' + esc(r.petitionId) + '\')">'
+        + '<td><strong>' + esc(r.course) + '</strong></td>'
+        + '<td>' + esc(r.term) + '</td>'
+        + '<td>' + esc(r[whoField]) + '</td>'
+        + '<td><span class="badge ' + meta.cls + '">' + esc(meta.label) + '</span></td>'
+        + remindCell
+        + '</tr>';
+    });
+    el.innerHTML = '<div style="overflow-x:auto;"><table class="data-table"><thead><tr>'
+      + th('course', 'Course') + th('term', 'Term') + th('who', whoLabel) + th('stage', 'Status')
+      + (opts.remind ? '<th scope="col"></th>' : '')
+      + '</tr></thead><tbody>' + body + '</tbody></table></div>';
+  }
+
+  // Toggle sort for whichever table the header belongs to.
+  function _sortBy(elId, key) {
+    const state = elId === 'is-all-list' ? _sortAll : _sortSponsored;
+    if (state.key === key) state.dir = (state.dir === 'asc' ? 'desc' : 'asc');
+    else { state.key = key; state.dir = 'asc'; }
+    if (elId === 'is-all-list') renderAll(); else renderSponsored();
+  }
+
+  function remind(petitionId) {
+    _busy('Sending reminder…');
+    App.call('individual_studies', 'remindResponsible', { petitionId: petitionId }, function (res) {
+      _idle();
+      Toast.show('Reminder sent' + (res && res.remindedTo ? ' to ' + (Array.isArray(res.remindedTo) ? res.remindedTo.join(', ') : res.remindedTo) : '') + '.', 'success');
+    }, function () { _idle(); });
   }
   function loadAdvisor() {
     _listLoading('is-advisor-list');
@@ -734,6 +1158,7 @@ window.IndividualStudiesUI = (() => {
       + (rec.classNumber ? _row('Class number', esc(rec.classNumber) + (rec.classSection ? ' · sec ' + esc(rec.classSection) : '')) : '')
       + (rec.advisorComments ? _row('Advisor comments', esc(rec.advisorComments)) : '')
       + (rec.documentLink ? _row('Completed petition', '<a href="' + esc(rec.documentLink) + '" target="_blank" rel="noopener">Open PDF <i class="ti ti-external-link"></i></a>') : '')
+      + (rec.roomAccessRequested ? _row('Room access', 'Requested' + (rec.roomAccessRoom ? ' — ' + esc(rec.roomAccessRoom) : '') + (rec.roomAccessNote ? ' (' + esc(rec.roomAccessNote) + ')' : '')) : '')
       + (rec.returnNote && rec.stage === 'RETURNED' ? _row('Return note', esc(rec.returnNote)) : '')
       + '</dl>';
 
@@ -755,10 +1180,35 @@ window.IndividualStudiesUI = (() => {
     }
     if (rec.stage === 'SUBMITTED' && (_isMe(rec.sponsorEmail) || _isSuper)) {
       out.push(_sponsorPanel(rec));
+      setTimeout(function () { onSponsorHoursChange(rec.termCode || '', Number(rec.credits || 0)); }, 50);
     }
     if (rec.stage === 'PENDING_ADVISOR' && (_isAdvisor || _isSuper)) {
       out.push('<div id="is-advisor-panel"><div class="text-sm text-muted">Loading class-number options…</div></div>');
       setTimeout(function () { _loadAdvisorPanel(rec); }, 50);
+    }
+
+    // Room/lab-space access request: sponsor (or super_admin), any stage.
+    // Shows current state; re-requesting updates the room and re-notifies.
+    if (_isMe(rec.sponsorEmail) || _isSuper) {
+      const label = rec.roomAccessRequested ? 'Update room access request' : 'Request room access';
+      let block = '<div style="margin-top:12px;">'
+        + '<button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.requestRoomAccess(\'' + esc(rec.petitionId) + '\')">'
+        + '<i class="ti ti-door"></i> ' + label + '</button>';
+      if (rec.roomAccessRequested) {
+        block += ' <span class="text-muted" style="font-size:12px;">Requested'
+          + (rec.roomAccessRoom ? ' — ' + esc(rec.roomAccessRoom) : '') + '</span>';
+      }
+      block += '</div>';
+      out.push(block);
+    }
+
+    // Save this petition as a reusable template (its sponsor, or super_admin).
+    if (_isMe(rec.sponsorEmail) || _isSuper) {
+      out.push('<div style="margin-top:10px;">'
+        + '<button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.saveAsTemplate(\'' + esc(rec.petitionId) + '\')">'
+        + '<i class="ti ti-template"></i> Save as template</button>'
+        + ' <span class="text-muted" style="font-size:12px;">Reuse these fields for future studies.</span>'
+        + '</div>');
     }
 
     // super_admin test cleanup: delete at any stage. Server-enforced too.
@@ -786,10 +1236,26 @@ window.IndividualStudiesUI = (() => {
       +   '<textarea class="form-textarea" id="is-sp-desc" rows="2">' + esc(rec.courseDescription || '') + '</textarea></div>'
       + '<div class="form-group"><label class="form-label">Revise work to be submitted (optional)</label>'
       +   '<textarea class="form-textarea" id="is-sp-work" rows="2">' + esc(rec.workToBeSubmitted || '') + '</textarea></div>'
+      + '<div class="form-group"><label class="form-label">Hours/week — with sponsor (SR 760)</label>'
+      +   '<input class="form-input" id="is-sp-hours" inputmode="numeric" value="' + esc(rec.hoursWithSponsor || '') + '" oninput="IndividualStudiesUI.onSponsorHoursChange(\'' + esc(rec.termCode || '') + '\',' + Number(rec.credits || 0) + ')">'
+      +   '<p class="form-hint" id="is-sp-hours-hint" style="margin-top:2px;"></p></div>'
+      + '<div class="form-group">'
+      +   '<label style="display:inline-flex;align-items:center;gap:8px;font-weight:normal;cursor:pointer;">'
+      +   '<input type="checkbox" id="is-sp-report"' + (rec.reportRequired ? ' checked' : '') + ' onchange="IndividualStudiesUI.onSponsorReportToggle()"> A written report is required before credit</label></div>'
+      + '<div class="form-group" id="is-sp-report-due-group" style="display:' + (rec.reportRequired ? 'block' : 'none') + ';">'
+      +   '<label class="form-label">Last day to receive the report</label>'
+      +   '<input class="form-input" id="is-sp-report-due" value="' + esc(rec.reportDueDate || '') + '" placeholder="e.g. last day of instruction"></div>'
       + '<div class="form-group"><label class="form-label">Comments</label>'
       +   '<textarea class="form-textarea" id="is-sp-comments" rows="2"></textarea></div>'
       + '<div class="form-group"><label class="form-label">Attach / replace syllabus (optional)</label>'
       +   '<input class="form-input" type="file" id="is-sp-syllabus" accept=".pdf,application/pdf" onchange="IndividualStudiesUI.onSponsorSyllabusChange(event)"></div>'
+      + '<div class="form-group">'
+      +   '<label style="display:inline-flex;align-items:center;gap:8px;font-weight:normal;cursor:pointer;">'
+      +   '<input type="checkbox" id="is-sp-roomreq" onchange="IndividualStudiesUI.onRoomReqToggle()"> Request room / lab-space access</label></div>'
+      + '<div class="form-group" id="is-sp-room-group" style="display:none;">'
+      +   '<label class="form-label">Room / space</label>'
+      +   '<input class="form-input" id="is-sp-room" placeholder="e.g. Historical Ecology Laboratory">'
+      +   '<input class="form-input" id="is-sp-room-note" style="margin-top:6px;" placeholder="Note for facilities (optional)"></div>'
       + '<div class="form-actions">'
       +   '<button class="btn btn-primary" onclick="IndividualStudiesUI.sponsorApprove(\'' + esc(rec.petitionId) + '\')"><i class="ti ti-check"></i> Approve</button>'
       +   '<button class="btn btn-danger" onclick="IndividualStudiesUI.sponsorReturn(\'' + esc(rec.petitionId) + '\')"><i class="ti ti-arrow-back-up"></i> Return to student</button>'
@@ -911,6 +1377,18 @@ window.IndividualStudiesUI = (() => {
     }, function () { _idle(); });
   }
 
+  function requestRoomAccess(petitionId) {
+    const room = window.prompt('Which room or lab space needs access?');
+    if (room === null) return;
+    if (!room.trim()) { Toast.show('Enter the room or space.', 'error'); return; }
+    const note = window.prompt('Note for facilities (optional):') || '';
+    _busy('Requesting room access…');
+    App.call('individual_studies', 'requestRoomAccess',
+      { petitionId: petitionId, roomAccessRoom: room.trim(), roomAccessNote: note.trim() },
+      function () { _idle(); closeModal(); Toast.show('Room access requested. Facilities has been notified.', 'success'); _afterAction(); },
+      function () { _idle(); });
+  }
+
   // Sponsor syllabus attach (in the review panel) — held until Approve.
   let _sponsorSyllabus = null;
   function onSponsorSyllabusChange(e) {
@@ -926,6 +1404,11 @@ window.IndividualStudiesUI = (() => {
     reader.readAsDataURL(file);
   }
 
+  function onRoomReqToggle() {
+    const on = document.getElementById('is-sp-roomreq').checked;
+    document.getElementById('is-sp-room-group').style.display = on ? 'block' : 'none';
+  }
+
   function sponsorApprove(petitionId) {
     const payload = {
       petitionId: petitionId,
@@ -937,6 +1420,21 @@ window.IndividualStudiesUI = (() => {
       payload.syllabusBase64 = _sponsorSyllabus.syllabusBase64;
       payload.syllabusName = _sponsorSyllabus.syllabusName;
       payload.syllabusMimeType = _sponsorSyllabus.syllabusMimeType;
+    }
+    const roomReq = document.getElementById('is-sp-roomreq');
+    if (roomReq && roomReq.checked) {
+      const room = document.getElementById('is-sp-room').value.trim();
+      if (!room) { Toast.show('Enter the room or space access is needed for.', 'error'); return; }
+      payload.requestRoomAccess = true;
+      payload.roomAccessRoom = room;
+      payload.roomAccessNote = document.getElementById('is-sp-room-note').value.trim();
+    }
+    const spHours = document.getElementById('is-sp-hours');
+    if (spHours && spHours.value.trim() !== '') payload.hoursWithSponsor = spHours.value.trim();
+    const spReport = document.getElementById('is-sp-report');
+    if (spReport) {
+      payload.reportRequired = spReport.checked;
+      payload.reportDueDate = spReport.checked ? document.getElementById('is-sp-report-due').value.trim() : '';
     }
     _busy('Recording your approval…');
     App.call('individual_studies', 'sponsorApprove', payload,
@@ -1088,6 +1586,161 @@ window.IndividualStudiesUI = (() => {
     }, function () { _idle(); });
   }
 
+  // ── My Templates ──────────────────────────────────
+  let _templates = [];
+  let _pendingTplOwner = '';   // owner to select once the selector is populated (edit case)
+  function loadTemplates() {
+    _listLoading('is-tpl-list');
+    App.call('individual_studies', 'myTemplates', {}, function (rows) {
+      _templates = rows || [];
+      _renderTemplates();
+    }, function () { _listError('is-tpl-list'); });
+  }
+  function _renderTemplates() {
+    const el = document.getElementById('is-tpl-list');
+    if (!el) return;
+    if (!_templates.length) { el.innerHTML = '<div class="empty-state">No templates yet. Create one, or use “Save as template” on a petition.</div>'; return; }
+    let body = '';
+    _templates.forEach(function (t) {
+      body += '<tr>'
+        + '<td><strong>' + esc(t.name) + '</strong>' + (t.isDefault ? ' <span class="badge badge-success">Default</span>' : '') + '</td>'
+        + '<td>' + esc(t.course || '—') + (t.title ? ' · ' + esc(t.title) : '') + '</td>'
+        + (_isSuper ? '<td>' + esc(t.sponsorName) + '</td>' : '')
+        + '<td style="white-space:nowrap;text-align:right;">'
+        +   (t.isDefault ? '' : '<button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.setTemplateDefault(\'' + esc(t.templateId) + '\')" title="Make default"><i class="ti ti-star"></i></button> ')
+        +   '<button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.editTemplate(\'' + esc(t.templateId) + '\')"><i class="ti ti-edit"></i></button> '
+        +   '<button class="btn btn-danger btn-sm" onclick="IndividualStudiesUI.deleteTemplate(\'' + esc(t.templateId) + '\')"><i class="ti ti-trash"></i></button>'
+        + '</td></tr>';
+    });
+    el.innerHTML = '<div style="overflow-x:auto;"><table class="data-table"><thead><tr>'
+      + '<th scope="col">Name</th><th scope="col">Course</th>' + (_isSuper ? '<th scope="col">Owner</th>' : '') + '<th scope="col"></th>'
+      + '</tr></thead><tbody>' + body + '</tbody></table></div>';
+  }
+
+  function _tplFields() {
+    return {
+      name: document.getElementById('is-tpl-name').value.trim(),
+      course: document.getElementById('is-tpl-course').value.trim(),
+      title: document.getElementById('is-tpl-title').value.trim(),
+      courseDescription: document.getElementById('is-tpl-desc').value.trim(),
+      evidenceOfPreparation: document.getElementById('is-tpl-evidence').value.trim(),
+      workToBeSubmitted: document.getElementById('is-tpl-work').value.trim(),
+      gradeOption: document.getElementById('is-tpl-grade').value,
+      hoursWithSponsor: document.getElementById('is-tpl-hours').value.trim(),
+      reportRequired: document.getElementById('is-tpl-report').checked,
+      reportDueText: document.getElementById('is-tpl-report-due').value.trim(),
+      roomAccessRoom: document.getElementById('is-tpl-room').value.trim(),
+      isDefault: document.getElementById('is-tpl-default').checked,
+    };
+  }
+  function _setTplFields(t) {
+    t = t || {};
+    _setVal('is-tpl-id', t.templateId || '');
+    _setVal('is-tpl-name', t.name === '(untitled)' ? '' : (t.name || ''));
+    _setVal('is-tpl-course', t.course || '');
+    _setVal('is-tpl-title', t.title || '');
+    _setVal('is-tpl-desc', t.courseDescription || '');
+    _setVal('is-tpl-evidence', t.evidenceOfPreparation || '');
+    _setVal('is-tpl-work', t.workToBeSubmitted || '');
+    _setVal('is-tpl-grade', t.gradeOption || '');
+    _setVal('is-tpl-hours', t.hoursWithSponsor || '');
+    document.getElementById('is-tpl-report').checked = !!t.reportRequired;
+    onTplReportToggle();
+    _setVal('is-tpl-report-due', t.reportDueText || '');
+    _setVal('is-tpl-room', t.roomAccessRoom || '');
+    document.getElementById('is-tpl-default').checked = !!t.isDefault;
+  }
+
+  function onTplReportToggle() {
+    const on = document.getElementById('is-tpl-report').checked;
+    document.getElementById('is-tpl-report-due-group').style.display = on ? 'block' : 'none';
+  }
+
+  function _showTplForm(titleText) {
+    document.getElementById('is-tpl-form-title').innerHTML = '<i class="ti ti-edit"></i> ' + esc(titleText);
+    document.getElementById('is-tpl-form-card').style.display = 'block';
+    // super_admin gets the owner selector, populated from eligible sponsors.
+    const grp = document.getElementById('is-tpl-sponsor-group');
+    if (_isSuper && grp) {
+      grp.style.display = 'block';
+      _ensureFormData(_populateTplSponsorSelect);
+    } else if (grp) {
+      grp.style.display = 'none';
+    }
+    document.getElementById('is-tpl-form-card').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  // Fills the super_admin "owner (instructor)" selector with eligible
+  // individual_studies_sponsor holders. Preserves the current selection.
+  function _populateTplSponsorSelect() {
+    const sel = document.getElementById('is-tpl-sponsor');
+    if (!sel || !_formData || !_formData.sponsors) return;
+    const cur = sel.value;
+    let opts = '<option value="">— Select instructor —</option>';
+    _formData.sponsors.forEach(function (s) { opts += '<option value="' + esc(s.email) + '">' + esc(s.name) + '</option>'; });
+    sel.innerHTML = opts;
+    if (_pendingTplOwner) { sel.value = _pendingTplOwner; _pendingTplOwner = ''; }
+    else if (cur) sel.value = cur;
+  }
+
+  function newTemplate() {
+    _setTplFields({});
+    _showTplForm('New template');   // populates owner selector via callback
+  }
+  function editTemplate(id) {
+    const t = _templates.find(function (x) { return x.templateId === id; });
+    if (!t) return;
+    _setTplFields(t);
+    _pendingTplOwner = t.sponsorEmail || '';   // applied once the selector fills
+    _showTplForm('Edit template');
+  }
+  function cancelTemplate() {
+    document.getElementById('is-tpl-form-card').style.display = 'none';
+  }
+  function saveTemplate() {
+    const payload = _tplFields();
+    if (!payload.name) { Toast.show('Give the template a name.', 'error'); return; }
+    const id = document.getElementById('is-tpl-id').value;
+    if (id) payload.templateId = id;
+    if (_isSuper) {
+      const owner = document.getElementById('is-tpl-sponsor').value;
+      if (owner) payload.sponsorEmail = owner;
+    }
+    FormHelper.setLoading('is-tpl-save-btn', true, 'Saving…');
+    _busy('Saving template…');
+    App.call('individual_studies', 'saveTemplate', payload, function () {
+      FormHelper.setLoading('is-tpl-save-btn', false); _idle();
+      Toast.show('Template saved.', 'success');
+      cancelTemplate(); loadTemplates();
+    }, function () { FormHelper.setLoading('is-tpl-save-btn', false); _idle(); });
+  }
+  function setTemplateDefault(id) {
+    _busy('Updating default…');
+    App.call('individual_studies', 'setDefaultTemplate', { templateId: id }, function () {
+      _idle(); Toast.show('Default updated.', 'success'); loadTemplates();
+    }, function () { _idle(); });
+  }
+  function deleteTemplate(id) {
+    if (!window.confirm('Delete this template? This cannot be undone.')) return;
+    _busy('Deleting template…');
+    App.call('individual_studies', 'deleteTemplate', { templateId: id }, function () {
+      _idle(); Toast.show('Template deleted.', 'success'); loadTemplates();
+    }, function () { _idle(); });
+  }
+
+  // "Save as template" from a petition's detail view.
+  function saveAsTemplate(petitionId) {
+    const name = window.prompt('Name this template:');
+    if (name === null) return;
+    if (!name.trim()) { Toast.show('Give the template a name.', 'error'); return; }
+    const makeDefault = window.confirm('Make this your default template?\n\nOK = default · Cancel = not default');
+    _busy('Saving as template…');
+    App.call('individual_studies', 'saveAsTemplate',
+      { petitionId: petitionId, name: name.trim(), isDefault: makeDefault },
+      function () { _idle(); Toast.show('Saved as template.', 'success'); },
+      function () { _idle(); });
+  }
+
   function loadImportHistory() {
     App.call('individual_studies', 'importHistory', {}, function (rows) {
       const el = document.getElementById('is-import-history');
@@ -1108,12 +1761,16 @@ window.IndividualStudiesUI = (() => {
 
   return {
     init, switchTab,
-    onTermChange, onCourseChange, onReportToggle, onSyllabusChange,
+    onTermChange, onCourseChange, onHoursChange, onSyllabusChange,
+    onSponsorChange, onTemplatePick,
     submit, resetForm, cancelResubmit,
     startResubmit, startResubmitFromModal,
-    loadMine, loadReview, loadSponsored, loadAdvisor,
+    loadMine, loadReview, loadSponsored, renderSponsored, loadAdvisor,
+    loadAll, renderAll, _sortBy, remind,
+    loadTemplates, newTemplate, editTemplate, cancelTemplate, saveTemplate,
+    setTemplateDefault, deleteTemplate, onTplReportToggle, saveAsTemplate,
     open, rowKey, closeModal,
-    withdraw, deletePetition, onSponsorSyllabusChange, sponsorApprove, sponsorReturn,
+    withdraw, deletePetition, onSponsorSyllabusChange, onRoomReqToggle, onSponsorHoursChange, onSponsorReportToggle, sponsorApprove, sponsorReturn, requestRoomAccess,
     pickClass, advisorComplete, advisorReturn,
     onCsvChange, previewImport, resolveInstructor, commitImport, loadImportHistory,
   };

@@ -85,6 +85,8 @@ const CONFIG = {
     CLASS_SCHEDULE_IMPORTS: 'ClassScheduleImports',
     // Undergraduate Individual Studies module tab (lives in SHEETS.INDIVIDUAL_STUDIES)
     INDIVIDUAL_STUDIES:     'Petitions',
+    // Sponsor-owned petition templates (same spreadsheet as Petitions)
+    INDIVIDUAL_STUDIES_TEMPLATES: 'Templates',
   },
 
   // ── Storage convention (three tiers) ───────────────────────

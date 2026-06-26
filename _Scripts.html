@@ -9,6 +9,17 @@ const App = (() => {
 
   function init(state) {
     Object.assign(_state, state);
+
+    // Refresh-restore: if the URL hash names a module the current user may
+    // enter, reopen it so a browser refresh keeps you on the same view.
+    // Skipped when a deep-link focus is present (a fresh ?page=&focus= link
+    // should open focused; only plain refreshes restore the last view).
+    const hashKey = (window.location.hash || '').replace(/^#/, '').trim();
+    if (hashKey && !_state.initialFocus && _moduleAllowed(hashKey)) {
+      loadModule(hashKey, null);
+      return;
+    }
+
     // Dashboard is the default page; render it fresh so tasks appear at login.
     if (!_state.activePage || _state.activePage === 'dashboard') {
       goDashboard();
@@ -23,6 +34,7 @@ const App = (() => {
   function goDashboard() {
     _setActiveNav('dashboard');
     _state.activePage = 'dashboard';
+    _setHash('dashboard');   // dashboard is the default → clears the hash
     window.__focus = null;   // clear any stale deep-link focus
     const greeting = _state.userName ? `Welcome, ${_esc(_state.userName)}` : 'Welcome';
     document.getElementById('module-container').innerHTML = `
@@ -138,6 +150,7 @@ const App = (() => {
       .withSuccessHandler(html => {
         container.innerHTML = html;
         _state.activePage = moduleKey;
+        _setHash(moduleKey);   // persist the view so a refresh restores it
         // Publish the deep-link focus (or clear it) before scripts execute.
         window.__focus = focus || null;
         container.querySelectorAll('script').forEach(s => {
@@ -176,6 +189,26 @@ const App = (() => {
 
   function _setActiveNav(key) {
     document.querySelectorAll('.nav-item').forEach(a => a.classList.toggle('active', a.dataset.module === key));
+  }
+
+  // Persist the current view in the URL hash so a browser refresh restores
+  // it (init() reads it back). Dashboard is the default, so it writes no
+  // hash and clears any existing one — keeping the URL clean on the home view.
+  function _setHash(key) {
+    const next = (key && key !== 'dashboard') ? key : '';
+    if (next) {
+      if (window.location.hash !== '#' + next) window.location.hash = next;
+    } else if (window.location.hash) {
+      // Drop the hash without piling up an empty browser-history entry.
+      history.replaceState(null, '', window.location.pathname + window.location.search);
+    }
+  }
+
+  // Whether moduleKey is in the user's role-filtered, enabled module list
+  // (the same list the sidebar is built from). Used to validate a restored
+  // hash so an unknown/disabled/forbidden key silently falls through.
+  function _moduleAllowed(key) {
+    return (_state.modules || []).some(m => m.key === key);
   }
 
   // Current module/page key, read by modules to detect whether they are still
