@@ -119,7 +119,7 @@ const ThesisReports = (() => {
       attachments: [blob],
       prefixSubject: false,                     // celebratory, not workflow
       senderName: mail.senderName,              // display only; see Notify
-      replyTo: _advisorEmails(),                // staff_undergrad holders
+      replyTo: Settings.replyTo('thesis'),      // module reply-to (Admin → settings); falls back to CONFIG.DEFAULT_REPLY_TO
     });
 
     return { sent: !!result.sent, reused: reused, fileId: fileId, url: url,
@@ -185,7 +185,10 @@ const ThesisReports = (() => {
     catch (e) { return true; }          // settings unreadable → default on
   }
 
-  /** Active staff_undergrad holders' emails (may be empty). */
+  /** Active staff_undergrad holders' emails (may be empty).
+   *  NOTE: no longer used for the certificate reply-to (that now resolves
+   *  via Settings.replyTo('thesis')). Retained for potential future use;
+   *  safe to remove if nothing else references it. */
   function _advisorEmails() {
     try {
       return Auth.listUsers()

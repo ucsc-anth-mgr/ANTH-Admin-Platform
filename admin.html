@@ -273,26 +273,16 @@
     </div>
 
     <div class="card">
-      <div class="card-title"><span><i class="ti ti-settings"></i> Thesis settings</span></div>
-      <p class="text-muted text-sm" style="margin:-8px 0 16px;">
-        Operational settings for the Senior Thesis module. The undergraduate advisor is whoever holds the
-        <strong>staff_undergrad</strong> role (assign it in Users) — not set here.
-      </p>
-      <div class="form-group">
-    <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
-      <input type="checkbox" id="th-notify-handoff"> Email the next party at each workflow handoff
-    </label>
-    <div class="form-hint">When off, the module advances theses silently (no notification emails).</div>
-  </div>
-  <div class="form-group">
-    <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
-      <input type="checkbox" id="th-send-cert"> Email an acceptance certificate to the student when a thesis passes to final processing
-    </label>
-    <div class="form-hint">The advisor's explicit "Resend certificate" always works, even when this is off.</div>
-  </div>
-  <div class="form-actions">
-        <button class="btn btn-primary" id="save-thesis-settings-btn" onclick="AdminUI.saveThesisSettings()"><i class="ti ti-device-floppy"></i> Save settings</button>
+      <div class="card-title between"><span><i class="ti ti-mail-forward"></i> Notification reply-to</span>
+        <button class="btn btn-secondary btn-sm" onclick="AdminUI.loadModuleReplyTos()"><i class="ti ti-refresh"></i> Refresh</button>
       </div>
+      <p class="text-muted text-sm" style="margin:-8px 0 16px;">
+        The reply-to address on each module's notification emails — where replies go when someone responds.
+        Use a shared functional address (e.g. <strong>anthugra@ucsc.edu</strong>), not a personal one.
+        Leave a field blank to fall back to the department default
+        (<strong id="replyto-default">—</strong>). Only modules that send email use this.
+      </p>
+      <div id="replyto-table"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
     </div>
   </div>
 
@@ -381,7 +371,7 @@ window.AdminUI = (() => {
         loadRoles();
         loadImportPolicy();
         loadNotifyRules();
-        loadThesisSettings();
+        loadModuleReplyTos();
       });
     }
     if (tab === 'audit')   loadAudit();
@@ -997,26 +987,55 @@ window.AdminUI = (() => {
     });
   }
 
-  // ── Thesis settings ───────────────────────────────────
-  function loadThesisSettings() {
-    const cb = document.getElementById('th-notify-handoff');
-    if (!cb) return;
-    App.call('admin', 'getThesisSettings', {}, s => {
-      if (!document.getElementById('th-notify-handoff')) return;
-      document.getElementById('th-notify-handoff').checked = !!(s && s.notifyOnHandoff);
-      const cert = document.getElementById('th-send-cert');
-      if (cert) cert.checked = !!(s && s.sendCertificate);
+  // ── Notification reply-to (per-module) ────────────────
+  // One row per enabled module, read from the registry server-side. Each row
+  // has its own input + Save button; a blank value clears the override so the
+  // module falls back to the department default (shown as the placeholder).
+  function loadModuleReplyTos() {
+    const el = document.getElementById('replyto-table');
+    if (!el) return;
+    el.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
+    App.call('admin', 'getModuleReplyTos', {}, data => {
+      if (!document.getElementById('replyto-table')) return;
+      data = data || {};
+      const def = data.defaultReplyTo || '';
+      const defEl = document.getElementById('replyto-default');
+      if (defEl) defEl.textContent = def || '—';
+      const mods = data.modules || [];
+      if (!mods.length) { el.innerHTML = '<div class="empty-state text-sm">No enabled modules.</div>'; return; }
+      const rows = mods.map(m => {
+        const id = 'rt-' + _slugId(m.key);
+        return `
+        <tr>
+          <td><strong>${_escAttr(m.label)}</strong><div class="text-sm text-muted">${_escAttr(m.key)}</div></td>
+          <td style="min-width:240px;">
+            <input class="form-input" id="${id}" type="email" value="${_escAttr(m.replyTo || '')}"
+                   placeholder="${_escAttr(def)} (default)" style="margin:0;">
+          </td>
+          <td style="white-space:nowrap;">
+            <button class="btn btn-primary btn-sm" id="${id}-btn" onclick="AdminUI.saveModuleReplyTo('${_escAttr(m.key)}')"><i class="ti ti-device-floppy"></i> Save</button>
+          </td>
+        </tr>`;
+      }).join('');
+      el.innerHTML = `<div class="table-wrap"><table class="data-table">
+        <thead><tr><th>Module</th><th>Reply-to address</th><th></th></tr></thead>
+        <tbody>${rows}</tbody></table></div>`;
     });
   }
 
-  function saveThesisSettings() {
-    const notifyOnHandoff = document.getElementById('th-notify-handoff').checked;
-    const sendCertificate = document.getElementById('th-send-cert').checked;
-    FormHelper.setLoading('save-thesis-settings-btn', true, 'Saving…');
-    App.call('admin', 'saveThesisSettings', { notifyOnHandoff, sendCertificate }, () => {
-      FormHelper.setLoading('save-thesis-settings-btn', false);
-      Toast.show('Thesis settings saved.', 'success');
-    }, () => FormHelper.setLoading('save-thesis-settings-btn', false));
+  function saveModuleReplyTo(key) {
+    const id = 'rt-' + _slugId(key);
+    const input = document.getElementById(id);
+    if (!input) return;
+    const replyTo = input.value.trim();
+    FormHelper.setLoading(id + '-btn', true, 'Saving…');
+    App.call('admin', 'saveModuleReplyTo', { key, replyTo }, res => {
+      FormHelper.setLoading(id + '-btn', false);
+      const eff = (res && res.effective) ? res.effective : '';
+      Toast.show(replyTo
+        ? ('Reply-to saved for ' + key + ': ' + replyTo)
+        : ('Reply-to cleared for ' + key + ' — falling back to ' + eff), 'success');
+    }, () => FormHelper.setLoading(id + '-btn', false));
   }
 
   function _slugId(s) { return String(s).replace(/[^a-zA-Z0-9]+/g, '_'); }
@@ -1038,7 +1057,7 @@ window.AdminUI = (() => {
     });
   }
 
-  return { init, switchTab, loadModules, toggleModule, deleteModule, openModuleForm, editModule, closeModuleForm, checkHandler, pickIcon, onModuleChip, saveModule, loadUsers, onUserFilterChange, clearUserFilters, sortUsersBy, onChip, editUser, saveUser, clearUserForm, loadAudit, loadRoles, editRole, saveRole, clearRoleForm, deleteRole, explainBlocked, loadRequests, approveRequest, rejectRequest, loadImportPolicy, editPolicy, savePolicy, deletePolicy, loadNotifyRules, editNotifyRule, saveNotifyRule, deleteNotifyRule, loadThesisSettings, saveThesisSettings };
+  return { init, switchTab, loadModules, toggleModule, deleteModule, openModuleForm, editModule, closeModuleForm, checkHandler, pickIcon, onModuleChip, saveModule, loadUsers, onUserFilterChange, clearUserFilters, sortUsersBy, onChip, editUser, saveUser, clearUserForm, loadAudit, loadRoles, editRole, saveRole, clearRoleForm, deleteRole, explainBlocked, loadRequests, approveRequest, rejectRequest, loadImportPolicy, editPolicy, savePolicy, deletePolicy, loadNotifyRules, editNotifyRule, saveNotifyRule, deleteNotifyRule, loadModuleReplyTos, saveModuleReplyTo };
 
 })();
 

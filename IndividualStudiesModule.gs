@@ -581,6 +581,7 @@ const IndividualStudiesModule = (() => {
       body: 'A reminder from ' + who + ': the ' + rec.Course + ' individual-studies petition for ' +
         _studentLabel(rec.StudentEmail) + ' is waiting for you to ' + ask + '.\n\n' +
         'Open it in the portal: ' + _deepLink(rec.PetitionID),
+      replyTo: Settings.replyTo('individual_studies'),   // module reply-to (Admin → settings); falls back to CONFIG.DEFAULT_REPLY_TO
     });
     EventBus.emit(MODULE + '.reminded', { recordId: rec.PetitionID, remindedTo: to }, { user: user });
     return { petitionId: rec.PetitionID, remindedTo: to };
@@ -747,6 +748,7 @@ const IndividualStudiesModule = (() => {
       to: sponsorEmail,
       subject: 'Individual study awaiting your review',
       body: lines.join('\n'),
+      replyTo: Settings.replyTo('individual_studies'),   // module reply-to (Admin → settings); falls back to CONFIG.DEFAULT_REPLY_TO
     });
   }
 
@@ -765,6 +767,7 @@ const IndividualStudiesModule = (() => {
         subject: 'Individual study awaiting class number',
         body: 'A ' + rec.Course + ' petition has been approved by its sponsor and is ready for a class number.\n\n' +
               'Process it in the portal: ' + _deepLink(petitionId),
+        replyTo: Settings.replyTo('individual_studies'),   // module reply-to (Admin → settings); falls back to CONFIG.DEFAULT_REPLY_TO
       });
     }
   }
@@ -812,7 +815,7 @@ const IndividualStudiesModule = (() => {
         if (rec.ClassNumber) lines.push('Class number: ' + rec.ClassNumber);
         lines.push('Requested by: ' + (_facultyLabel(user) || user));
         lines.push('', 'Petition: ' + _deepLink(rec.PetitionID));
-        Notify.send({ to: to, subject: 'Room access requested — ' + rec.Course, body: lines.join('\n') });
+        Notify.send({ to: to, subject: 'Room access requested — ' + rec.Course, body: lines.join('\n'), replyTo: Settings.replyTo('individual_studies') });
       }
     } catch (e) {
       Logger.log('IndividualStudiesModule._fireRoomAccessRequest failed for ' + rec.PetitionID + ': ' + e);
@@ -839,6 +842,7 @@ const IndividualStudiesModule = (() => {
       body: 'Your ' + rec.Course + ' petition was returned for revision.\n\n' +
             'What to revise: ' + note + '\n\n' +
             'Revise and resubmit in the portal: ' + _deepLink(petitionId),
+      replyTo: Settings.replyTo('individual_studies'),   // module reply-to (Admin → settings); falls back to CONFIG.DEFAULT_REPLY_TO
     });
   }
 
@@ -855,6 +859,7 @@ const IndividualStudiesModule = (() => {
       to: rec.StudentEmail,
       subject: 'Your individual-studies petition is complete',
       body: lines.join('\n'),
+      replyTo: Settings.replyTo('individual_studies'),   // module reply-to (Admin → settings); falls back to CONFIG.DEFAULT_REPLY_TO
     });
   }
 

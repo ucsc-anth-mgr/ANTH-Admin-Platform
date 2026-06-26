@@ -69,6 +69,14 @@ const ThesisModule = (() => {
   // Quarters offered at submission (term half of the filename prefix).
   const QUARTERS = ['Fall', 'Winter', 'Spring', 'Summer'];
 
+  // Optional decision-comment PDFs (sponsor + reader) live in their OWN Drive
+  // folder, separate from the thesis PDFs. Every workflow participant is
+  // granted viewer access to a comment file when it is attached. When a
+  // decision comes in with a file but an empty comment box, the comment text
+  // defaults to this string so the required-comments contract still holds.
+  const COMMENT_FOLDER_ID = '1QUZTBfhLV2BXjsHHI55G6_O8PpeHwT_2';
+  const COMMENT_SEE_ATTACHED = 'see attached document';
+
 
   // ── Public actions (callable via dispatch) ─────────────────
 
@@ -203,7 +211,9 @@ const ThesisModule = (() => {
       DriveFileID: link.fileId, FileName: fileName, DocumentLink: link.url,
       Stage: STAGE.SUBMITTED,
       SponsorDecision: '', SponsorComments: '', SponsorDecidedBy: '', SponsorDecidedAt: '',
+      SponsorCommentFileID: '', SponsorCommentLink: '',
       ReaderEmail: '', HonorsDecision: '', ReaderComments: '', ReaderDecidedBy: '', ReaderDecidedAt: '',
+      ReaderCommentFileID: '', ReaderCommentLink: '',
       AdvisorProcessedBy: '', AdvisorProcessedAt: '', ReturnNote: '',
     });
 
@@ -302,13 +312,38 @@ const ThesisModule = (() => {
 
     const decision = _requireOneOf(payload.decision,
       [SPONSOR.PASS, SPONSOR.NO_PASS, SPONSOR.HONORS], 'Decision');
-    const comments = String(payload.comments || '').trim();
+
+    // Optional comment PDF. When attached and the textarea is left blank,
+    // the comment text defaults to "see attached document" so the required-
+    // comments contract still holds (applied here, server-side, BEFORE the
+    // required-check — a client default is convenience, this is the source
+    // of truth). The textarea stays freely editable, so a sponsor may both
+    // attach and write.
+    let comments = String(payload.comments || '').trim();
+    const hasCommentFile = _hasFile(payload.commentFile);
+    if (!comments && hasCommentFile) comments = COMMENT_SEE_ATTACHED;
     if (!comments) throw new Error('Comments are required with your decision.');
     const now = new Date();
+
+    // Upload the comment PDF (if any) to the comments folder and grant the
+    // workflow participants viewer access. For an honors referral the reader
+    // is added too. Best-effort grants — a sharing hiccup must not fail the
+    // decision. Replace-in-place reuses any prior sponsor-comment file id.
+    let sponsorCommentFile = { fileId: rec.SponsorCommentFileID || '', url: rec.SponsorCommentLink || '' };
+    if (hasCommentFile) {
+      const profileForName = Auth.getProfile(rec.StudentEmail) || {};
+      const cfName = _commentFileName(rec, profileForName, 'SPONSOR');
+      sponsorCommentFile = _saveCommentPdf(rec.SponsorCommentFileID, payload.commentFile, cfName);
+      const viewers = [rec.SponsorEmail, rec.StudentEmail].concat(_advisors().map(a => a.email));
+      if (decision === SPONSOR.HONORS) viewers.push(String(payload.readerEmail || '').trim());
+      _grantCommentViewers(sponsorCommentFile.fileId, viewers);
+    }
 
     const updates = {
       SponsorDecision: decision, SponsorComments: comments,
       SponsorDecidedBy: user, SponsorDecidedAt: now,
+      SponsorCommentFileID: sponsorCommentFile.fileId,
+      SponsorCommentLink: sponsorCommentFile.url,
       ReturnNote: '',   // clear any advisor re-review note once re-decided
     };
 
@@ -386,13 +421,30 @@ const ThesisModule = (() => {
     if (_norm(rec.ReaderEmail) !== _norm(user) && roles.indexOf('super_admin') === -1) {
       throw new Error('Only the assigned faculty reader can decide this honors review.');
     }
-    const comments = String(payload.comments || '').trim();
+    let comments = String(payload.comments || '').trim();
+    const hasCommentFile = _hasFile(payload.commentFile);
+    if (!comments && hasCommentFile) comments = COMMENT_SEE_ATTACHED;
     if (!comments) throw new Error('Comments are required to approve honors.');
+
+    // Optional reader comment PDF → comments folder, with viewer access for
+    // the workflow participants (reader, sponsor, advisors, student).
+    // Best-effort grants; replace-in-place reuses any prior reader-comment id.
+    let readerCommentFile = { fileId: rec.ReaderCommentFileID || '', url: rec.ReaderCommentLink || '' };
+    if (hasCommentFile) {
+      const profileForName = Auth.getProfile(rec.StudentEmail) || {};
+      const cfName = _commentFileName(rec, profileForName, 'READER');
+      readerCommentFile = _saveCommentPdf(rec.ReaderCommentFileID, payload.commentFile, cfName);
+      const viewers = [rec.ReaderEmail, rec.SponsorEmail, rec.StudentEmail]
+        .concat(_advisors().map(a => a.email));
+      _grantCommentViewers(readerCommentFile.fileId, viewers);
+    }
 
     Tasks.resolveForSource('thesis', rec.ThesisID, { resolvedBy: user });
     DataService.update(CONFIG.SHEETS.THESIS, TAB, 'ThesisID', rec.ThesisID, {
       HonorsDecision: HONORS.APPROVED, ReaderComments: comments,
       ReaderDecidedBy: user, ReaderDecidedAt: new Date(),
+      ReaderCommentFileID: readerCommentFile.fileId,
+      ReaderCommentLink: readerCommentFile.url,
       Stage: STAGE.PENDING_ADVISOR,
     });
     const decidedRec = _byId(rec.ThesisID);  // reflects the honors approval
@@ -581,6 +633,10 @@ const ThesisModule = (() => {
       catch (err) { Logger.log('deleteThesis: could not trash file ' + fileId + ' (' + err + ')'); }
     }
 
+    // Trash any decision-comment PDFs too (best-effort).
+    _trashCommentPdf(rec.SponsorCommentFileID);
+    _trashCommentPdf(rec.ReaderCommentFileID);
+
     const removed = DataService.remove(CONFIG.SHEETS.THESIS, TAB, 'ThesisID', rec.ThesisID);
     if (!removed) throw new Error('Delete failed — the record could not be removed.');
 
@@ -664,10 +720,17 @@ const ThesisModule = (() => {
     if (!note) throw new Error('Add a note telling the sponsor what needs another look.');
 
     Tasks.resolveForSource('thesis', rec.ThesisID, { resolvedBy: user });
+    // A cleared decision must not leave its comment attachment dangling:
+    // trash both comment PDFs (best-effort) and clear their fields alongside
+    // the decision fields they belong to.
+    _trashCommentPdf(rec.SponsorCommentFileID);
+    _trashCommentPdf(rec.ReaderCommentFileID);
     DataService.update(CONFIG.SHEETS.THESIS, TAB, 'ThesisID', rec.ThesisID, {
       Stage: STAGE.SUBMITTED, ReturnNote: note,
       SponsorDecision: '', SponsorComments: '', SponsorDecidedBy: '', SponsorDecidedAt: '',
+      SponsorCommentFileID: '', SponsorCommentLink: '',
       ReaderEmail: '', HonorsDecision: '', ReaderComments: '', ReaderDecidedBy: '', ReaderDecidedAt: '',
+      ReaderCommentFileID: '', ReaderCommentLink: '',
     });
 
     const student = Auth.getProfile(rec.StudentEmail);
@@ -904,6 +967,105 @@ const ThesisModule = (() => {
   }
 
 
+  // ── Comment-PDF helpers (optional sponsor/reader decision attachments) ──
+  //
+  // Comment PDFs live in COMMENT_FOLDER_ID (separate from thesis PDFs). Every
+  // workflow participant is granted viewer access when a file is attached.
+  // Storage mirrors the thesis-PDF model: replace-in-place via the Advanced
+  // Drive Service when a prior comment file exists, else a fresh upload.
+
+  /** True when the payload carries an attached file (base64 present). */
+  function _hasFile(file) {
+    return !!(file && String(file.dataBase64 || '').trim());
+  }
+
+  /** Comment filename: <thesis filename minus .pdf>_<ROLE>-COMMENTS.pdf
+   *  e.g. 2026-Spring_1234567-THES_Doe-Jane_SPONSOR-COMMENTS.pdf */
+  function _commentFileName(rec, studentProfile, roleToken) {
+    const base = _buildFileName(rec.Quarter, rec.Year, {
+      lastName:  studentProfile.lastName  || '',
+      firstName: studentProfile.firstName || '',
+      studentId: studentProfile.studentId || (rec.StudentEmail || 'NOID'),
+    }).replace(/\.pdf$/i, '');
+    return base + '_' + roleToken + '-COMMENTS.pdf';
+  }
+
+  /** Builds a PDF blob for a comment attachment. Distinct from _toPdfBlob so
+   *  the error wording is comment-specific (and never claims the thesis PDF
+   *  is missing). Callers guard with _hasFile, so the empty case is defensive. */
+  function _toCommentBlob(file, fileName) {
+    file = file || {};
+    const b64 = String(file.dataBase64 || '').trim();
+    if (!b64) throw new Error('Attach the comment PDF.');
+    const mime = String(file.mimeType || 'application/pdf');
+    if (mime.indexOf('pdf') === -1) throw new Error('The comment attachment must be a PDF file.');
+    const bytes = Utilities.base64Decode(b64);
+    return Utilities.newBlob(bytes, 'application/pdf', fileName);
+  }
+
+  function _commentFolder() {
+    const id = String(COMMENT_FOLDER_ID || '').trim();
+    if (!id) throw new Error('Thesis comment Drive folder is not configured.');
+    return DriveApp.getFolderById(id);
+  }
+
+  /**
+   * Saves a comment PDF to the comments folder, replacing an existing file in
+   * place when one is given (same id preserved). Falls back to a fresh upload
+   * when no prior id exists, the stored file is gone, or Advanced Drive is not
+   * enabled. Returns { fileId, url }.
+   */
+  function _saveCommentPdf(existingId, file, fileName) {
+    const id = String(existingId || '').trim();
+    const blob = _toCommentBlob(file, fileName);
+
+    if (id && _hasAdvancedDrive()) {
+      try {
+        Drive.Files.update({ title: fileName, mimeType: 'application/pdf' }, id, blob);
+        const f = DriveApp.getFileById(id);
+        f.setName(fileName);
+        return { fileId: id, url: f.getUrl() };
+      } catch (err) {
+        Logger.log('ThesisModule._saveCommentPdf: in-place update failed (' + err + '); uploading fresh.');
+      }
+    }
+    const created = _commentFolder().createFile(blob);
+    return { fileId: created.getId(), url: created.getUrl() };
+  }
+
+  /**
+   * Grants viewer access on a comment file to each address in `emails`
+   * (deduped, blanks dropped). Best-effort per address — a sharing hiccup on
+   * one recipient must not fail the decision or block the others. Idempotent.
+   */
+  function _grantCommentViewers(fileId, emails) {
+    const id = String(fileId || '').trim();
+    if (!id) return;
+    let f;
+    try { f = DriveApp.getFileById(id); }
+    catch (err) { Logger.log('ThesisModule._grantCommentViewers: file ' + id + ' missing (' + err + ')'); return; }
+    const seen = {};
+    (emails || []).forEach(e => {
+      const email = String(e || '').trim();
+      if (!email) return;
+      const key = email.toLowerCase();
+      if (seen[key]) return;
+      seen[key] = true;
+      try { f.addViewer(email); }
+      catch (err) { Logger.log('ThesisModule._grantCommentViewers: could not share ' + id + ' with ' + email + ' (' + err + ')'); }
+    });
+  }
+
+  /** Best-effort trash of a comment PDF (used when its decision is cleared or
+   *  the thesis is deleted). A missing file is not an error. */
+  function _trashCommentPdf(fileId) {
+    const id = String(fileId || '').trim();
+    if (!id) return;
+    try { DriveApp.getFileById(id).setTrashed(true); }
+    catch (err) { Logger.log('ThesisModule._trashCommentPdf: could not trash ' + id + ' (' + err + ')'); }
+  }
+
+
   // ── Read / shape / validate helpers ────────────────────────
 
   function _byId(thesisId) {
@@ -944,11 +1106,13 @@ const ThesisModule = (() => {
       stage:        r.Stage,
       sponsorDecision: r.SponsorDecision,
       sponsorComments: r.SponsorComments,
+      sponsorCommentLink: r.SponsorCommentLink || '',
       sponsorDecidedAt: r.SponsorDecidedAt ? Utils.formatDate(r.SponsorDecidedAt) : '',
       readerEmail:  r.ReaderEmail,
       readerName:   r.ReaderEmail ? _facultyLabel(r.ReaderEmail) : '',
       honorsDecision: r.HonorsDecision,
       readerComments: r.ReaderComments,
+      readerCommentLink: r.ReaderCommentLink || '',
       readerDecidedAt: r.ReaderDecidedAt ? Utils.formatDate(r.ReaderDecidedAt) : '',
       advisorProcessedAt: r.AdvisorProcessedAt ? Utils.formatDate(r.AdvisorProcessedAt) : '',
       returnNote:   r.ReturnNote,
@@ -986,8 +1150,10 @@ const ThesisModule = (() => {
 
     if (!settled) {
       pub.sponsorDecision = ''; pub.sponsorComments = ''; pub.sponsorDecidedAt = '';
+      pub.sponsorCommentLink = '';
       pub.readerEmail = ''; pub.readerName = '';
       pub.honorsDecision = ''; pub.readerComments = ''; pub.readerDecidedAt = '';
+      pub.readerCommentLink = '';
     }
     if (r.Stage !== STAGE.RETURNED) pub.returnNote = '';
     return pub;
@@ -1124,6 +1290,7 @@ const ThesisModule = (() => {
     Notify.send({
       to: recipients, subject: subject, body: text,
       htmlBody: html || Notify.htmlWrap(text),
+      replyTo: Settings.replyTo('thesis'),   // module reply-to (Admin → settings); falls back to CONFIG.DEFAULT_REPLY_TO
     });
   }
 
@@ -1197,10 +1364,38 @@ const ThesisModule = (() => {
   }
 
 
+  // ── Operational settings (module-owned) ────────────────────
+  // NOTIFY_ON_HANDOFF / SEND_CERTIFICATE live in the ThesisSettings store and
+  // are surfaced through the module's own Settings tab — mirroring how the
+  // Transcript module owns its settings, rather than the Admin module holding
+  // a panel for them. Backed by the same ThesisSettings store _notify already
+  // reads, so there is no data move: only the UI/dispatch path changed.
+  // Gated advisor + super_admin (matching advisorComplete / gradQueue), since
+  // the undergraduate advisor runs the workflow day-to-day.
+
+  function _assertSettingsManager(user, roles) {
+    if (_isUndergradAdvisor(user) || (roles || []).indexOf('super_admin') !== -1) return;
+    throw new Error('Only the undergraduate advisor can change thesis settings.');
+  }
+
+  /** Returns the thesis operational settings for the Settings tab. */
+  function getSettings(payload, user, roles) {
+    _assertSettingsManager(user, roles);
+    return ThesisSettings.get();
+  }
+
+  /** Saves the thesis operational settings from the Settings tab. */
+  function saveSettings(payload, user, roles) {
+    _assertSettingsManager(user, roles);
+    return ThesisSettings.save(payload || {});
+  }
+
+
   return {
     listEligible, listCountries, submit, mySubmissions, sponsored, queue, get,
     sponsorDecision, readerDecision, advisorComplete, returnToStudent, returnToSponsor,
     gradQueue, remindResponsible, repairAdvisorTasks, deleteThesis,
+    getSettings, saveSettings,
   };
 
 })();

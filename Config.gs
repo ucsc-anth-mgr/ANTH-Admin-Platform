@@ -21,7 +21,7 @@ const CONFIG = {
   },
 
   SHEETS: {
-    USERS_CONFIG:  '1VdiwRD4Dp75a86jdqPid_XCrwGEOp3ix5c2wTisHwMs',       // Tabs: Users, Roles, Modules
+    USERS_CONFIG:  '1VdiwRD4Dp75a86jdqPid_XCrwGEOp3ix5c2wTisHwMs',       // Tabs: Users, Roles, Modules, Requests, ImportPolicy, NotifyRules, Settings
     AUDIT_LOG:     '1Jog3zXwu5dpAuWuJ8I-VPjbqH4ybRlc3yl1zUzh1HxE',        // Tab: AuditLog
     SUBMISSIONS:   '1zacvd0FhWcjKldhKt9Fan3lWY0QkRAZ3Ol45wobBZl4',  // Tab per form type
     // Senior Thesis module — its OWN spreadsheet (per-module storage tier).
@@ -71,6 +71,10 @@ const CONFIG = {
     REQUESTS:    'Requests',
     IMPORT_POLICY: 'ImportPolicy',
     NOTIFY_RULES: 'NotifyRules',
+    // Platform-wide, module-keyed settings (Settings.gs). Lives in
+    // USERS_CONFIG with the other config tabs. Machine-managed via the
+    // Admin UI — not intended for hand editing.
+    SETTINGS:    'Settings',
     TASKS:       'Tasks',
     REPORTS:     'Reports',
     THESIS_ELIGIBILITY: 'ThesisEligibility',
@@ -91,8 +95,8 @@ const CONFIG = {
 
   // ── Storage convention (three tiers) ───────────────────────
   // 1. CONFIG sheet  (USERS_CONFIG): platform identity + registry —
-  //    Users, Roles, Modules, ImportPolicy, NotifyRules, Requests.
-  //    Stable, constantly read, small.
+  //    Users, Roles, Modules, ImportPolicy, NotifyRules, Requests,
+  //    Settings. Stable, constantly read, small.
   // 2. PLATFORM sheet: operational data owned by platform-wide services
   //    (Tasks, Reports, and later anything cross-cutting). Hot /
   //    high-churn; kept separate so it never contends with config reads.
@@ -109,6 +113,13 @@ const CONFIG = {
   SUPER_ADMINS: [
     'anth_mgr@ucsc.edu',
   ],
+
+  // Platform-wide fallback Reply-To for module notification emails.
+  // Settings.gs (Admin → module settings) overrides this PER MODULE via
+  // the 'replyTo' key; this value applies only to a module that has no
+  // reply-to configured. Kept as a constant (not UI-managed) because it
+  // is the last-resort floor, deliberately the department manager address.
+  DEFAULT_REPLY_TO: 'anth_mgr@ucsc.edu',
 
   // ── Thesis module settings ─────────────────────────────────
   THESIS: {

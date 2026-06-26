@@ -30,7 +30,7 @@
     <? } ?>
     <? if (_isAdmin) { ?>
     <button class="module-tab" role="tab" aria-selected="false" data-tab="artic" onclick="TranscriptUI.switchTab('artic')">
-      <i class="ti ti-table"></i> Articulations
+      <i class="ti ti-table"></i> Settings
     </button>
     <? } ?>
   </div>
@@ -188,6 +188,17 @@
       </div>
     </div>
 
+    <!-- ── Advisor notifications (toggles) ── -->
+    <div class="card">
+      <div class="card-title"><i class="ti ti-bell"></i> Advisor notifications</div>
+      <p class="text-sm text-muted" style="margin-bottom:14px;">
+        When advisors (staff_undergrad) are emailed about pending transcripts.
+      </p>
+      <div id="tr-advisor-settings">
+        <div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>
+      </div>
+    </div>
+
     <!-- ── Notification settings ── -->
     <div class="card">
       <div class="card-title"><i class="ti ti-mail"></i> Student notifications</div>
@@ -323,7 +334,7 @@ window.TranscriptUI = (() => {
     if (tab === 'upload') loadUploadForm();
     if (tab === 'mine')   loadMine();
     if (tab === 'queue')  loadQueue();
-    if (tab === 'artic')  { _loadYears(); loadSummary(); loadReview(); loadSettings(); }
+    if (tab === 'artic')  { _loadYears(); loadSummary(); loadReview(); loadAdvisorSettings(); loadSettings(); }
   }
 
   // ════════════════════════════════════════════════════════
@@ -617,10 +628,6 @@ window.TranscriptUI = (() => {
     App.call('transcript', 'getSettings', {}, function (s) {
       el.innerHTML =
         '<div class="form-group">' +
-          '<label class="text-sm"><input type="checkbox" id="tr-digest" ' + (String(s.DIGEST_ENABLED).toUpperCase() === 'TRUE' ? 'checked' : '') + '> ' +
-          'Send the morning digest of pending transcripts to advisors</label>' +
-        '</div>' +
-        '<div class="form-group">' +
           '<label class="form-label" for="tr-tmpl-processed">"Processed" message</label>' +
           '<textarea class="form-textarea" id="tr-tmpl-processed" rows="5">' + esc(s.NOTIFY_PROCESSED || '') + '</textarea>' +
         '</div>' +
@@ -632,9 +639,37 @@ window.TranscriptUI = (() => {
     });
   }
 
+  // Advisor notification toggles. These save on change (no Save button) —
+  // each writes only its own key, so the server leaves the other toggle and
+  // the student-message templates untouched (saveSettings skips undefined keys).
+  function loadAdvisorSettings() {
+    var el = document.getElementById('tr-advisor-settings');
+    if (!el) return;
+    App.call('transcript', 'getSettings', {}, function (s) {
+      el.innerHTML =
+        '<div class="form-group">' +
+          '<label class="text-sm"><input type="checkbox" id="tr-digest" onchange="TranscriptUI.saveAdvisorToggle(\'DIGEST_ENABLED\', this.checked)" ' + (String(s.DIGEST_ENABLED).toUpperCase() === 'TRUE' ? 'checked' : '') + '> ' +
+          'Send the morning digest of pending transcripts to advisors</label>' +
+        '</div>' +
+        '<div class="form-group" style="margin-bottom:0;">' +
+          '<label class="text-sm"><input type="checkbox" id="tr-notify-upload" onchange="TranscriptUI.saveAdvisorToggle(\'NOTIFY_ON_UPLOAD\', this.checked)" ' + (String(s.NOTIFY_ON_UPLOAD).toUpperCase() === 'TRUE' ? 'checked' : '') + '> ' +
+          'Email advisors when a student uploads a transcript</label>' +
+        '</div>';
+    });
+  }
+
+  // Persist one advisor toggle immediately. Sends only its own key so the
+  // other settings are left as-is.
+  function saveAdvisorToggle(key, checked) {
+    var payload = {};
+    payload[key] = checked === true;
+    App.call('transcript', 'saveSettings', payload, function () {
+      Toast.show('Advisor notification setting saved.', 'success');
+    });
+  }
+
   function saveSettings() {
     var payload = {
-      DIGEST_ENABLED: (document.getElementById('tr-digest') || {}).checked === true,
       NOTIFY_PROCESSED: (document.getElementById('tr-tmpl-processed') || {}).value || '',
       NOTIFY_NO_ARTICULATION: (document.getElementById('tr-tmpl-noart') || {}).value || '',
     };
@@ -842,7 +877,7 @@ window.TranscriptUI = (() => {
     // advisor
     loadQueue: loadQueue, openReview: openReview, review: review, override: override, deleteTranscript: deleteTranscript, closeModal: closeModal,
     // admin
-    sync: sync, loadSummary: loadSummary, loadReview: loadReview, loadSettings: loadSettings, saveSettings: saveSettings, shareFolder: shareFolder,
+    sync: sync, loadSummary: loadSummary, loadReview: loadReview, loadSettings: loadSettings, loadAdvisorSettings: loadAdvisorSettings, saveAdvisorToggle: saveAdvisorToggle, saveSettings: saveSettings, shareFolder: shareFolder,
   };
 
 })();

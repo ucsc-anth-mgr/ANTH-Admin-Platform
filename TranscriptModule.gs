@@ -832,6 +832,7 @@ const TranscriptModule = (() => {
       });
       _ensureQueueTask();
       _emailStudentReceipt(user, collegeName, claimKey, true);
+      _emailAdvisorsNewUpload({ StudentEmail: user, SendingCollege: collegeName, ClaimedPrereqs: claimKey }, true);
       return { transcriptId: match.TranscriptID, replaced: true };
     }
 
@@ -853,6 +854,7 @@ const TranscriptModule = (() => {
     });
     _ensureQueueTask();
     _emailStudentReceipt(user, collegeName, claimKey, false);
+    _emailAdvisorsNewUpload({ StudentEmail: user, SendingCollege: collegeName, ClaimedPrereqs: claimKey }, false);
     return { transcriptId: id, replaced: false };
   }
 
@@ -1134,10 +1136,11 @@ const TranscriptModule = (() => {
       throw new Error('Not authorized to change transcript settings.');
     }
     payload = payload || {};
-    const allowed = ['DIGEST_ENABLED', 'NOTIFY_PROCESSED', 'NOTIFY_NO_ARTICULATION'];
+    const boolKeys = ['DIGEST_ENABLED', 'NOTIFY_ON_UPLOAD'];
+    const allowed = ['DIGEST_ENABLED', 'NOTIFY_ON_UPLOAD', 'NOTIFY_PROCESSED', 'NOTIFY_NO_ARTICULATION'];
     allowed.forEach(key => {
       if (payload[key] === undefined) return;
-      const value = (key === 'DIGEST_ENABLED')
+      const value = (boolKeys.indexOf(key) !== -1)
         ? (payload[key] === true || String(payload[key]).toUpperCase() === 'TRUE' ? 'TRUE' : 'FALSE')
         : String(payload[key]);
       _writeSetting(key, value);
@@ -1174,6 +1177,7 @@ const TranscriptModule = (() => {
       to: recipients,
       subject: 'Transcripts awaiting review (' + pending.length + ')',
       body: body,
+      replyTo: Settings.replyTo('transcript'),   // module reply-to (Admin → settings); falls back to CONFIG.DEFAULT_REPLY_TO
     });
     return { sent: true, count: pending.length, recipients: recipients.length };
   }
@@ -1210,6 +1214,45 @@ const TranscriptModule = (() => {
       subject: replaced ? 'Your revised transcript has been received' : 'Your transcript has been received',
       body: bodyText,
       htmlBody: htmlBody,
+      replyTo: Settings.replyTo('transcript'),   // module reply-to (Admin → settings); falls back to CONFIG.DEFAULT_REPLY_TO
+    });
+  }
+
+  // ── New-upload advisor notification (global toggle) ───────
+  // Emails active staff_undergrad role-holders that a transcript is waiting,
+  // gated by the NOTIFY_ON_UPLOAD setting. Fires on BOTH a new upload and a
+  // resubmission (replaced=true) — either way the transcript (re)enters the
+  // queue. Delivery via Notify (never throws), so a mail problem can't break
+  // the upload. rec carries StudentEmail / SendingCollege / ClaimedPrereqs.
+  function _emailAdvisorsNewUpload(rec, replaced) {
+    const settings = _readSettings();
+    if (String(settings.NOTIFY_ON_UPLOAD).toUpperCase() !== 'TRUE') return;
+
+    const recipients = Auth.listUsers()
+      .filter(u => u.active && (u.roles || []).indexOf(ADVISOR_ROLE) !== -1)
+      .map(u => u.email);
+    if (!recipients.length) return;
+
+    const profile = Auth.getProfile(rec.StudentEmail);
+    const who = profile ? profile.nameLastFirst : rec.StudentEmail;
+    const verb = replaced ? 'A revised transcript' : 'A new transcript';
+    const subject = replaced ? 'Revised transcript awaiting review' : 'Transcript awaiting review';
+
+    const bodyText = verb + ' has been submitted and is awaiting review.\n\n' +
+      'Student: ' + who + '\n' +
+      'College: ' + (rec.SendingCollege || '') + '\n' +
+      'Prerequisites: ' + (rec.ClaimedPrereqs || '') + '\n\n' +
+      'Open the portal \u2192 Transcripts to review.';
+
+    const link = _deepLinkQueue();
+    const textWithLink = bodyText + (link ? ('\n\nReview the queue:\n' + link) : '');
+
+    Notify.send({
+      to: recipients,
+      subject: subject,
+      body: textWithLink,
+      htmlBody: Notify.htmlWrap(bodyText) + _queueButtonHtml(),
+      replyTo: Settings.replyTo('transcript'),   // module reply-to (Admin → settings); falls back to CONFIG.DEFAULT_REPLY_TO
     });
   }
 
@@ -1230,6 +1273,29 @@ const TranscriptModule = (() => {
       '<a href="' + url + '" ' +
       'style="display:inline-block;background:#003C6C;color:#fff;text-decoration:none;' +
       'padding:10px 18px;border-radius:6px;font-size:14px;">View my transcripts</a></p>' +
+      '<p style="margin:0;color:#888;font-size:12px;">You will be asked to sign in if you are not already.</p>';
+  }
+
+  // Deep link to the advisor review queue (after portal login). The shell
+  // parses ?focus= into window.__focus.sourceId; the module's init() sends
+  // any advisor focus target to the queue tab, so 'queue' just needs to be
+  // non-empty to route correctly.
+  function _deepLinkQueue() {
+    let base = '';
+    try { base = ScriptApp.getService().getUrl() || ''; } catch (e) { base = ''; }
+    if (!base) return '';
+    const sep = base.indexOf('?') === -1 ? '?' : '&';
+    return base + sep + 'page=transcript&focus=queue';
+  }
+
+  // HTML button to the review queue, or '' if the URL can't be built.
+  function _queueButtonHtml() {
+    const url = _deepLinkQueue();
+    if (!url) return '';
+    return '<p style="margin:16px 0;">' +
+      '<a href="' + url + '" ' +
+      'style="display:inline-block;background:#003C6C;color:#fff;text-decoration:none;' +
+      'padding:10px 18px;border-radius:6px;font-size:14px;">Review transcripts</a></p>' +
       '<p style="margin:0;color:#888;font-size:12px;">You will be asked to sign in if you are not already.</p>';
   }
 
@@ -1261,12 +1327,13 @@ const TranscriptModule = (() => {
       subject: subject,
       body: textWithLink,
       htmlBody: Notify.htmlWrap(bodyText) + _mineButtonHtml(),
+      replyTo: Settings.replyTo('transcript'),   // module reply-to (Admin → settings); falls back to CONFIG.DEFAULT_REPLY_TO
     });
   }
 
   // ── Settings read/write (key/value tab) ───────────────────
   function _readSettings() {
-    const out = { DIGEST_ENABLED: 'TRUE', NOTIFY_PROCESSED: '', NOTIFY_NO_ARTICULATION: '' };
+    const out = { DIGEST_ENABLED: 'TRUE', NOTIFY_ON_UPLOAD: 'TRUE', NOTIFY_PROCESSED: '', NOTIFY_NO_ARTICULATION: '' };
     try {
       DataService.getAll(SHEET(), SETTINGS_TAB()).forEach(r => {
         const k = String(r.Key || '').trim();

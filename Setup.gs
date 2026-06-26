@@ -100,6 +100,17 @@ const SETUP_SCHEMA = {
       ['SEND_CERTIFICATE',  'TRUE'],
     ],
   },
+  SETTINGS: {
+    tab: 'Settings',
+    // Platform-wide, module-keyed settings (Settings.gs). One row per
+    // (Module, Key); currently holds each module's notification reply-to
+    // under the 'replyTo' key. No seed: values are configured per module
+    // in the Admin UI, and an unset module falls back to
+    // CONFIG.DEFAULT_REPLY_TO at send time. Machine-managed — not intended
+    // for hand editing.
+    headers: ['Module', 'Key', 'Value'],
+    seed: [],
+  },
   TASKS: {
     tab: 'Tasks',
     // Pointer-only "needs attention" queue. SourceID references the
@@ -147,8 +158,10 @@ const SETUP_SCHEMA = {
     headers: ['ThesisID', 'StudentEmail', 'Quarter', 'Year', 'ShareConsent',
               'Title', 'Abstract', 'Regions', 'SponsorEmail', 'DriveFileID', 'FileName', 'DocumentLink',
               'Stage',
-              'SponsorDecision', 'SponsorComments', 'SponsorDecidedBy', 'SponsorDecidedAt',
-              'ReaderEmail', 'HonorsDecision', 'ReaderComments', 'ReaderDecidedBy', 'ReaderDecidedAt',
+              'SponsorDecision', 'SponsorComments', 'SponsorCommentFileID', 'SponsorCommentLink',
+              'SponsorDecidedBy', 'SponsorDecidedAt',
+              'ReaderEmail', 'HonorsDecision', 'ReaderComments', 'ReaderCommentFileID', 'ReaderCommentLink',
+              'ReaderDecidedBy', 'ReaderDecidedAt',
               'AdvisorProcessedBy', 'AdvisorProcessedAt', 'MilestoneEntered', 'ReturnNote',
               'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
     seed: [],
@@ -221,10 +234,13 @@ const SETUP_SCHEMA = {
     // templates per terminal status; tokens {FirstName} and {College} are
     // filled at send time, and the advisor's review note (if any) is
     // appended below the template. DIGEST_ENABLED toggles the morning
-    // advisor digest (Scheduler job).
+    // advisor digest (Scheduler job). NOTIFY_ON_UPLOAD toggles the
+    // per-upload email to advisors when a student submits a transcript
+    // (fires on both new uploads and resubmissions).
     headers: ['Key', 'Value'],
     seed: [
       ['DIGEST_ENABLED', 'TRUE'],
+      ['NOTIFY_ON_UPLOAD', 'TRUE'],
       ['NOTIFY_PROCESSED',
        'Hello {FirstName},\n\nYour transcript from {College} has been processed. '
        + 'Your prerequisite credit is being handled through the appropriate campus '
@@ -342,6 +358,7 @@ function setUp() {
   _setupTab(usersSS, SETUP_SCHEMA.NOTIFY_RULES);
   _setupTab(usersSS, SETUP_SCHEMA.THESIS_ELIGIBILITY);
   _setupTab(usersSS, SETUP_SCHEMA.THESIS_SETTINGS);
+  _setupTab(usersSS, SETUP_SCHEMA.SETTINGS);
 
   // Audit spreadsheet gets the AuditLog tab
   _setupTab(auditSS, SETUP_SCHEMA.AUDIT);
@@ -532,7 +549,7 @@ function _ensureSuperAdminNote() {
  */
 function checkSetup() {
   const checks = [
-    ['USERS_CONFIG', CONFIG.SHEETS.USERS_CONFIG, [SETUP_SCHEMA.USERS.tab, SETUP_SCHEMA.ROLES.tab, SETUP_SCHEMA.MODULES.tab]],
+    ['USERS_CONFIG', CONFIG.SHEETS.USERS_CONFIG, [SETUP_SCHEMA.USERS.tab, SETUP_SCHEMA.ROLES.tab, SETUP_SCHEMA.MODULES.tab, SETUP_SCHEMA.SETTINGS.tab]],
     ['AUDIT_LOG',    CONFIG.SHEETS.AUDIT_LOG,    [SETUP_SCHEMA.AUDIT.tab]],
     ['SUBMISSIONS',  CONFIG.SHEETS.SUBMISSIONS,  []],
     ['PLATFORM',     CONFIG.SHEETS.PLATFORM,     [SETUP_SCHEMA.TASKS.tab, SETUP_SCHEMA.REPORTS.tab]],
@@ -572,6 +589,7 @@ function _schemaPlacement() {
     { sheetKey: 'USERS_CONFIG', def: SETUP_SCHEMA.NOTIFY_RULES },
     { sheetKey: 'USERS_CONFIG', def: SETUP_SCHEMA.THESIS_ELIGIBILITY },
     { sheetKey: 'USERS_CONFIG', def: SETUP_SCHEMA.THESIS_SETTINGS },
+    { sheetKey: 'USERS_CONFIG', def: SETUP_SCHEMA.SETTINGS },
     { sheetKey: 'AUDIT_LOG',    def: SETUP_SCHEMA.AUDIT },
     { sheetKey: 'PLATFORM',     def: SETUP_SCHEMA.TASKS },
     { sheetKey: 'PLATFORM',     def: SETUP_SCHEMA.REPORTS },

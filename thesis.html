@@ -38,6 +38,11 @@
       <i class="ti ti-school"></i> Graduation queue
     </button>
     <? } ?>
+    <? if (isAdvisor) { ?>
+    <button class="module-tab" role="tab" aria-selected="false" data-tab="settings" onclick="ThesisUI.switchTab('settings')">
+      <i class="ti ti-settings"></i> Settings
+    </button>
+    <? } ?>
   </div>
 
   <!-- ── Tab: Submit ───────────────────────────────────── -->
@@ -178,6 +183,32 @@
     </div>
   </div>
 
+  <!-- ── Tab: Settings (advisor) ───────────────────────── -->
+  <div id="tab-settings" class="tab-panel" role="tabpanel" style="display:none;">
+    <div class="card" style="margin-top:20px;max-width:640px;">
+      <div class="card-title"><span><i class="ti ti-settings"></i> Thesis settings</span></div>
+      <p class="text-muted text-sm" style="margin:-8px 0 16px;">
+        Operational settings for the Senior Thesis module. The undergraduate advisor is whoever holds the
+        <strong>staff_undergrad</strong> role (assign it in Admin → Users) — not set here.
+      </p>
+      <div class="form-group">
+        <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
+          <input type="checkbox" id="th-notify-handoff"> Email the next party at each workflow handoff
+        </label>
+        <div class="form-hint">When off, the module advances theses silently (no notification emails).</div>
+      </div>
+      <div class="form-group">
+        <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
+          <input type="checkbox" id="th-send-cert"> Email an acceptance certificate to the student when a thesis passes to final processing
+        </label>
+        <div class="form-hint">The advisor's explicit "Resend certificate" always works, even when this is off.</div>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-primary" id="save-thesis-settings-btn" onclick="ThesisUI.saveSettings()"><i class="ti ti-device-floppy"></i> Save settings</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Detail / action modal -->
   <div id="th-modal" class="th-modal" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="th-modal-title">
     <div class="th-modal-card card">
@@ -258,6 +289,10 @@ window.ThesisUI = (() => {
   let _readers = [];           // eligible honors readers
   let _regions = [];           // [{country, locality}] chips for the form
   let _filePayload = null;     // { dataBase64, mimeType }
+  // Optional decision-comment PDF for the open sponsor/reader panel. Only one
+  // decision panel is open at a time (in the detail modal), so a single slot
+  // suffices; cleared whenever the modal closes or a panel re-renders.
+  let _commentFile = null;     // { dataBase64, mimeType } or null
   let _resubmitId = null;      // set when revising a returned thesis
   const _roles = <?!= userRoles ?>;
   // Keep in sync with the role lists in the tab-bar template scriptlets.
@@ -407,6 +442,7 @@ window.ThesisUI = (() => {
     if (tab === 'queue')     loadQueue();
     if (tab === 'sponsored') loadSponsored();
     if (tab === 'grad')      loadGradQueue();
+    if (tab === 'settings')  loadSettings();
   }
 
   // ── File handling ────────────────────────────────────
@@ -427,6 +463,42 @@ window.ThesisUI = (() => {
     };
     reader.onerror = () => { errEl.textContent = 'Could not read that file. Try again.'; errEl.classList.add('visible'); };
     reader.readAsDataURL(file);
+  }
+
+  // Decision-comment PDF (sponsor/reader panels). Reads the file to base64
+  // into _commentFile and, if the paired comment textarea is still empty,
+  // pre-fills it with "see attached document" (the server applies the same
+  // default, so this is convenience — the box stays editable). Clearing the
+  // file input clears the attachment and removes a pre-filled default.
+  const _COMMENT_DEFAULT = 'see attached document';
+  function _onCommentFileChange(input, textareaId) {
+    const errEl = document.getElementById(input.id + '-error');
+    if (errEl) errEl.classList.remove('visible');
+    _commentFile = null;
+    const ta = document.getElementById(textareaId);
+    const file = input.files && input.files[0];
+    if (!file) {
+      // File cleared: drop a default we placed, but keep anything the user typed.
+      if (ta && ta.value.trim() === _COMMENT_DEFAULT) ta.value = '';
+      return;
+    }
+    if (file.type !== 'application/pdf') {
+      if (errEl) { errEl.textContent = 'The comment attachment must be a PDF file.'; errEl.classList.add('visible'); }
+      input.value = '';
+      if (ta && ta.value.trim() === _COMMENT_DEFAULT) ta.value = '';
+      return;
+    }
+    const fr = new FileReader();
+    fr.onload = () => {
+      const b64 = String(fr.result).split(',')[1] || '';
+      _commentFile = { dataBase64: b64, mimeType: 'application/pdf' };
+      if (ta && !ta.value.trim()) ta.value = _COMMENT_DEFAULT;
+    };
+    fr.onerror = () => {
+      _commentFile = null;
+      if (errEl) { errEl.textContent = 'Could not read that file. Try again.'; errEl.classList.add('visible'); }
+    };
+    fr.readAsDataURL(file);
   }
 
   // ── Submit / resubmit ────────────────────────────────
@@ -681,8 +753,10 @@ window.ThesisUI = (() => {
       + (rec.documentLink ? _row('Document', '<a href="' + _esc(rec.documentLink) + '" target="_blank" rel="noopener">Open PDF <i class="ti ti-external-link"></i></a>') : '')
       + (rec.sponsorDecision ? _row('Sponsor decision', _esc(rec.sponsorDecision) + (rec.sponsorDecidedAt ? ' · ' + _esc(rec.sponsorDecidedAt) : '')) : '')
       + (rec.sponsorComments ? _row('Sponsor comments', _esc(rec.sponsorComments)) : '')
+      + (rec.sponsorCommentLink ? _row('Sponsor comment PDF', '<a href="' + _esc(rec.sponsorCommentLink) + '" target="_blank" rel="noopener">Open PDF <i class="ti ti-external-link"></i></a>') : '')
       + (rec.honorsDecision ? _row('Honors decision', _esc(rec.honorsDecision) + (rec.readerDecidedAt ? ' · ' + _esc(rec.readerDecidedAt) : '')) : '')
       + (rec.readerComments ? _row('Reader comments', _esc(rec.readerComments)) : '')
+      + (rec.readerCommentLink ? _row('Reader comment PDF', '<a href="' + _esc(rec.readerCommentLink) + '" target="_blank" rel="noopener">Open PDF <i class="ti ti-external-link"></i></a>') : '')
       + (rec.returnNote ? _row('Return note', _esc(rec.returnNote)) : '')
       + (rec.milestoneEntered ? _row('Degree Progress Report', 'Milestone entered') : '')
       + '</dl>';
@@ -759,6 +833,7 @@ window.ThesisUI = (() => {
   }
 
   function _sponsorPanel(rec) {
+    _commentFile = null;   // fresh panel: no attachment yet
     return '<div class="card" style="margin-top:8px;">'
       + '<div class="card-title" style="font-size:14px;"><i class="ti ti-gavel"></i> Sponsor decision</div>'
       + '<div class="form-group"><label class="form-label">Decision</label>'
@@ -770,6 +845,11 @@ window.ThesisUI = (() => {
       + '<select class="form-select" id="sp-reader"></select></div>'
       + '<div class="form-group"><label class="form-label">Comments <span class="required" aria-hidden="true">*</span></label>'
       + '<textarea class="form-textarea" id="sp-comments"></textarea></div>'
+      + '<div class="form-group"><label class="form-label">Comment PDF (optional)</label>'
+      + '<input class="form-input" type="file" id="sp-comment-file" accept="application/pdf" '
+      + 'onchange="ThesisUI._onCommentFileChange(this, \'sp-comments\')">'
+      + '<div class="form-hint">Attach a PDF of your comments. If you leave the box above empty, it is recorded as "see attached document".</div>'
+      + '<div class="form-error" id="sp-comment-file-error"></div></div>'
       + '<div class="form-actions">'
       + '<button class="btn btn-primary" id="sp-save" onclick="ThesisUI.submitSponsor(\'' + _esc(rec.thesisId) + '\')"><i class="ti ti-check"></i> Record decision</button>'
       + '<button class="btn btn-danger" onclick="ThesisUI.returnThesis(\'' + _esc(rec.thesisId) + '\')"><i class="ti ti-arrow-back-up"></i> Return to student</button>'
@@ -777,12 +857,18 @@ window.ThesisUI = (() => {
   }
 
   function _readerPanel(rec) {
+    _commentFile = null;   // fresh panel: no attachment yet
     return '<div class="card" style="margin-top:8px;">'
       + '<div class="card-title" style="font-size:14px;"><i class="ti ti-award"></i> Honors review</div>'
       + '<p class="text-muted" style="font-size:13px;margin-top:0;">Approve the honors designation, or return the thesis to the sponsor '
       + 'if you are not convinced it merits honors — the sponsor will re-decide.</p>'
       + '<div class="form-group"><label class="form-label">Comments <span class="required" aria-hidden="true">*</span></label>'
       + '<textarea class="form-textarea" id="rd-comments"></textarea></div>'
+      + '<div class="form-group"><label class="form-label">Comment PDF (optional)</label>'
+      + '<input class="form-input" type="file" id="rd-comment-file" accept="application/pdf" '
+      + 'onchange="ThesisUI._onCommentFileChange(this, \'rd-comments\')">'
+      + '<div class="form-hint">Attach a PDF of your comments. If you leave the box above empty, it is recorded as "see attached document".</div>'
+      + '<div class="form-error" id="rd-comment-file-error"></div></div>'
       + '<div class="form-actions">'
       + '<button class="btn btn-primary" id="rd-save" onclick="ThesisUI.submitReader(\'' + _esc(rec.thesisId) + '\')"><i class="ti ti-award"></i> Approve honors</button>'
       + '<button class="btn btn-secondary" onclick="ThesisUI.returnToSponsor(\'' + _esc(rec.thesisId) + '\')"><i class="ti ti-arrow-back-up"></i> Return to sponsor</button>'
@@ -834,8 +920,11 @@ window.ThesisUI = (() => {
     const decision = document.getElementById('sp-decision').value;
     if (!decision) { Toast.show('Choose a decision.', 'error'); return; }
     const comments = document.getElementById('sp-comments').value.trim();
-    if (!comments) { Toast.show('Comments are required with your decision.', 'error'); return; }
+    // A comment PDF satisfies the requirement on its own — the server records
+    // "see attached document" when the box is empty but a file is attached.
+    if (!comments && !_commentFile) { Toast.show('Add comments or attach a comment PDF.', 'error'); return; }
     const payload = { thesisId, decision, comments };
+    if (_commentFile) payload.commentFile = _commentFile;
     if (decision === 'Review for Honors') {
       payload.readerEmail = document.getElementById('sp-reader').value;
       if (!payload.readerEmail) { Toast.show('Select a faculty reader.', 'error'); return; }
@@ -848,9 +937,11 @@ window.ThesisUI = (() => {
 
   function submitReader(thesisId) {
     const comments = document.getElementById('rd-comments').value.trim();
-    if (!comments) { Toast.show('Comments are required to approve honors.', 'error'); return; }
+    if (!comments && !_commentFile) { Toast.show('Add comments or attach a comment PDF.', 'error'); return; }
+    const payload = { thesisId, comments };
+    if (_commentFile) payload.commentFile = _commentFile;
     FormHelper.setLoading('rd-save', true, 'Saving…');
-    App.call('thesis', 'readerDecision', { thesisId, comments }, () => {
+    App.call('thesis', 'readerDecision', payload, () => {
       Toast.show('Honors approved.', 'success'); closeModal(); _afterAction();
     }, () => FormHelper.setLoading('rd-save', false));
   }
@@ -910,8 +1001,35 @@ window.ThesisUI = (() => {
     if (document.getElementById('tab-grad').style.display !== 'none') loadGradQueue();
   }
 
+  // ── Settings (advisor + super_admin) ─────────────────
+  // Operational settings for the module, owned here rather than in Admin
+  // (mirrors the Transcript module owning its own settings). The server
+  // gates getSettings/saveSettings to advisor + super_admin; this tab only
+  // renders for those users (the tab button is scriptlet-gated too).
+  function loadSettings() {
+    const cb = document.getElementById('th-notify-handoff');
+    if (!cb) return;
+    App.call('thesis', 'getSettings', {}, s => {
+      if (!document.getElementById('th-notify-handoff')) return;
+      document.getElementById('th-notify-handoff').checked = !!(s && s.notifyOnHandoff);
+      const cert = document.getElementById('th-send-cert');
+      if (cert) cert.checked = !!(s && s.sendCertificate);
+    });
+  }
+
+  function saveSettings() {
+    const notifyOnHandoff = document.getElementById('th-notify-handoff').checked;
+    const sendCertificate = document.getElementById('th-send-cert').checked;
+    FormHelper.setLoading('save-thesis-settings-btn', true, 'Saving…');
+    App.call('thesis', 'saveSettings', { notifyOnHandoff, sendCertificate }, () => {
+      FormHelper.setLoading('save-thesis-settings-btn', false);
+      Toast.show('Thesis settings saved.', 'success');
+    }, () => FormHelper.setLoading('save-thesis-settings-btn', false));
+  }
+
   function closeModal() {
     document.getElementById('th-modal').style.display = 'none';
+    _commentFile = null;   // drop any attachment staged in a decision panel
     // Return focus to the row/control that opened the dialog, if it still exists.
     if (_lastFocus && document.contains(_lastFocus) && typeof _lastFocus.focus === 'function') {
       _lastFocus.focus();
@@ -959,7 +1077,8 @@ window.ThesisUI = (() => {
     addRegion, removeRegion,
     loadMine, loadQueue, loadSponsored, loadGradQueue, markDocViewed, remind, rowKey, deleteThesis, open, closeModal,
     submitSponsor, submitReader, advisorComplete, returnThesis, returnToSponsor,
-    _toggleReader,
+    loadSettings, saveSettings,
+    _toggleReader, _onCommentFileChange,
   };
 
 })();
