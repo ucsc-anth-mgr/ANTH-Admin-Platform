@@ -1218,11 +1218,7 @@ const ThesisModule = (() => {
   /** The web app URL deep-linked to this thesis (opens the module focused
    *  on the record, after the normal portal login). */
   function _deepLink(thesisId) {
-    let base = '';
-    try { base = ScriptApp.getService().getUrl() || ''; } catch (e) { base = ''; }
-    if (!base) return '';
-    const sep = base.indexOf('?') === -1 ? '?' : '&';
-    return base + sep + 'page=thesis&focus=' + encodeURIComponent(thesisId);
+    return Links.deepLink('thesis', thesisId);
   }
 
   /** A formatted HTML summary of the submission for embedding in emails.

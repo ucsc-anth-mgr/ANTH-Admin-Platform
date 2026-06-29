@@ -227,6 +227,9 @@
       <div id="tr-share-report" class="text-sm" style="margin-top:10px;"></div>
     </div>
 
+    <!-- ── Direct link to the student upload form ── -->
+    <div id="tr-deeplink-card"></div>
+
   </div>
   <? } ?>
 
@@ -309,13 +312,16 @@ window.TranscriptUI = (() => {
     }
 
     // Dashboard/email deep-link via window.__focus.sourceId:
+    //   'form'  → the student's upload form (standardized deep-link token)
     //   'mine'  → the student's My transcripts tab (from receipt/decision emails)
     //   other   → an advisor landing on the review queue
     var f = window.__focus;
     var target = f && f.sourceId ? String(f.sourceId) : '';
-    if (target === 'mine' && _isStudent) {
+    if (target === 'form' && _isStudent) {
+      switchTab('upload');
+    } else if (target === 'mine' && _isStudent) {
       switchTab('mine');
-    } else if (target && _isAdvisor) {
+    } else if (target && target !== 'form' && _isAdvisor) {
       switchTab('queue');
     }
   }
@@ -636,6 +642,13 @@ window.TranscriptUI = (() => {
           '<textarea class="form-textarea" id="tr-tmpl-noart" rows="5">' + esc(s.NOTIFY_NO_ARTICULATION || '') + '</textarea>' +
         '</div>' +
         '<button class="btn btn-primary btn-sm" onclick="TranscriptUI.saveSettings()"><i class="ti ti-device-floppy"></i> Save notifications</button>';
+    });
+    // Standardized deep-link card: direct link to the student upload form.
+    var dl = document.getElementById('tr-deeplink-card');
+    if (dl) dl.innerHTML = App.deepLinkCard('transcript', {
+      roles: ['undergraduate_student'],
+      title: 'Student upload link',
+      note: 'Send students straight to the transcript upload form.'
     });
   }
 

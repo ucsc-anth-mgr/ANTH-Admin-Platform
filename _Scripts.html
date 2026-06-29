@@ -5,7 +5,7 @@
 
 const App = (() => {
 
-  let _state = { userEmail: '', userName: '', userRoles: [], activePage: '', modules: [], tasks: [] };
+  let _state = { userEmail: '', userName: '', userRoles: [], activePage: '', modules: [], tasks: [], publicBaseUrl: '' };
 
   function init(state) {
     Object.assign(_state, state);
@@ -215,11 +215,55 @@ const App = (() => {
   // the live page before running deferred (async-callback) UI work.
   function currentPage() { return _state.activePage; }
 
+  // Standardized deep-link card for a module's settings tab. Returns HTML
+  // showing the module's form deep link (alias-based) with a copy button and
+  // the roles that can use it. moduleKey is the page/registry key; opts.focus
+  // defaults to 'form' (the standardized "open this module's form" token).
+  function deepLinkCard(moduleKey, opts) {
+    opts = opts || {};
+    const base = _state.publicBaseUrl || '';
+    if (!base) return '';
+    const sep = base.indexOf('?') === -1 ? '?' : '&';
+    const url = base + sep + 'page=' + encodeURIComponent(moduleKey)
+              + '&focus=' + encodeURIComponent(opts.focus || 'form');
+    const roleLine = (opts.roles && opts.roles.length)
+      ? '<p class="text-sm text-muted" style="margin:8px 0 0;">Works for: ' + _esc(opts.roles.join(', ')) + '</p>'
+      : '';
+    const title = _esc(opts.title || 'Direct link to this form');
+    const note = _esc(opts.note || 'Share this link to send people straight to the form. They will sign in first if needed.');
+    return ''
+      + '<div class="card" style="margin-top:20px;">'
+      + '<div class="card-title"><i class="ti ti-link"></i> ' + title + '</div>'
+      + '<p class="text-sm text-muted" style="margin-bottom:10px;">' + note + '</p>'
+      + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">'
+      + '<input class="form-input" id="dl-' + _esc(moduleKey) + '" readonly value="' + _esc(url) + '" '
+      + 'style="flex:1 1 280px;font-family:monospace;font-size:12.5px;" onclick="this.select();">'
+      + '<button class="btn btn-secondary btn-sm" onclick="App.copyDeepLink(\'' + _esc(moduleKey) + '\')">'
+      + '<i class="ti ti-copy"></i> Copy</button>'
+      + '</div>' + roleLine
+      + '</div>';
+  }
+
+  // Copy a rendered deep-link field's value to the clipboard.
+  function copyDeepLink(moduleKey) {
+    const el = document.getElementById('dl-' + moduleKey);
+    if (!el) return;
+    el.select();
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(el.value).then(function () { Toast.show('Link copied.', 'success'); });
+      } else {
+        document.execCommand('copy');
+        Toast.show('Link copied.', 'success');
+      }
+    } catch (e) { Toast.show('Press Ctrl/Cmd+C to copy.', 'info'); }
+  }
+
   function _esc(s) {
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
-  return { init, goDashboard, loadModule, call, toggleSidebar, openTask, refreshTasks, currentPage };
+  return { init, goDashboard, loadModule, call, toggleSidebar, openTask, refreshTasks, currentPage, deepLinkCard, copyDeepLink };
 
 })();
 

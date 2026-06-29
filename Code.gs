@@ -57,6 +57,9 @@ function doGet(e) {
     tmpl.tasks      = JSON.stringify(tasks);
     tmpl.activePage = page;
     tmpl.initialFocus = JSON.stringify(focus);
+    // Public base URL for client-side deep-link cards (Links.gs is the
+    // server-side equivalent). Blank when CONFIG.PUBLIC_BASE_URL is unset.
+    tmpl.publicBaseUrl = CONFIG.PUBLIC_BASE_URL || '';
 
     return tmpl.evaluate()
       .setTitle(CONFIG.APP_TITLE)

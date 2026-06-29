@@ -33,7 +33,7 @@
       <i class="ti ti-list-search"></i> All Petitions
     </button>
     <button class="module-tab" data-tab="schedule" onclick="IndividualStudiesUI.switchTab('schedule')">
-      <i class="ti ti-table-import"></i> Class Schedule
+      <i class="ti ti-settings"></i> Settings
     </button>
     <? } ?>
   </div>
@@ -420,6 +420,8 @@
       </div>
       <div id="is-import-history"><div class="empty-state">No imports yet.</div></div>
     </div>
+
+    <div id="is-deeplink-card"></div>
   </div>
 
   <!-- Detail / action modal -->
@@ -542,6 +544,19 @@ window.IndividualStudiesUI = (() => {
       switchTab('advisor');
     }
 
+    // Deep-link to the petition form: focus 'form' opens the New Petition tab
+    // (standardized "open this module's form" token). Only a student submits;
+    // for anyone else the form tab does not exist, so the request is ignored
+    // and the normal role default (set above) stands. Checked before the
+    // petition-id branch below so 'form' is never treated as a record id.
+    const ff = window.__focus;
+    if (ff && ff.sourceId === 'form') {
+      if (_isStudent) {
+        _ensureFormData(function () { switchTab('new'); });
+      }
+      return;
+    }
+
     const f = window.__focus;
     if (f && f.sourceId) {
       _busy('Loading petition…');
@@ -570,7 +585,19 @@ window.IndividualStudiesUI = (() => {
     if (tab === 'advisor')   loadAdvisor();
     if (tab === 'all')       loadAll();
     if (tab === 'templates') loadTemplates();
-    if (tab === 'schedule')  loadImportHistory();
+    if (tab === 'schedule')  { loadImportHistory(); _renderDeepLinkCard(); }
+  }
+
+  // Standardized deep-link card on the Class Schedule tab (the advisor's
+  // admin home for this module — it has no dedicated settings tab). Direct
+  // link to the student petition form.
+  function _renderDeepLinkCard() {
+    const dl = document.getElementById('is-deeplink-card');
+    if (dl) dl.innerHTML = App.deepLinkCard('individual_studies', {
+      roles: ['undergraduate_student'],
+      title: 'Student petition link',
+      note: 'Send students straight to the new Individual Studies petition form.'
+    });
   }
 
   // ── Form bootstrap ────────────────────────────────

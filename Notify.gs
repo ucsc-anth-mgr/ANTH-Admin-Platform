@@ -51,7 +51,9 @@ const Notify = (() => {
    *                            and deduped like to/cc
    *   @param {string}          [p.senderName] - inbox DISPLAY name only; the
    *                            sending ADDRESS is always the deploying account
-   *                            (GmailApp cannot send from another account)
+   *                            (GmailApp cannot send from another account).
+   *                            When omitted, falls back to CONFIG.NOTIFY_FROM_NAME
+   *                            so portal mail shows a friendly name by default.
    * @returns {{ sent: boolean, recipients: string[], reason?: string }}
    */
   function send(p) {
@@ -80,7 +82,10 @@ const Notify = (() => {
         cc: cc.length ? cc.join(',') : '',
         attachments: _collectBlobs(p.attachments),
         replyTo: _dedupeEmails(_collect(p.replyTo)).join(','),
-        senderName: String(p.senderName || '').trim(),
+        // Inbox display name. A caller may override per-message; otherwise
+        // the department-wide CONFIG.NOTIFY_FROM_NAME masks the sending
+        // account's label (e.g. "anth_mgr"). Address is unchanged.
+        senderName: String(p.senderName || (typeof CONFIG !== 'undefined' && CONFIG.NOTIFY_FROM_NAME) || '').trim(),
       });
 
       return { sent: true, recipients: to };

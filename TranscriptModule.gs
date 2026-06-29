@@ -1258,11 +1258,7 @@ const TranscriptModule = (() => {
 
   // Deep link to the student's "My transcripts" tab (after portal login).
   function _deepLinkMine() {
-    let base = '';
-    try { base = ScriptApp.getService().getUrl() || ''; } catch (e) { base = ''; }
-    if (!base) return '';
-    const sep = base.indexOf('?') === -1 ? '?' : '&';
-    return base + sep + 'page=transcript&focus=mine';
+    return Links.deepLink('transcript', 'mine');
   }
 
   // HTML button to the My transcripts tab, or '' if the URL can't be built.
@@ -1281,11 +1277,7 @@ const TranscriptModule = (() => {
   // any advisor focus target to the queue tab, so 'queue' just needs to be
   // non-empty to route correctly.
   function _deepLinkQueue() {
-    let base = '';
-    try { base = ScriptApp.getService().getUrl() || ''; } catch (e) { base = ''; }
-    if (!base) return '';
-    const sep = base.indexOf('?') === -1 ? '?' : '&';
-    return base + sep + 'page=transcript&focus=queue';
+    return Links.deepLink('transcript', 'queue');
   }
 
   // HTML button to the review queue, or '' if the URL can't be built.

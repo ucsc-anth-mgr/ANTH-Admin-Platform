@@ -14,6 +14,13 @@ const CONFIG = {
   APP_TITLE: 'UCSC Anthropology Portal',
   APP_VERSION: '2.0.0',
 
+  // Public alias the portal is reached through (DNS/redirect → this app's
+  // /exec URL). Used by Links.gs to build deep links that show the friendly
+  // host instead of the raw script.google.com URL. Blank it ('') to revert
+  // every deep link to the raw web-app URL. The alias must forward the full
+  // query string for focus deep links to land correctly.
+  PUBLIC_BASE_URL: 'https://anthroadmin.ucsc.edu/portal',
+
   // Brand (official UCSC colors)
   BRAND: {
     NAVY:  '#003C6C',   // UCSC Primary Blue
@@ -120,6 +127,13 @@ const CONFIG = {
   // reply-to configured. Kept as a constant (not UI-managed) because it
   // is the last-resort floor, deliberately the department manager address.
   DEFAULT_REPLY_TO: 'anth_mgr@ucsc.edu',
+
+  // Friendly inbox DISPLAY name on portal notification mail, applied at the
+  // single send chokepoint (Notify.send) so every module's email shows it.
+  // This masks the sending account's label (e.g. "anth_mgr") with a readable
+  // name; it does NOT change the sending ADDRESS, which GmailApp locks to the
+  // deploying account. A module may still override per-message via senderName.
+  NOTIFY_FROM_NAME: 'UCSC Anthropology Portal',
 
   // ── Thesis module settings ─────────────────────────────────
   THESIS: {

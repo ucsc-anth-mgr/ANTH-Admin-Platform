@@ -207,6 +207,7 @@
         <button class="btn btn-primary" id="save-thesis-settings-btn" onclick="ThesisUI.saveSettings()"><i class="ti ti-device-floppy"></i> Save settings</button>
       </div>
     </div>
+    <div id="th-deeplink-card"></div>
   </div>
 
   <!-- Detail / action modal -->
@@ -316,6 +317,18 @@ window.ThesisUI = (() => {
     App.call('thesis', 'listCountries', {}, groups => _fillCountrySelect(groups || []));
     document.getElementById('th-file').addEventListener('change', _onFileChange);
 
+    // Deep-link to the submission form: focus 'form' opens the Submit tab
+    // directly (standardized "open this module's form" token). Only a
+    // student can submit; for anyone else the form tab does not exist, so
+    // the request falls through to the normal default below.
+    const ff = window.__focus;
+    if (ff && ff.sourceId === 'form' && _isStudent) {
+      const btn = document.getElementById('tab-btn-submit');
+      if (btn) btn.style.display = '';
+      switchTab('submit');
+      return;
+    }
+
     // Default tab is audience-dependent. Students: load their theses
     // first — if any exist (active, returned, or completed), the Submit
     // tab is hidden to prevent a second submission, and they land on My
@@ -354,7 +367,7 @@ window.ThesisUI = (() => {
     // record is awaiting final processing and the viewer works the
     // graduation queue, land on that tab — it is where the action lives.
     const f = window.__focus;
-    if (f && f.sourceId) {
+    if (f && f.sourceId && f.sourceId !== 'form') {
       _busy('Loading thesis…');
       App.call('thesis', 'get', { thesisId: f.sourceId }, rec => {
         _idle();
@@ -1014,6 +1027,13 @@ window.ThesisUI = (() => {
       document.getElementById('th-notify-handoff').checked = !!(s && s.notifyOnHandoff);
       const cert = document.getElementById('th-send-cert');
       if (cert) cert.checked = !!(s && s.sendCertificate);
+    });
+    // Standardized deep-link card: direct link to the student submission form.
+    const dl = document.getElementById('th-deeplink-card');
+    if (dl) dl.innerHTML = App.deepLinkCard('thesis', {
+      roles: ['undergraduate_student'],
+      title: 'Student submission link',
+      note: 'Send students straight to the senior thesis submission form.'
     });
   }
 
