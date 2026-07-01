@@ -330,6 +330,54 @@ const SETUP_SCHEMA = {
               'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
     seed: [],
   },
+
+  PERSON_ATTRIBUTES: {
+    tab: 'PersonAttributes',
+    // Academic Personnel module — tall, namespaced person-attribute table.
+    // The hybrid profile model: core identity (name/IDs/roles) stays wide in
+    // Auth's Users tab; module-specific EXTENSION attributes live here, one
+    // row per (Email, Namespace, Key). Phase 1 stores the 'personnel'
+    // namespace keys rank / step / series / tier, supplied by the rank/step
+    // import. A future platform-wide profile module can absorb these rows.
+    //
+    // Identity of a row is (Email, Namespace, Key) — single-valued per key
+    // (the current value). AttrID is a stable unique id so a value can be
+    // superseded in place without touching a sibling attribute of the same
+    // person. EffectiveDate stamps when the value was last set. Email is the
+    // join key (lowercased), resolved to a profile via PersonMatch at import
+    // time. Meta columns filled by DataService.
+    headers: ['AttrID', 'Email', 'Namespace', 'Key', 'Value', 'EffectiveDate',
+              'Notes', 'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
+  CASES: {
+    tab: 'Cases',
+    // Academic Personnel — one row per review case: a candidate up for a
+    // given review in a given academic year. Identity is
+    // (CandidateEmail, AcademicYear, ReviewType) — a person can have at most
+    // one case of each review type per year. CandidateEmail is a routing key;
+    // the name is read from Auth at display time, not copied here.
+    //
+    //   ReviewType     — canonical type (merit / salary_increase_only /
+    //                    promotion / midcareer). Suggested from the Call at
+    //                    import, overridable (candidate election).
+    //   SubjectRank    — the rank the case concerns (from the Call).
+    //   Step           — the step the case concerns.
+    //   CallActionRaw  — the verbatim Call Action string, preserved as the
+    //                    original record even when ReviewType is overridden.
+    //   OAFlag         — on/above-scale flag from the Call (o/a).
+    //   YrsRank/YrsStep/Qtrs — time-in-grade context from the Call.
+    //   IsReappointment— derived: true when SubjectRank is Assistant-level.
+    //   IsMandatory    — timing flag parsed from the Call string.
+    //   Status         — 'open' or 'deferred' (candidate postponed).
+    //   Cycle key note — AcademicYear like "2026-27".
+    headers: ['CaseID', 'CandidateEmail', 'AcademicYear', 'ReviewType',
+              'SubjectRank', 'Step', 'CallActionRaw', 'OAFlag',
+              'YrsRank', 'YrsStep', 'Qtrs',
+              'IsReappointment', 'IsMandatory', 'Status', 'Notes',
+              'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
 };
 
 
@@ -348,6 +396,7 @@ function setUp() {
   const transcriptSS = _resolveSpreadsheet(CONFIG.SHEETS.TRANSCRIPT, 'Portal Transcript / Articulations',    'TRANSCRIPT');
   const classScheduleSS = _resolveSpreadsheet(CONFIG.SHEETS.CLASS_SCHEDULE, 'Portal Class Schedule',         'CLASS_SCHEDULE');
   const indStudiesSS = _resolveSpreadsheet(CONFIG.SHEETS.INDIVIDUAL_STUDIES, 'Portal Individual Studies',     'INDIVIDUAL_STUDIES');
+  const personnelSS = _resolveSpreadsheet(CONFIG.SHEETS.PERSONNEL,  'Portal Academic Personnel',             'PERSONNEL');
 
   // Config spreadsheet gets Users, Roles, Modules, Requests tabs
   _setupTab(usersSS, SETUP_SCHEMA.USERS);
@@ -388,6 +437,11 @@ function setUp() {
   _setupTab(indStudiesSS, SETUP_SCHEMA.INDIVIDUAL_STUDIES);
   _setupTab(indStudiesSS, SETUP_SCHEMA.INDIVIDUAL_STUDIES_TEMPLATES);
   _tidyDefaultSheet(indStudiesSS);
+
+  // Academic Personnel module spreadsheet gets the PersonAttributes + Cases tabs
+  _setupTab(personnelSS, SETUP_SCHEMA.PERSON_ATTRIBUTES);
+  _setupTab(personnelSS, SETUP_SCHEMA.CASES);
+  _tidyDefaultSheet(personnelSS);
 
   // Submissions spreadsheet: tabs are created per form type on demand,
   // so we just ensure the spreadsheet exists and remove the default
@@ -557,6 +611,7 @@ function checkSetup() {
     ['TRANSCRIPT',   CONFIG.SHEETS.TRANSCRIPT,   [SETUP_SCHEMA.ARTICULATIONS.tab, SETUP_SCHEMA.ARTICULATION_REVIEW.tab, SETUP_SCHEMA.TRANSCRIPTS.tab, SETUP_SCHEMA.TRANSCRIPT_SETTINGS.tab]],
     ['CLASS_SCHEDULE', CONFIG.SHEETS.CLASS_SCHEDULE, [SETUP_SCHEMA.CLASS_SCHEDULE.tab, SETUP_SCHEMA.CLASS_SCHEDULE_IMPORTS.tab]],
     ['INDIVIDUAL_STUDIES', CONFIG.SHEETS.INDIVIDUAL_STUDIES, [SETUP_SCHEMA.INDIVIDUAL_STUDIES.tab, SETUP_SCHEMA.INDIVIDUAL_STUDIES_TEMPLATES.tab]],
+    ['PERSONNEL',    CONFIG.SHEETS.PERSONNEL,    [SETUP_SCHEMA.PERSON_ATTRIBUTES.tab, SETUP_SCHEMA.CASES.tab]],
   ];
   Logger.log('=== Config check ===');
   checks.forEach(([key, id, tabs]) => {
@@ -602,6 +657,8 @@ function _schemaPlacement() {
     { sheetKey: 'CLASS_SCHEDULE', def: SETUP_SCHEMA.CLASS_SCHEDULE_IMPORTS },
     { sheetKey: 'INDIVIDUAL_STUDIES', def: SETUP_SCHEMA.INDIVIDUAL_STUDIES },
     { sheetKey: 'INDIVIDUAL_STUDIES', def: SETUP_SCHEMA.INDIVIDUAL_STUDIES_TEMPLATES },
+    { sheetKey: 'PERSONNEL',    def: SETUP_SCHEMA.PERSON_ATTRIBUTES },
+    { sheetKey: 'PERSONNEL',    def: SETUP_SCHEMA.CASES },
   ];
 }
 

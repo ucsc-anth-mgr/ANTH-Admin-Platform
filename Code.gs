@@ -172,6 +172,7 @@ function getModuleHandler(name) {
     ThesisModule:      ThesisModule,
     TranscriptModule:  TranscriptModule,
     IndividualStudiesModule: IndividualStudiesModule,
+    PersonnelModule:   PersonnelModule,
     // HRModule:       HRModule,
   };
   if (!handlers[name]) throw new Error('Handler not found: ' + name);
@@ -184,7 +185,7 @@ function getModuleHandler(name) {
  * Used by the Module Manager to validate sheet entries.
  */
 function getRegisteredHandlers() {
-  return ['AdminModule', 'SubmissionsModule', 'UserManagerModule', 'ThesisModule', 'TranscriptModule', 'IndividualStudiesModule'];
+  return ['AdminModule', 'SubmissionsModule', 'UserManagerModule', 'ThesisModule', 'TranscriptModule', 'IndividualStudiesModule', 'PersonnelModule'];
 }
 
 

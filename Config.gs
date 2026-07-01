@@ -48,6 +48,10 @@ const CONFIG = {
     // (per-module storage tier). Tab: Petitions. Blank until setUp()
     // creates it and logs the id to paste back here.
     INDIVIDUAL_STUDIES: '1YXEdMiRUhFILSKDSg-Y_IwETsNy7k3B3o03lgAz84Fo',
+    // Academic Personnel module — its OWN spreadsheet (per-module storage
+    // tier). Tabs: PersonAttributes (person-attribute extension table) and
+    // Cases (review cases from the Call).
+    PERSONNEL:     '1MEE2WYjHddPfEVo7SEOU7tbNp1CFbUM90sFIFkbdPh0',
   },
 
   // Optional: Drive folder where setUp() creates new spreadsheets.
@@ -98,6 +102,9 @@ const CONFIG = {
     INDIVIDUAL_STUDIES:     'Petitions',
     // Sponsor-owned petition templates (same spreadsheet as Petitions)
     INDIVIDUAL_STUDIES_TEMPLATES: 'Templates',
+    // Academic Personnel module tabs (live in SHEETS.PERSONNEL)
+    PERSON_ATTRIBUTES: 'PersonAttributes',
+    CASES:             'Cases',
   },
 
   // ── Storage convention (three tiers) ───────────────────────
@@ -211,6 +218,99 @@ const CONFIG = {
   // but works without it.
   INDIVIDUAL_STUDIES: {
     DRIVE_FOLDER_ID: '1goPXXH3b0v4k4Pn_qyonPJHZW67jOfLn',
+  },
+
+  // ── Academic Personnel module ──────────────────────────────
+  // raw rank title (as it appears in the rank/step report) -> { series, tier }.
+  // series drives component templates (later phase); tier drives Bylaw 55
+  // voting eligibility (later phase). Adding a title is ONE Config edit, no
+  // code change. The keys MUST match the exact strings in the report's rank
+  // column, or those rows skip with "Unrecognized rank title".
+  //
+  // SCOPE: this module reviews the ladder (Professor), Teaching Professor,
+  // and Lecturer series ONLY. Other working titles that appear in a campus
+  // roster export — Professor Emeritus, Recall Faculty, Project Scientist,
+  // Postdoc, GSR, TA, Visiting Scholar, etc. — are intentionally NOT mapped,
+  // so the importer skips them with "Unrecognized rank title". That is the
+  // correct behavior: they are not personnel-review subjects here.
+  //
+  // Lecturers are candidates-only in this module: they are reviewed but never
+  // vote or serve, so every Lecturer-family title carries series 'lecturer'
+  // and an EMPTY tier (they are never in any voting roster). The Lecturer
+  // career stage (Pre-Six / Continuing / Senior Continuing) is NOT encoded in
+  // the series — it lives in the action a case carries and in the Unit 18
+  // point-scale salary math. All Lecturer working titles collapse to one
+  // 'lecturer' series here.
+  PERSONNEL: {
+    // CruzID -> campus email expansion. The rank/step report identifies
+    // people by CruzID (the username, e.g. "jsmith"); the importer expands
+    // it to the campus email "<cruzid>@EMAIL_DOMAIN" and matches on email
+    // (PersonMatch's primary key). A value that already contains "@" is
+    // treated as a full email and used as-is. One Config edit changes the
+    // domain; no code change.
+    EMAIL_DOMAIN: 'ucsc.edu',
+
+    // ── Case review types ──────────────────────────────────────
+    // The canonical review types a case can carry. The type drives the
+    // calculator engine and authority later; it is SUGGESTED from the Call
+    // Action string at import (see CALL_ACTION_MAP) but is a candidate/dept
+    // ELECTION, so the super admin can override it per case. Reappointment
+    // is NOT a type here — it is a derived flag (true when subjectRank is an
+    // Assistant-level rank). Mandatory is a timing flag, not a type.
+    //   engine  — which salary calculator this routes to (later phase)
+    //   votable — whether the review carries a Bylaw 55 ballot
+    //   major   — whether it is a "major" (heavier) review
+    REVIEW_TYPES: {
+      merit:                { label: 'Merit increase',        engine: 'ssp',       votable: true,  major: false },
+      salary_increase_only: { label: 'Salary increase only',  engine: 'threshold', votable: true,  major: false },
+      promotion:            { label: 'Promotion',             engine: 'ssp',       votable: true,  major: true  },
+      midcareer:            { label: 'Mid-career appraisal',  engine: 'ssp',       votable: true,  major: true  },
+    },
+
+    // Raw Call Action string -> suggested review type key. Matched
+    // case-insensitively (exact first, then a normalized contains). These
+    // are only DEFAULTS — the super admin confirms/overrides per case at
+    // import, reflecting the candidate's election. Add strings here as the
+    // department's Call vocabulary grows (one Config edit, no code change).
+    CALL_ACTION_MAP: {
+      'merit increase':                        'merit',
+      'mandatory review/merit increase':       'merit',
+      'promotion':                             'promotion',
+      'reappt with salary increase':           'salary_increase_only',
+      'reappointment/salaryincr/midcareer':    'midcareer',
+    },
+
+    // Ranks considered "Assistant-level" — a case at one of these ranks
+    // carries isReappointment=true (reappointment rides along with the
+    // Assistant review; it is never a standalone type). Matched against the
+    // case's subjectRank. Keep in sync with RANK_MAP's Assistant titles.
+    ASSISTANT_RANKS: ['Assistant Professor', 'Assistant Teaching Professor'],
+
+    // Case status values.
+    //   open     — a live review in progress.
+    //   deferred — the candidate elected to postpone this cycle (they were
+    //              eligible; chose not to proceed). Retains its review type.
+    //   closed   — the case will not proceed for another reason: not eligible,
+    //              listed on the Call in error, withdrawn, or otherwise
+    //              resolved without a review. Terminal, like deferred, but a
+    //              distinct outcome (not a postponement).
+    // Workflow states (forwarded, complete, …) are added in a later phase.
+    STATUSES: ['open', 'deferred', 'closed'],
+
+    RANK_MAP: {
+      // Ladder (Professor) series
+      'Assistant Professor':           { series: 'ladder',   tier: 'assistant' },
+      'Associate Professor':           { series: 'ladder',   tier: 'associate' },
+      'Professor':                     { series: 'ladder',   tier: 'full' },
+      // Teaching Professor series (mirrors ladder tiers for voting)
+      'Assistant Teaching Professor':  { series: 'teaching', tier: 'assistant' },
+      'Associate Teaching Professor':  { series: 'teaching', tier: 'associate' },
+      'Teaching Professor':            { series: 'teaching', tier: 'full' },
+      // Lecturer (Unit 18) series — candidates only; all stages -> 'lecturer'
+      'Lecturer':                      { series: 'lecturer', tier: '' },
+      'Lecturer Continuing':           { series: 'lecturer', tier: '' },
+      'Lecturer Senior Continuing':    { series: 'lecturer', tier: '' },
+    },
   },
 
 };

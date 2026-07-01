@@ -1,0 +1,865 @@
+<!-- personnel.html — Academic Personnel module UI -->
+<!-- Two tabs: Roster (default, read-only faculty list + detail) and Import. -->
+<div id="personnel-module">
+
+  <!-- Tab bar -->
+  <div class="tab-bar" style="display:flex;gap:8px;margin-bottom:16px;border-bottom:1px solid #e3e6ea;">
+    <button class="btn btn-tab" id="tab-roster" onclick="PersonnelUI.showTab('roster')"
+      style="border:none;background:none;padding:8px 14px;border-bottom:2px solid transparent;cursor:pointer;font-weight:600;">
+      <i class="ti ti-users"></i> Roster
+    </button>
+    <button class="btn btn-tab" id="tab-import" onclick="PersonnelUI.showTab('import')"
+      style="border:none;background:none;padding:8px 14px;border-bottom:2px solid transparent;cursor:pointer;font-weight:600;">
+      <i class="ti ti-file-upload"></i> Import rank &amp; step
+    </button>
+    <button class="btn btn-tab" id="tab-cases" onclick="PersonnelUI.showTab('cases')"
+      style="border:none;background:none;padding:8px 14px;border-bottom:2px solid transparent;cursor:pointer;font-weight:600;">
+      <i class="ti ti-clipboard-list"></i> Cases
+    </button>
+  </div>
+
+  <!-- ============================ ROSTER TAB ============================ -->
+  <div id="view-roster">
+
+    <!-- Roster list -->
+    <div id="roster-list">
+      <div class="card">
+        <div class="card-title"><i class="ti ti-users"></i> Faculty roster</div>
+        <p class="text-muted text-sm" style="margin:-8px 0 12px;">
+          Everyone with loaded rank/step data. Search by name or rank, filter by series,
+          click a column to sort, or click a row for detail.
+        </p>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label" for="ros-search">Search</label>
+            <input type="text" id="ros-search" class="form-input" placeholder="Name or rank…"
+                   oninput="PersonnelUI.applyFilter()">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="ros-series">Series</label>
+            <select class="form-select" id="ros-series" onchange="PersonnelUI.applyFilter()">
+              <option value="">All series</option>
+              <option value="ladder">Ladder (Professor)</option>
+              <option value="teaching">Teaching Professor</option>
+              <option value="lecturer">Lecturer</option>
+            </select>
+          </div>
+        </div>
+
+        <div id="roster-table-wrap">
+          <div class="module-loading"><div class="spinner"></div><span>Loading roster…</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Person detail (dedicated view; hidden until a row is clicked) -->
+    <div id="roster-detail" style="display:none;">
+      <div class="card">
+        <button class="btn btn-secondary" onclick="PersonnelUI.backToRoster()" style="margin-bottom:14px;">
+          <i class="ti ti-arrow-left"></i> Back to roster
+        </button>
+        <div id="detail-body"></div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ============================ IMPORT TAB ============================ -->
+  <div id="view-import" style="display:none;">
+    <div class="card">
+      <div class="card-title"><i class="ti ti-file-upload"></i> Import faculty rank &amp; step</div>
+      <p class="text-muted text-sm" style="margin:-8px 0 12px;">
+        Upload the salary/rank report (CruzID, name, working title, step). Confirm the
+        column mapping, preview, then import. Rank, step, and series are attached to each
+        faculty member's existing profile — people must already exist (add them via
+        User Management first). Emeriti and non-reviewed titles are skipped automatically.
+      </p>
+
+      <div class="form-group">
+        <input type="file" id="pers-file" accept=".csv,text/csv" class="form-input" style="padding:7px;">
+        <div class="form-hint">CSV with a CruzID (or campus email), working title, and step per person.</div>
+      </div>
+      <div class="form-actions" style="margin-top:8px;">
+        <button class="btn btn-secondary" id="pers-detect-btn" onclick="PersonnelUI.detect()"><i class="ti ti-list-search"></i> Read file &amp; detect columns</button>
+      </div>
+
+      <div id="pers-mapping" style="display:none;margin-top:18px;">
+        <div class="card-title" style="font-size:15px;"><i class="ti ti-columns"></i> Confirm column mapping</div>
+        <p class="text-muted text-sm" style="margin:-6px 0 12px;">
+          <span id="pers-rowcount"></span> data rows found. Correct any column below before previewing.
+        </p>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">CruzID / email <span class="required">*</span></label>
+            <select class="form-select" id="map-cruzid"></select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Working title (rank) <span class="required">*</span></label>
+            <select class="form-select" id="map-rank"></select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Step <span class="required">*</span></label>
+            <select class="form-select" id="map-step"></select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">First name</label>
+            <select class="form-select" id="map-first"></select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Last name</label>
+            <select class="form-select" id="map-last"></select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Salary</label>
+            <select class="form-select" id="map-salary"></select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Years at rank</label>
+            <select class="form-select" id="map-yrsRank"></select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Years at step</label>
+            <select class="form-select" id="map-yrsStep"></select>
+          </div>
+        </div>
+        <div class="form-actions">
+          <button class="btn btn-secondary" id="pers-preview-btn" onclick="PersonnelUI.preview()"><i class="ti ti-eye"></i> Preview</button>
+        </div>
+      </div>
+
+      <div id="pers-preview" style="margin-top:18px;"></div>
+    </div>
+  </div>
+
+  <!-- ============================ CASES TAB ============================ -->
+  <div id="view-cases" style="display:none;">
+
+    <!-- Case list -->
+    <div id="cases-list">
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <div class="card-title" style="margin:0;"><i class="ti ti-clipboard-list"></i> Review cases</div>
+          <button class="btn btn-secondary" onclick="PersonnelUI.showCallImport()"><i class="ti ti-file-upload"></i> Import from Call</button>
+        </div>
+        <div class="form-row" style="margin-top:12px;">
+          <div class="form-group">
+            <label class="form-label" for="cases-year">Academic year</label>
+            <select class="form-select" id="cases-year" onchange="PersonnelUI.applyCaseFilter()">
+              <option value="">All years</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="cases-search">Search</label>
+            <input type="text" id="cases-search" class="form-input" placeholder="Name or type…" oninput="PersonnelUI.applyCaseFilter()">
+          </div>
+        </div>
+        <div id="cases-table-wrap">
+          <div class="module-loading"><div class="spinner"></div><span>Loading cases…</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Call import flow -->
+    <div id="cases-import" style="display:none;">
+      <div class="card">
+        <button class="btn btn-secondary" onclick="PersonnelUI.backToCases()" style="margin-bottom:14px;">
+          <i class="ti ti-arrow-left"></i> Back to cases
+        </button>
+        <div class="card-title"><i class="ti ti-file-upload"></i> Import cases from the Call</div>
+        <p class="text-muted text-sm" style="margin:-8px 0 12px;">
+          Paste the departmental Call (or upload it as CSV) — columns Rank, Last Name,
+          First Name, Step, O/A, Yrs Rank, Yrs Step, Qtrs, Call Action. Each row becomes a
+          case. The Call has names only, so confirm each candidate match; the review type
+          is suggested from the Call and can be changed per the candidate's election.
+        </p>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Academic year <span class="required">*</span></label>
+            <input type="text" class="form-input" id="call-year" placeholder="e.g. 2026-27">
+          </div>
+          <div class="form-group"><!-- spacer --></div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Paste the Call</label>
+          <textarea class="form-input" id="call-paste" rows="8" style="font-family:monospace;font-size:12px;white-space:pre;"
+            placeholder="Paste rows here, including the header row. Copy straight from a spreadsheet (tab-separated) or paste CSV text — both work.
+
+Rank	Last Name	First Name	Step	O/A	Yrs Rank	Yrs Step	Qtrs	Call Action
+Assistant Professor	Hernandez Garavito	Carla	5	o	6	2	17	Reappt with salary increase"></textarea>
+          <div class="form-hint">Include the header row. Or upload a CSV file below instead.</div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">…or upload a CSV file</label>
+          <input type="file" id="call-file" accept=".csv,text/csv" class="form-input" style="padding:7px;">
+        </div>
+
+        <div class="form-actions" style="margin-top:4px;">
+          <button class="btn btn-secondary" id="call-detect-btn" onclick="PersonnelUI.detectCall()"><i class="ti ti-list-search"></i> Read Call &amp; preview</button>
+        </div>
+
+        <div id="call-preview" style="margin-top:18px;"></div>
+      </div>
+    </div>
+
+  </div>
+
+</div>
+
+<script>
+window.PersonnelUI = (() => {
+
+  let _csv = null;
+  let _roster = [];           // full roster from the server
+  let _sortKey = 'nameLastFirst';
+  let _sortDir = 1;           // 1 = asc, -1 = desc
+
+  function init() {
+    showTab('roster');
+    loadRoster();
+  }
+
+  // ── Tabs ───────────────────────────────────────────────────
+  function showTab(which) {
+    const views = { roster: 'view-roster', import: 'view-import', cases: 'view-cases' };
+    const tabs  = { roster: 'tab-roster', import: 'tab-import', cases: 'tab-cases' };
+    const on  = '2px solid var(--ucsc-navy, #003C6C)';
+    const off = '2px solid transparent';
+    Object.keys(views).forEach(k => {
+      document.getElementById(views[k]).style.display = (k === which) ? 'block' : 'none';
+      document.getElementById(tabs[k]).style.borderBottom = (k === which) ? on : off;
+    });
+    if (which === 'roster') backToRoster();
+    if (which === 'cases') { backToCases(); loadCases(); }
+  }
+
+  // ── Roster load / render ───────────────────────────────────
+  function loadRoster() {
+    const wrap = document.getElementById('roster-table-wrap');
+    wrap.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading roster…</span></div>';
+    App.call('personnel', 'listRoster', {}, res => {
+      _roster = res.roster || [];
+      applyFilter();
+    }, () => { wrap.innerHTML = '<p class="text-muted">Could not load the roster.</p>'; });
+  }
+
+  function applyFilter() {
+    const q = (document.getElementById('ros-search').value || '').trim().toLowerCase();
+    const series = document.getElementById('ros-series').value;
+    let rows = _roster.slice();
+
+    if (series) rows = rows.filter(r => r.series === series);
+    if (q) rows = rows.filter(r =>
+      (r.name || '').toLowerCase().indexOf(q) !== -1 ||
+      (r.rank || '').toLowerCase().indexOf(q) !== -1);
+
+    rows.sort((a, b) => {
+      if (_sortKey === 'step') return (Number(a.step) - Number(b.step)) * _sortDir;
+      const x = String(a[_sortKey] || '').toLowerCase();
+      const y = String(b[_sortKey] || '').toLowerCase();
+      return x.localeCompare(y) * _sortDir;
+    });
+
+    _renderTable(rows);
+  }
+
+  function sortBy(key) {
+    if (_sortKey === key) { _sortDir = -_sortDir; }
+    else { _sortKey = key; _sortDir = 1; }
+    applyFilter();
+  }
+
+  function _arrow(key) {
+    if (_sortKey !== key) return '';
+    return _sortDir === 1 ? ' \u25B2' : ' \u25BC';
+  }
+
+  function _renderTable(rows) {
+    const wrap = document.getElementById('roster-table-wrap');
+    if (!rows.length) {
+      wrap.innerHTML = '<p class="text-muted text-sm" style="margin-top:8px;">No matching faculty.</p>';
+      return;
+    }
+    const seriesBadge = s =>
+      s === 'ladder'   ? '<span class="badge badge-navy">ladder</span>'
+    : s === 'teaching' ? '<span class="badge badge-navy">teaching</span>'
+    : s === 'lecturer' ? '<span class="badge badge-warning">lecturer</span>'
+    : '<span class="badge">\u2014</span>';
+
+    const body = rows.map(r =>
+      `<tr style="cursor:pointer;" onclick="PersonnelUI.openDetail('${String(r.email).replace(/'/g,"\\'")}')">
+        <td>${r.nameLastFirst || r.name || r.email}${r.noProfile ? ' <span class="badge badge-danger" title="No profile">no profile</span>' : ''}</td>
+        <td>${r.rank || '\u2014'}</td>
+        <td>${r.step || '\u2014'}</td>
+        <td>${seriesBadge(r.series)}</td>
+        <td>${r.tier || '\u2014'}</td>
+      </tr>`).join('');
+
+    wrap.innerHTML = `
+      <p class="text-sm text-muted" style="margin:4px 0 8px;">${rows.length} of ${_roster.length} shown</p>
+      <div class="table-wrap"><table class="data-table">
+        <thead><tr>
+          <th style="cursor:pointer;" onclick="PersonnelUI.sortBy('nameLastFirst')">Name${_arrow('nameLastFirst')}</th>
+          <th style="cursor:pointer;" onclick="PersonnelUI.sortBy('rank')">Rank${_arrow('rank')}</th>
+          <th style="cursor:pointer;" onclick="PersonnelUI.sortBy('step')">Step${_arrow('step')}</th>
+          <th style="cursor:pointer;" onclick="PersonnelUI.sortBy('series')">Series${_arrow('series')}</th>
+          <th style="cursor:pointer;" onclick="PersonnelUI.sortBy('tier')">Tier${_arrow('tier')}</th>
+        </tr></thead>
+        <tbody>${body}</tbody>
+      </table></div>`;
+  }
+
+  // ── Detail view ────────────────────────────────────────────
+  let _detailEmail = null;
+  let _ranks = [];   // cached [{rank,series,tier}] for the edit dropdown
+
+  function openDetail(email) {
+    const r = _roster.find(x => x.email === email);
+    if (!r) { Toast.show('Person not found in the loaded roster.', 'error'); return; }
+    _detailEmail = email;
+    _renderDetail(r);
+    document.getElementById('roster-list').style.display = 'none';
+    document.getElementById('roster-detail').style.display = 'block';
+  }
+
+  function _money(v) {
+    if (v === '' || v == null) return '';
+    const n = Number(v);
+    if (isNaN(n)) return String(v);
+    return '$' + n.toLocaleString('en-US');
+  }
+
+  function _renderDetail(r) {
+    const row = (label, value) =>
+      `<tr><td class="text-muted" style="width:160px;">${label}</td><td>${(value !== '' && value != null) ? value : '\u2014'}</td></tr>`;
+    const seriesLabel = r.series === 'ladder' ? 'Ladder (Professor)'
+                      : r.series === 'teaching' ? 'Teaching Professor'
+                      : r.series === 'lecturer' ? 'Lecturer' : '\u2014';
+    document.getElementById('detail-body').innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+        <div>
+          <div class="card-title">${r.name || r.email}${r.noProfile ? ' <span class="badge badge-danger">no profile</span>' : ''}</div>
+          <p class="text-muted text-sm" style="margin:-6px 0 14px;">${r.email}</p>
+        </div>
+        <button class="btn btn-secondary" onclick="PersonnelUI.editDetail()"><i class="ti ti-edit"></i> Edit</button>
+      </div>
+      <div class="table-wrap"><table class="data-table"><tbody>
+        ${row('Rank', r.rank)}
+        ${row('Step', r.step)}
+        ${row('Series', seriesLabel)}
+        ${row('Voting tier', r.tier || '(none \u2014 not a voting member)')}
+        ${row('Years at rank', r.yrsRank)}
+        ${row('Years at step', r.yrsStep)}
+        ${row('Salary', _money(r.salary))}
+        ${row('Last updated', r.updatedAt)}
+        ${row('Updated by', r.updatedBy)}
+      </tbody></table></div>`;
+  }
+
+  function editDetail() {
+    const r = _roster.find(x => x.email === _detailEmail);
+    if (!r) return;
+    // Load the rank list (once) for the dropdown, then render the form.
+    if (_ranks.length) { _renderEditForm(r); return; }
+    App.call('personnel', 'listRanks', {}, res => { _ranks = res || []; _renderEditForm(r); });
+  }
+
+  function _renderEditForm(r) {
+    const opts = _ranks.map(x =>
+      `<option value="${x.rank}" ${x.rank === r.rank ? 'selected' : ''}>${x.rank}</option>`).join('');
+    document.getElementById('detail-body').innerHTML = `
+      <div class="card-title">Edit — ${r.name || r.email}</div>
+      <p class="text-muted text-sm" style="margin:-6px 0 14px;">${r.email}</p>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Rank <span class="required">*</span></label>
+          <select class="form-select" id="edit-rank" onchange="PersonnelUI.onRankChange()">${opts}</select>
+          <div class="form-hint" id="edit-derived"></div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Step <span class="required">*</span></label>
+          <input type="text" class="form-input" id="edit-step" value="${r.step || ''}">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Years at rank</label>
+          <input type="text" class="form-input" id="edit-yrsRank" value="${r.yrsRank || ''}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Years at step</label>
+          <input type="text" class="form-input" id="edit-yrsStep" value="${r.yrsStep || ''}">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Salary</label>
+          <input type="text" class="form-input" id="edit-salary" value="${r.salary || ''}" placeholder="e.g. 192900">
+          <div class="form-hint" id="edit-salary-warn"></div>
+        </div>
+        <div class="form-group"><!-- spacer --></div>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-primary" id="edit-save-btn" onclick="PersonnelUI.saveEdit()"><i class="ti ti-check"></i> Save</button>
+        <button class="btn btn-secondary" onclick="PersonnelUI.cancelEdit()">Cancel</button>
+      </div>`;
+    onRankChange();
+  }
+
+  function onRankChange() {
+    const rank = document.getElementById('edit-rank').value;
+    const found = _ranks.find(x => x.rank === rank);
+    const el = document.getElementById('edit-derived');
+    if (found) {
+      const seriesLabel = found.series === 'ladder' ? 'Ladder (Professor)'
+                        : found.series === 'teaching' ? 'Teaching Professor'
+                        : found.series === 'lecturer' ? 'Lecturer' : found.series;
+      el.textContent = 'Series: ' + seriesLabel + ' \u00B7 Voting tier: ' + (found.tier || 'none');
+    } else { el.textContent = ''; }
+  }
+
+  function saveEdit() {
+    const salaryStr = document.getElementById('edit-salary').value.replace(/[$,\s]/g, '').trim();
+    const salaryNum = salaryStr === '' ? null : Number(salaryStr);
+    // Light implausible-salary warning (does not block).
+    const warn = document.getElementById('edit-salary-warn');
+    if (salaryNum != null && !isNaN(salaryNum) && (salaryNum < 10000 || salaryNum > 1000000)) {
+      warn.textContent = 'That salary looks unusual — double-check before saving.';
+      warn.style.color = 'var(--color-warning, #b8860b)';
+    }
+    const payload = {
+      email:   _detailEmail,
+      rank:    document.getElementById('edit-rank').value,
+      step:    document.getElementById('edit-step').value.trim(),
+      yrsRank: document.getElementById('edit-yrsRank').value.trim(),
+      yrsStep: document.getElementById('edit-yrsStep').value.trim(),
+      salary:  salaryStr,
+    };
+    if (!payload.step) { Toast.show('Step is required.', 'error'); return; }
+    FormHelper.setLoading('edit-save-btn', true);
+    App.call('personnel', 'updatePersonAttributes', payload, () => {
+      Toast.show('Saved.', 'success');
+      // Refresh the roster so list + detail reflect the change, then reopen detail.
+      App.call('personnel', 'listRoster', {}, res => {
+        _roster = res.roster || [];
+        applyFilter();
+        const updated = _roster.find(x => x.email === _detailEmail);
+        if (updated) _renderDetail(updated);
+      });
+    }, () => FormHelper.setLoading('edit-save-btn', false));
+  }
+
+  function cancelEdit() {
+    const r = _roster.find(x => x.email === _detailEmail);
+    if (r) _renderDetail(r);
+  }
+
+  function backToRoster() {
+    document.getElementById('roster-detail').style.display = 'none';
+    document.getElementById('roster-list').style.display = 'block';
+  }
+
+  // ── Cases: list ────────────────────────────────────────────
+  let _cases = [];
+  let _reviewTypes = [];   // [{key,label,...}]
+  let _statuses = [];
+  let _callRows = [];      // preview rows from the server (mutable per confirm)
+
+  function loadCases() {
+    // Load the type vocabulary once, then the cases.
+    const afterTypes = () => {
+      const wrap = document.getElementById('cases-table-wrap');
+      wrap.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading cases…</span></div>';
+      App.call('personnel', 'listCases', {}, res => {
+        _cases = res.cases || [];
+        _populateYearFilter();
+        applyCaseFilter();
+      }, () => { wrap.innerHTML = '<p class="text-muted">Could not load cases.</p>'; });
+    };
+    if (_reviewTypes.length) { afterTypes(); return; }
+    App.call('personnel', 'listReviewTypes', {}, res => {
+      _reviewTypes = res.reviewTypes || [];
+      _statuses = res.statuses || ['open', 'deferred'];
+      afterTypes();
+    }, afterTypes);
+  }
+
+  function _populateYearFilter() {
+    const years = Array.from(new Set(_cases.map(c => c.academicYear).filter(Boolean))).sort().reverse();
+    const sel = document.getElementById('cases-year');
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">All years</option>' +
+      years.map(y => `<option value="${y}">${y}</option>`).join('');
+    sel.value = cur;
+  }
+
+  function applyCaseFilter() {
+    const year = document.getElementById('cases-year').value;
+    const q = (document.getElementById('cases-search').value || '').trim().toLowerCase();
+    let rows = _cases.slice();
+    if (year) rows = rows.filter(c => c.academicYear === year);
+    if (q) rows = rows.filter(c =>
+      (c.name || '').toLowerCase().indexOf(q) !== -1 ||
+      (c.reviewLabel || '').toLowerCase().indexOf(q) !== -1);
+    _renderCases(rows);
+  }
+
+  function _typeOptions(sel) {
+    return _reviewTypes.map(t =>
+      `<option value="${t.key}" ${t.key === sel ? 'selected' : ''}>${t.label}</option>`).join('');
+  }
+  function _statusOptions(sel) {
+    return _statuses.map(s =>
+      `<option value="${s}" ${s === sel ? 'selected' : ''}>${s}</option>`).join('');
+  }
+
+  function _renderCases(rows) {
+    const wrap = document.getElementById('cases-table-wrap');
+    if (!rows.length) {
+      wrap.innerHTML = '<p class="text-muted text-sm" style="margin-top:8px;">No cases yet. Use “Import from Call” to create them.</p>';
+      return;
+    }
+    const statusBadge = s => s === 'deferred'
+      ? '<span class="badge badge-warning">deferred</span>'
+      : s === 'closed'
+      ? '<span class="badge badge-danger">closed</span>'
+      : '<span class="badge badge-success">open</span>';
+    const flags = c => {
+      const f = [];
+      if (c.isReappointment) f.push('<span class="badge badge-navy" title="Reappointment">reappt</span>');
+      if (c.isMandatory)     f.push('<span class="badge" title="Mandatory review">mandatory</span>');
+      return f.join(' ');
+    };
+    const body = rows.map(c =>
+      `<tr>
+        <td>${c.name}</td>
+        <td>${c.academicYear}</td>
+        <td>
+          <select class="form-select" style="min-width:150px;" onchange="PersonnelUI.changeCaseType('${c.caseId}', this.value)">
+            ${_typeOptions(c.reviewType)}
+          </select>
+        </td>
+        <td class="text-sm">${c.subjectRank || '—'}${c.step ? ' · step ' + c.step : ''} ${flags(c)}</td>
+        <td>
+          <select class="form-select" style="min-width:110px;" onchange="PersonnelUI.changeCaseStatus('${c.caseId}', this.value)">
+            ${_statusOptions(c.status)}
+          </select>
+        </td>
+      </tr>`).join('');
+    wrap.innerHTML = `
+      <p class="text-sm text-muted" style="margin:4px 0 8px;">${rows.length} of ${_cases.length} case(s)</p>
+      <div class="table-wrap"><table class="data-table">
+        <thead><tr><th>Candidate</th><th>Year</th><th>Review type</th><th>Rank / step</th><th>Status</th></tr></thead>
+        <tbody>${body}</tbody>
+      </table></div>`;
+  }
+
+  function changeCaseType(caseId, reviewType) {
+    App.call('personnel', 'updateCase', { caseId: caseId, reviewType: reviewType }, () => {
+      Toast.show('Review type updated.', 'success');
+      const c = _cases.find(x => x.caseId === caseId);
+      if (c) { c.reviewType = reviewType; const t = _reviewTypes.find(x => x.key === reviewType); if (t) c.reviewLabel = t.label; }
+    });
+  }
+  function changeCaseStatus(caseId, status) {
+    App.call('personnel', 'updateCase', { caseId: caseId, status: status }, () => {
+      Toast.show('Status updated.', 'success');
+      const c = _cases.find(x => x.caseId === caseId);
+      if (c) c.status = status;
+      applyCaseFilter();   // re-render so the badge/row reflects deferral
+    });
+  }
+
+  // ── Cases: Call import ─────────────────────────────────────
+  function showCallImport() {
+    document.getElementById('cases-list').style.display = 'none';
+    document.getElementById('cases-import').style.display = 'block';
+    document.getElementById('call-preview').innerHTML = '';
+  }
+  function backToCases() {
+    document.getElementById('cases-import').style.display = 'none';
+    document.getElementById('cases-list').style.display = 'block';
+  }
+
+  function detectCall() {
+    const year = document.getElementById('call-year').value.trim();
+    if (!year) { Toast.show('Enter the academic year first.', 'error'); return; }
+
+    const pasted = document.getElementById('call-paste').value.trim();
+    const file = document.getElementById('call-file').files[0];
+    if (!pasted && !file) { Toast.show('Paste the Call, or choose a CSV file.', 'error'); return; }
+
+    const proceed = (csv) => {
+      if (!_roster.length) {
+        App.call('personnel', 'listRoster', {}, res => { _roster = res.roster || []; _doDetectCall(year, csv); });
+      } else {
+        _doDetectCall(year, csv);
+      }
+    };
+
+    if (pasted) {
+      proceed(pasted);                       // paste takes priority
+    } else {
+      const reader = new FileReader();
+      reader.onload = e => proceed(e.target.result);
+      reader.onerror = () => Toast.show('Could not read the file.', 'error');
+      reader.readAsText(file);
+    }
+  }
+
+  function _doDetectCall(year, csv) {
+    FormHelper.setLoading('call-detect-btn', true);
+    App.call('personnel', 'detectCallColumns', { csv: csv }, det => {
+      App.call('personnel', 'previewCallImport',
+        { csv: csv, mapping: det.mapping, academicYear: year },
+        plan => {
+          FormHelper.setLoading('call-detect-btn', false);
+          _callRows = plan.rows;
+          _renderCallPreview(plan);
+        },
+        () => FormHelper.setLoading('call-detect-btn', false));
+    }, () => FormHelper.setLoading('call-detect-btn', false));
+  }
+
+  function _renderCallPreview(plan) {
+    const s = plan.summary;
+    // Roster options for name resolution (from the already-loaded roster).
+    const rosterOpts = (selEmail) => '<option value="">— pick candidate —</option>' +
+      _roster.slice().sort((a,b)=>String(a.nameLastFirst||a.name).localeCompare(String(b.nameLastFirst||b.name)))
+        .map(r => `<option value="${r.email}" ${r.email===selEmail?'selected':''}>${r.nameLastFirst || r.name}</option>`).join('');
+
+    const rowHtml = (r, i) => {
+      // Identity cell: matched shows the name; ambiguous/none shows a picker.
+      let idCell;
+      if (r.matchStatus === 'matched') {
+        idCell = `<span class="badge badge-success">matched</span> ${r.matchedName}
+          <div class="text-sm"><a href="#" onclick="PersonnelUI.unmatch(${i});return false;">change</a></div>`;
+      } else {
+        const cls = r.matchStatus === 'ambiguous' ? 'badge-warning' : 'badge-danger';
+        idCell = `<span class="badge ${cls}">${r.matchStatus}</span>
+          <select class="form-select" style="min-width:170px;margin-top:4px;" onchange="PersonnelUI.setMatch(${i}, this.value)">
+            ${rosterOpts(r.matchedEmail)}
+          </select>`;
+      }
+      return `<tr>
+        <td class="text-sm">${r.displayName}<br><span class="text-muted">${r.rank}${r.step?' · step '+r.step:''}</span></td>
+        <td>${idCell}</td>
+        <td>
+          <select class="form-select" style="min-width:150px;" onchange="PersonnelUI.setRowType(${i}, this.value)">
+            <option value="">— none —</option>
+            ${_reviewTypes.map(t=>`<option value="${t.key}" ${t.key===r.suggestedType?'selected':''}>${t.label}</option>`).join('')}
+          </select>
+          <div class="text-sm text-muted" style="margin-top:2px;">Call: ${r.callActionRaw || '—'}</div>
+        </td>
+        <td>
+          <select class="form-select" style="min-width:110px;" onchange="PersonnelUI.setRowStatus(${i}, this.value)">
+            ${_statuses.map(st=>`<option value="${st}">${st}</option>`).join('')}
+          </select>
+        </td>
+      </tr>`;
+    };
+
+    // seed per-row working state
+    _callRows.forEach(r => { r._type = r.suggestedType; r._status = 'open'; r._email = r.matchedEmail; });
+
+    document.getElementById('call-preview').innerHTML = `
+      <div style="margin-bottom:10px;">
+        <span class="badge badge-success" style="margin-right:6px;">${s.matched} matched</span>
+        <span class="badge badge-warning" style="margin-right:6px;">${s.ambiguous} ambiguous</span>
+        <span class="badge badge-danger">${s.none} unmatched</span>
+        <span class="text-muted text-sm" style="margin-left:8px;">Academic year ${s.academicYear} · ${s.total} rows</span>
+      </div>
+      <div class="table-wrap"><table class="data-table">
+        <thead><tr><th>Call row</th><th>Candidate (confirm)</th><th>Review type (election)</th><th>Status</th></tr></thead>
+        <tbody>${plan.rows.map(rowHtml).join('')}</tbody>
+      </table></div>
+      <div class="form-actions">
+        <button class="btn btn-primary" id="call-commit-btn" onclick="PersonnelUI.commitCall()"><i class="ti ti-check"></i> Create confirmed cases</button>
+        <button class="btn btn-secondary" onclick="PersonnelUI.backToCases()">Cancel</button>
+      </div>
+      <p class="text-sm text-muted" style="margin-top:6px;">Rows without a confirmed candidate or review type are skipped.</p>`;
+  }
+
+  function setMatch(i, email)  { _callRows[i]._email = email; }
+  function unmatch(i)          { _callRows[i].matchStatus = 'none'; _callRows[i]._email = ''; _rerenderCallRow(); }
+  function setRowType(i, t)    { _callRows[i]._type = t; }
+  function setRowStatus(i, st) { _callRows[i]._status = st; }
+  function _rerenderCallRow()  { /* simple: re-render whole preview from current state */
+    // Rebuild using current _callRows state by faking a plan.
+    const s = { matched: 0, ambiguous: 0, none: 0, total: _callRows.length,
+                academicYear: document.getElementById('call-year').value.trim() };
+    _callRows.forEach(r => { s[r.matchStatus] = (s[r.matchStatus]||0)+1; });
+    _renderCallPreview({ summary: s, rows: _callRows });
+  }
+
+  function commitCall() {
+    const year = document.getElementById('call-year').value.trim();
+    const cases = _callRows.map(r => ({
+      candidateEmail: r._email || r.matchedEmail || '',
+      reviewType:     r._type || '',
+      status:         r._status || 'open',
+      displayName:    r.displayName,
+      subjectRank:    r.rank, step: r.step,
+      callActionRaw:  r.callActionRaw, oa: r.oa,
+      yrsRank: r.yrsRank, yrsStep: r.yrsStep, qtrs: r.qtrs,
+      isReappointment: r.isReappointment, isMandatory: r.isMandatory,
+    })).filter(c => c.candidateEmail && c.reviewType);
+
+    if (!cases.length) { Toast.show('No rows have both a candidate and a review type.', 'error'); return; }
+    FormHelper.setLoading('call-commit-btn', true);
+    App.call('personnel', 'commitCallImport', { academicYear: year, cases: cases }, res => {
+      const s = res.summary;
+      Toast.show(`Cases: ${s.created} created, ${s.updated} updated, ${s.skipped} skipped.`, 'success', 6000);
+      backToCases();
+      loadCases();
+    }, () => FormHelper.setLoading('call-commit-btn', false));
+  }
+
+  // ── Import (existing flow) ─────────────────────────────────
+  function detect() {
+    const file = document.getElementById('pers-file').files[0];
+    if (!file) { Toast.show('Choose a CSV file first.', 'error'); return; }
+    const reader = new FileReader();
+    reader.onload = e => {
+      _csv = e.target.result;
+      FormHelper.setLoading('pers-detect-btn', true);
+      App.call('personnel', 'detectColumns', { csv: _csv }, res => {
+        FormHelper.setLoading('pers-detect-btn', false);
+        _renderMapping(res);
+      }, () => FormHelper.setLoading('pers-detect-btn', false));
+    };
+    reader.onerror = () => Toast.show('Could not read the file.', 'error');
+    reader.readAsText(file);
+  }
+
+  function _renderMapping(res) {
+    document.getElementById('pers-rowcount').textContent = res.rowCount;
+    [
+      { id: 'map-cruzid', key: 'cruzid' },
+      { id: 'map-rank',   key: 'rank' },
+      { id: 'map-step',   key: 'step' },
+      { id: 'map-first',  key: 'first' },
+      { id: 'map-last',   key: 'last' },
+      { id: 'map-salary', key: 'salary' },
+      { id: 'map-yrsRank', key: 'yrsRank' },
+      { id: 'map-yrsStep', key: 'yrsStep' },
+    ].forEach(f => {
+      const sel = document.getElementById(f.id);
+      sel.innerHTML = '<option value="">\u2014 Not in this file \u2014</option>'
+        + res.headers.map(h => `<option value="${h.replace(/"/g,'&quot;')}">${h}</option>`).join('');
+      sel.value = res.mapping[f.key] || '';
+    });
+    document.getElementById('pers-mapping').style.display = 'block';
+    document.getElementById('pers-preview').innerHTML = '';
+  }
+
+  function _settings() {
+    return {
+      csv: _csv,
+      mapping: {
+        cruzid: document.getElementById('map-cruzid').value,
+        rank:   document.getElementById('map-rank').value,
+        step:   document.getElementById('map-step').value,
+        first:  document.getElementById('map-first').value,
+        last:   document.getElementById('map-last').value,
+        salary:  document.getElementById('map-salary').value,
+        yrsRank: document.getElementById('map-yrsRank').value,
+        yrsStep: document.getElementById('map-yrsStep').value,
+      },
+    };
+  }
+
+  function preview() {
+    const s = _settings();
+    if (!s.mapping.cruzid) { Toast.show('Map the CruzID / email column.', 'error'); return; }
+    if (!s.mapping.rank)   { Toast.show('Map the working title (rank) column.', 'error'); return; }
+    if (!s.mapping.step)   { Toast.show('Map the step column.', 'error'); return; }
+    const out = document.getElementById('pers-preview');
+    out.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Validating\u2026</span></div>';
+    App.call('personnel', 'previewRankImport', s,
+      plan => { out.innerHTML = _renderPlan(plan); },
+      () => { out.innerHTML = ''; });
+  }
+
+  function _renderPlan(plan) {
+    const s = plan.summary;
+    const badge = (n, cls, label) => `<span class="badge ${cls}" style="margin-right:8px;">${n} ${label}</span>`;
+    const setRows = plan.willSet.map(r =>
+      `<tr><td>${r.line}</td><td>${(r.name || r.email || '\u2014')}</td>` +
+      `<td><span class="badge badge-success">set</span></td>` +
+      `<td class="text-sm">${r.rank} \u00B7 step ${r.step} \u00B7 ${r.series}${r.tier ? ' \u00B7 ' + r.tier : ''}</td></tr>`
+    ).join('');
+    const skipRows = plan.skipped.map(r =>
+      `<tr><td>${r.line || '\u2014'}</td><td>${(r.email || r.cruzid || '\u2014')}</td>` +
+      `<td><span class="badge badge-danger">skip</span></td>` +
+      `<td class="text-sm" style="color:var(--color-danger);">${r.reason}</td></tr>`
+    ).join('');
+
+    const reasonCounts = {};
+    plan.skipped.forEach(r => {
+      const key = /Unrecognized rank/.test(r.reason) ? 'unrecognized title (e.g. emeritus)'
+                : /No matching profile/.test(r.reason) ? 'no profile yet (add the person first)'
+                : /No CruzID/.test(r.reason) ? 'no CruzID'
+                : r.reason;
+      reasonCounts[key] = (reasonCounts[key] || 0) + 1;
+    });
+    const reasonSummary = Object.keys(reasonCounts).length
+      ? '<p class="text-sm text-muted" style="margin-top:8px;">Skips: '
+        + Object.keys(reasonCounts).map(k => `${reasonCounts[k]} ${k}`).join('; ') + '.</p>'
+      : '';
+
+    const canCommit = s.willSet > 0;
+    return `
+      <div style="margin-bottom:12px;">${badge(s.willSet,'badge-success','to set')}${badge(s.skipped,'badge-danger','to skip')}</div>
+      <div class="table-wrap"><table class="data-table">
+        <thead><tr><th>Line</th><th>Person</th><th>Action</th><th>Details</th></tr></thead>
+        <tbody>${setRows}${skipRows}</tbody>
+      </table></div>
+      ${reasonSummary}
+      <div class="form-actions">
+        <button class="btn btn-primary" id="pers-commit-btn" onclick="PersonnelUI.commit()" ${canCommit?'':'disabled'}><i class="ti ti-check"></i> Import ${s.willSet} record(s)</button>
+        <button class="btn btn-secondary" onclick="PersonnelUI.cancel()">Cancel</button>
+      </div>`;
+  }
+
+  function commit() {
+    if (!_csv) { Toast.show('Read a file first.', 'error'); return; }
+    FormHelper.setLoading('pers-commit-btn', true);
+    App.call('personnel', 'commitRankImport', _settings(), res => {
+      const s = res.summary;
+      Toast.show(`Imported: ${s.set} set, ${s.skipped} skipped.`, 'success', 6000);
+      cancel();
+      loadRoster();   // refresh the roster so new data shows immediately
+    }, () => FormHelper.setLoading('pers-commit-btn', false));
+  }
+
+  function cancel() {
+    _csv = null;
+    document.getElementById('pers-file').value = '';
+    document.getElementById('pers-mapping').style.display = 'none';
+    document.getElementById('pers-preview').innerHTML = '';
+  }
+
+  return {
+    init, showTab,
+    loadRoster, applyFilter, sortBy, openDetail, backToRoster,
+    editDetail, onRankChange, saveEdit, cancelEdit,
+    detect, preview, commit, cancel,
+    loadCases, applyCaseFilter, changeCaseType, changeCaseStatus,
+    showCallImport, backToCases, detectCall, commitCall,
+    setMatch, unmatch, setRowType, setRowStatus,
+  };
+
+})();
+
+PersonnelUI.init();
+</script>
