@@ -1,0 +1,1836 @@
+<!-- service.html — Department Service module UI -->
+<!-- Server-rendered: currentUser and userRoles are available as template vars -->
+
+<div id="service-module">
+
+  <!-- Tab bar (role-aware, flattened — manage panes are top-level tabs like
+       Admin/User Management). Keep the role lists below in sync with the
+       _canManage/_canSeeAll constants in the controller script, and with
+       _isManager/_canSeeAll in ServiceModule.gs. -->
+  <div class="module-tabs" role="tablist" aria-label="Department Service sections">
+    <? var svcRoles = JSON.parse(userRoles); ?>
+    <? var svcCanManage = svcRoles.includes('super_admin'); ?>
+    <? var svcCanSeeAll = svcCanManage || svcRoles.includes('service_history'); ?>
+    <? var svcCanProposed = svcCanManage || svcRoles.includes('department_chair'); ?>
+    <button class="module-tab active" role="tab" aria-selected="true" data-tab="directory" onclick="ServiceUI.switchTab('directory')">
+      <i class="ti ti-users-group"></i> Current Assignments
+    </button>
+    <? if (svcCanProposed) { ?>
+    <button class="module-tab" role="tab" aria-selected="false" data-tab="proposed" onclick="ServiceUI.switchTab('proposed')">
+      <i class="ti ti-calendar"></i> Proposed
+    </button>
+    <? } ?>
+    <button class="module-tab" role="tab" aria-selected="false" data-tab="mine" onclick="ServiceUI.switchTab('mine')">
+      <i class="ti ti-history"></i> My History
+    </button>
+    <button class="module-tab" role="tab" aria-selected="false" data-tab="nominate" onclick="ServiceUI.switchTab('nominate')">
+      <i class="ti ti-star"></i> Nominate
+    </button>
+    <? if (svcCanSeeAll) { ?>
+    <button class="module-tab" role="tab" aria-selected="false" data-tab="full" onclick="ServiceUI.switchTab('full')">
+      <i class="ti ti-archive"></i> Full History
+    </button>
+    <? } ?>
+    <? if (svcCanManage) { ?>
+    <button class="module-tab" role="tab" aria-selected="false" data-tab="assignments" onclick="ServiceUI.switchTab('assignments')">
+      <i class="ti ti-clipboard-list"></i> Assignments
+    </button>
+    <button class="module-tab" role="tab" aria-selected="false" data-tab="categories" onclick="ServiceUI.switchTab('categories')">
+      <i class="ti ti-category"></i> Categories
+    </button>
+    <button class="module-tab" role="tab" aria-selected="false" data-tab="corrections" onclick="ServiceUI.switchTab('corrections')">
+      <i class="ti ti-inbox"></i> Corrections
+    </button>
+    <button class="module-tab" role="tab" aria-selected="false" data-tab="nominations" onclick="ServiceUI.switchTab('nominations')">
+      <i class="ti ti-list-numbers"></i> Nominations
+    </button>
+    <button class="module-tab" role="tab" aria-selected="false" data-tab="import" onclick="ServiceUI.switchTab('import')">
+      <i class="ti ti-file-upload"></i> Import
+    </button>
+    <? } ?>
+  </div>
+
+  <!-- ── Tab: Current Assignments (directory) ───────────── -->
+  <div id="svc-tab-directory" class="tab-panel" role="tabpanel">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title between">
+        <span><i class="ti ti-users-group"></i> <span id="svc-directory-title">Current Assignments</span></span>
+        <button class="btn btn-secondary btn-sm" onclick="ServiceUI.refreshDirectory()" aria-label="Refresh Current Assignments"><i class="ti ti-refresh"></i></button>
+      </div>
+      <div id="svc-directory-body"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
+    </div>
+  </div>
+
+  <!-- ── Tab: Proposed (nomination slate — chair + super_admin) ── -->
+  <? if (svcCanProposed) { ?>
+  <div id="svc-tab-proposed" class="tab-panel" role="tabpanel" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title between">
+        <span><i class="ti ti-calendar"></i> <span id="svc-proposed-title">Proposed Slate</span></span>
+        <button class="btn btn-secondary btn-sm" onclick="ServiceUI.loadProposed()" aria-label="Refresh Proposed Slate"><i class="ti ti-refresh"></i></button>
+      </div>
+      <p class="text-muted text-sm" style="margin:-8px 0 16px;">
+        The nomination pool for the cycle's target year — volunteered names plus those already
+        confirmed (<span class="badge badge-success">Assigned</span>). Visible to the department
+        chair and super admins only. Click a name to see their priority and note.
+      </p>
+      <div id="svc-proposed-body"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
+    </div>
+  </div>
+  <? } ?>
+
+  <!-- ── Tab: My History ────────────────────────────────── -->
+  <div id="svc-tab-mine" class="tab-panel" role="tabpanel" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title between">
+        <span><i class="ti ti-history"></i> My Service History</span>
+        <span style="display:inline-flex;gap:8px;align-items:center;">
+          <button class="btn btn-secondary btn-sm" onclick="ServiceUI.openCorrection()"><i class="ti ti-message-report"></i> Request a correction</button>
+          <button class="btn btn-secondary btn-sm" onclick="ServiceUI.exportMyCsv()"><i class="ti ti-download"></i> CSV</button>
+          <button class="btn btn-secondary btn-sm" onclick="ServiceUI.loadMine()" aria-label="Refresh My History"><i class="ti ti-refresh"></i></button>
+        </span>
+      </div>
+      <div id="svc-mine-body"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
+    </div>
+
+    <!-- Correction request form (hidden until opened) -->
+    <div class="card" id="svc-correction-card" style="display:none;max-width:640px;">
+      <div class="card-title"><i class="ti ti-message-report"></i> Request a service record correction</div>
+      <p class="text-muted text-sm" style="margin:-8px 0 16px;">
+        Requests go to the department administrator for review. Describe what should be added, removed, or changed.
+      </p>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label" for="svc-corr-category">Committee / service</label>
+          <input class="form-input" id="svc-corr-category" list="svc-catalog-list" placeholder="e.g. Graduate Admissions">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="svc-corr-year">Academic year</label>
+          <input class="form-input" id="svc-corr-year" placeholder="e.g. 2024-25">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label" for="svc-corr-role">Role</label>
+          <input class="form-input" id="svc-corr-role" list="svc-role-list" placeholder="e.g. Member">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="svc-corr-quarter">Quarter</label>
+          <select class="form-select" id="svc-corr-quarter"></select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="svc-corr-note">What needs to be corrected? <span class="required">*</span></label>
+        <textarea class="form-textarea" id="svc-corr-note" placeholder="Describe the addition, removal, or change…"></textarea>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-primary" onclick="ServiceUI.submitCorrection()"><i class="ti ti-send"></i> Submit request</button>
+        <button class="btn btn-secondary" onclick="ServiceUI.cancelCorrection()">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Tab: Nominate (ranked self-nomination) ─────────── -->
+  <div id="svc-tab-nominate" class="tab-panel" role="tabpanel" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title between">
+        <span><i class="ti ti-star"></i> <span id="svc-nom-title">Self-Nomination</span></span>
+        <button class="btn btn-secondary btn-sm" onclick="ServiceUI.loadNominate()" aria-label="Refresh Self-Nomination"><i class="ti ti-refresh"></i></button>
+      </div>
+      <p class="text-muted text-sm" style="margin:-8px 0 16px;">
+        Rank the department service you would like for the coming year — #1 is your first choice.
+        Preferences inform assignments but are <strong>not a guarantee</strong>; final assignments
+        are made by the department.
+      </p>
+      <div id="svc-nom-banner"></div>
+      <div id="svc-nom-form" style="display:none;">
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label" for="svc-nom-category">Service category <span class="required">*</span></label>
+            <select class="form-select" id="svc-nom-category" onchange="ServiceUI.onNomCategoryChange()"></select>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="svc-nom-role">Preferred role</label>
+            <input class="form-input" id="svc-nom-role" list="svc-role-list">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label" for="svc-nom-quarter">Quarter (if applicable)</label>
+            <select class="form-select" id="svc-nom-quarter"></select>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="svc-nom-note">Note (optional)</label>
+            <input class="form-input" id="svc-nom-note" placeholder="Anything the department should know">
+          </div>
+        </div>
+        <div class="form-actions">
+          <button class="btn btn-primary" onclick="ServiceUI.submitNomination()"><i class="ti ti-star"></i> Add preference</button>
+        </div>
+      </div>
+      <div id="svc-nom-body" style="margin-top:14px;"></div>
+    </div>
+  </div>
+
+  <!-- ── Tab: Full History ──────────────────────────────── -->
+  <div id="svc-tab-full" class="tab-panel" role="tabpanel" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title between">
+        <span><i class="ti ti-archive"></i> Department Service History</span>
+        <button class="btn btn-secondary btn-sm" onclick="ServiceUI.loadFull()" aria-label="Refresh Full History"><i class="ti ti-refresh"></i></button>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:14px;">
+        <div class="form-group" style="flex:1 1 220px;margin:0;">
+          <label class="form-label" for="svc-full-search">Search</label>
+          <input class="form-input" type="text" id="svc-full-search" placeholder="Name, committee, role…" onkeyup="ServiceUI.applyFullFilters()">
+        </div>
+        <div class="form-group" style="flex:0 1 200px;margin:0;">
+          <label class="form-label" for="svc-full-name">Name</label>
+          <select class="form-select" id="svc-full-name" onchange="ServiceUI.applyFullFilters()"><option value="">All names</option></select>
+        </div>
+        <div class="form-group" style="flex:0 1 140px;margin:0;">
+          <label class="form-label" for="svc-full-year">Year</label>
+          <select class="form-select" id="svc-full-year" onchange="ServiceUI.applyFullFilters()"><option value="">All years</option></select>
+        </div>
+        <div class="form-group" style="flex:0 1 220px;margin:0;">
+          <label class="form-label" for="svc-full-cat">Category</label>
+          <select class="form-select" id="svc-full-cat" onchange="ServiceUI.applyFullFilters()"><option value="">All categories</option></select>
+        </div>
+        <button class="btn btn-secondary" onclick="ServiceUI.exportFullCsv()" style="margin-bottom:0;"><i class="ti ti-download"></i> CSV</button>
+      </div>
+      <div id="svc-full-body"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
+    </div>
+  </div>
+
+  <!-- ── Tab: Assignments (manage) ──────────────────────── -->
+  <div id="svc-tab-assignments" class="tab-panel" role="tabpanel" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title between">
+        <span><i class="ti ti-clipboard-list"></i> Assignments</span>
+        <span style="display:inline-flex;gap:8px;align-items:center;">
+          <button class="btn btn-primary btn-sm" onclick="ServiceUI.startAddAssignment()"><i class="ti ti-plus"></i> Add assignment</button>
+          <button class="btn btn-secondary btn-sm" onclick="ServiceUI.reapplyAutoAssigns()" title="Create missing companion assignments for rules added after the fact"><i class="ti ti-wand"></i> Re-apply rules</button>
+          <button class="btn btn-secondary btn-sm" onclick="ServiceUI.loadManageAssignments()" aria-label="Refresh Assignments"><i class="ti ti-refresh"></i></button>
+        </span>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:14px;">
+        <div class="form-group" style="flex:1 1 220px;margin:0;">
+          <label class="form-label" for="svc-asn-search">Search</label>
+          <input class="form-input" type="text" id="svc-asn-search" placeholder="Name, committee, role…" onkeyup="ServiceUI.applyAsnFilters()">
+        </div>
+        <div class="form-group" style="flex:0 1 160px;margin:0;">
+          <label class="form-label" for="svc-asn-year">Year</label>
+          <select class="form-select" id="svc-asn-year" onchange="ServiceUI.applyAsnFilters()"><option value="">All years</option></select>
+        </div>
+      </div>
+      <div id="svc-asn-body"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
+    </div>
+
+    <!-- Assignment add/edit form (hidden until opened) -->
+    <div class="card" id="svc-asn-form-card" style="display:none;max-width:640px;">
+      <div class="card-title"><i class="ti ti-clipboard-list"></i> <span id="svc-asn-form-title">Add assignment</span></div>
+      <div class="form-group">
+        <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
+          <input type="checkbox" id="svc-asn-historical" onchange="ServiceUI.togglePersonMode()">
+          Person without a portal profile (historical record)
+        </label>
+      </div>
+      <div class="form-row">
+        <div class="form-group" id="svc-asn-person-wrap">
+          <label class="form-label" for="svc-asn-person">Person <span class="required">*</span></label>
+          <select class="form-select" id="svc-asn-person"></select>
+        </div>
+        <div class="form-group" id="svc-asn-rawname-wrap" style="display:none;">
+          <label class="form-label" for="svc-asn-rawname">Name (as recorded) <span class="required">*</span></label>
+          <input class="form-input" id="svc-asn-rawname" placeholder="First Last">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="svc-asn-category">Service category <span class="required">*</span></label>
+          <select class="form-select" id="svc-asn-category" onchange="ServiceUI.onAsnCategoryChange()"></select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label" for="svc-asn-role">Role</label>
+          <input class="form-input" id="svc-asn-role" list="svc-role-list">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="svc-asn-yearval">Academic year <span class="required">*</span></label>
+          <input class="form-input" id="svc-asn-yearval" placeholder="e.g. 2026-27">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label" for="svc-asn-quarter">Quarter</label>
+          <select class="form-select" id="svc-asn-quarter"></select>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="svc-asn-notes">Notes</label>
+          <input class="form-input" id="svc-asn-notes">
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-primary" onclick="ServiceUI.saveAssignment()"><i class="ti ti-device-floppy"></i> Save</button>
+        <button class="btn btn-secondary" onclick="ServiceUI.cancelAssignment()">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Tab: Categories (manage) ───────────────────────── -->
+  <div id="svc-tab-categories" class="tab-panel" role="tabpanel" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title between">
+        <span><i class="ti ti-category"></i> Service categories</span>
+        <span style="display:inline-flex;gap:8px;align-items:center;">
+          <button class="btn btn-primary btn-sm" onclick="ServiceUI.newCategory()"><i class="ti ti-plus"></i> Add category</button>
+          <button class="btn btn-secondary btn-sm" onclick="ServiceUI.loadCatalog()" aria-label="Refresh Categories"><i class="ti ti-refresh"></i></button>
+        </span>
+      </div>
+      <p class="text-muted text-sm" style="margin:-8px 0 16px;">
+        Category keys are permanent; labels and attributes are editable. Categories in use can be
+        deactivated, not deleted. Sort weight orders the directory (lower = earlier); leadership
+        positions get an accent; quarterly categories show quarter badges next to members.
+      </p>
+      <div id="svc-cat-body"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
+    </div>
+
+    <!-- Category add/edit form (hidden until opened) -->
+    <div class="card" id="svc-cat-form-card" style="display:none;max-width:640px;">
+      <div class="card-title"><i class="ti ti-category"></i> <span id="svc-cat-form-title">Add category</span></div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label" for="svc-cat-label">Label <span class="required">*</span></label>
+          <input class="form-input" id="svc-cat-label">
+          <div class="form-hint" id="svc-cat-key-note"></div>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="svc-cat-defaultrole">Default role</label>
+          <input class="form-input" id="svc-cat-defaultrole" list="svc-role-list" value="Member">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label" for="svc-cat-sortweight">Sort weight</label>
+          <input class="form-input" type="number" id="svc-cat-sortweight" value="100">
+          <div class="form-hint">Lower = earlier in the directory.</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Attributes</label>
+          <label style="display:flex;align-items:center;gap:8px;font-weight:normal;"><input type="checkbox" id="svc-cat-active" checked> Active</label>
+          <label style="display:flex;align-items:center;gap:8px;font-weight:normal;"><input type="checkbox" id="svc-cat-quarterly"> Quarterly (quarter badges)</label>
+          <label style="display:flex;align-items:center;gap:8px;font-weight:normal;"><input type="checkbox" id="svc-cat-leadership"> Leadership position</label>
+          <label style="display:flex;align-items:center;gap:8px;font-weight:normal;"><input type="checkbox" id="svc-cat-nomination" checked> Open to self-nomination</label>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Auto-assigns</label>
+        <div id="svc-cat-aa-list" style="max-height:190px;overflow-y:auto;border:1px solid var(--color-border,#ccc);border-radius:5px;padding:8px 10px;"></div>
+        <div class="form-hint">
+          Tick the companion committees created automatically whenever someone is assigned here
+          (manual add or accepted nomination) — same year and quarter, with a provenance note.
+          Each ticked committee shows a role, prefilled with its default: leave it untouched to
+          follow that committee's default role, or edit it to pin a specific role (e.g. Chair).
+          Skipped if the person is already on that committee for the year. No cascade on delete.
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="svc-cat-notes">Notes</label>
+        <input class="form-input" id="svc-cat-notes">
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-primary" onclick="ServiceUI.saveCategory()"><i class="ti ti-device-floppy"></i> Save</button>
+        <button class="btn btn-secondary" onclick="ServiceUI.cancelCategory()">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Tab: Corrections (manage) ──────────────────────── -->
+  <div id="svc-tab-corrections" class="tab-panel" role="tabpanel" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title between">
+        <span><i class="ti ti-inbox"></i> Correction requests</span>
+        <button class="btn btn-secondary btn-sm" onclick="ServiceUI.loadCorrections()" aria-label="Refresh Corrections"><i class="ti ti-refresh"></i></button>
+      </div>
+      <p class="text-muted text-sm" style="margin:-8px 0 16px;">
+        Marking a request resolved closes it and its dashboard task. The actual record fix —
+        adding, editing, or deleting an assignment — is done on the Assignments tab.
+      </p>
+      <div id="svc-corrq-body"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
+    </div>
+  </div>
+
+  <!-- ── Tab: Nominations (manage — window + decisions) ─── -->
+  <div id="svc-tab-nominations" class="tab-panel" role="tabpanel" style="display:none;">
+    <div class="card" style="margin-top:20px;max-width:640px;">
+      <div class="card-title"><i class="ti ti-list-numbers"></i> Nomination window</div>
+      <div id="svc-nomwin-body"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
+    </div>
+    <div class="card">
+      <div class="card-title between">
+        <span><i class="ti ti-list-numbers"></i> Nomination queue</span>
+        <button class="btn btn-secondary btn-sm" onclick="ServiceUI.loadNomQueue()" aria-label="Refresh Nominations"><i class="ti ti-refresh"></i></button>
+      </div>
+      <p class="text-muted text-sm" style="margin:-8px 0 16px;">
+        # is the nominator's own ranking (1 = first choice). Accepting creates the proposed
+        next-year assignment; decline notes are internal and never shown to the nominator.
+      </p>
+      <div id="svc-nomq-body"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
+    </div>
+  </div>
+
+  <!-- ── Tab: Import (manage) ───────────────────────────── -->
+  <div id="svc-tab-import" class="tab-panel" role="tabpanel" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title"><i class="ti ti-file-upload"></i> Import legacy service data</div>
+      <p class="text-muted text-sm" style="margin:-8px 0 16px;">
+        Import the legacy service database CSV (headers: First Name, Last Name, Service Category,
+        Role, Year, Quarter). Names are matched against portal profiles, including alternate
+        spellings; unmatched names are kept as historical records. Unknown categories are created
+        automatically; non-quarter values in the Quarter column are moved into Notes. The import
+        appends — exact duplicates are skipped.
+      </p>
+      <div class="form-group">
+        <label class="form-label" for="svc-import-file">CSV file</label>
+        <input class="form-input" type="file" id="svc-import-file" accept=".csv,text/csv" onchange="ServiceUI.onImportFile()">
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="svc-import-text">…or paste the CSV contents</label>
+        <textarea class="form-textarea" id="svc-import-text" style="font-family:monospace;font-size:12px;min-height:120px;"></textarea>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-primary" onclick="ServiceUI.runImportPreview()"><i class="ti ti-list-search"></i> Preview import</button>
+      </div>
+      <div id="svc-import-preview" style="margin-top:14px;"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><i class="ti ti-star"></i> Import legacy self-nominations</div>
+      <p class="text-muted text-sm" style="margin:-8px 0 16px;">
+        Import the legacy nominations CSV (headers: Year, First Name, Last Name, Service Category,
+        Role, Quarter, Notes). Rows land as OPEN nominations for the year in the CSV — a live queue
+        to accept (which creates that year's assignments) or decline. The legacy form was
+        checkbox-style, so priorities follow each person's row order. Nominations require a portal
+        profile: unmatched names are skipped — use Link in the preview to bind a spelling first.
+        Duplicates (same person, category, and year) are skipped.
+      </p>
+      <div class="form-group">
+        <label class="form-label" for="svc-nimp-file">CSV file</label>
+        <input class="form-input" type="file" id="svc-nimp-file" accept=".csv,text/csv" onchange="ServiceUI.onNomImportFile()">
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="svc-nimp-text">…or paste the CSV contents</label>
+        <textarea class="form-textarea" id="svc-nimp-text" style="font-family:monospace;font-size:12px;min-height:120px;"></textarea>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-primary" onclick="ServiceUI.runNomImportPreview()"><i class="ti ti-list-search"></i> Preview import</button>
+      </div>
+      <div id="svc-nimp-preview" style="margin-top:14px;"></div>
+    </div>
+  </div>
+
+  <datalist id="svc-role-list"></datalist>
+  <datalist id="svc-catalog-list"></datalist>
+</div>
+
+<style>
+/* Module-specific styles only — everything else comes from _Styles.html.
+   (Same precedent as thesis.html's region-chip block.) */
+.svc-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+@media (max-width: 640px) { .svc-grid { grid-template-columns: 1fr; } }
+.svc-cat-card {
+  background: var(--color-surface); border: 1px solid var(--color-border);
+  border-radius: var(--radius); padding: 12px 16px 14px; text-align: center;
+}
+.svc-cat-card.svc-span { grid-column: 1 / -1; }
+.svc-cat-title {
+  font-weight: 600; color: var(--ucsc-navy); font-size: 14px;
+  margin-bottom: 8px; padding-bottom: 6px; border-bottom: 2px solid var(--ucsc-gold);
+}
+.svc-member { font-size: 13px; padding: 2px 0; display: flex; justify-content: center;
+  align-items: center; gap: 5px; flex-wrap: wrap; }
+.svc-empty-cat { font-size: 12.5px; font-style: italic; color: var(--color-muted, #6b7280); padding: 6px 0; }
+tr.svc-focus td { background: #fff8dc; }
+/* Collapsible cards: collapse is a class on the .card so children keep
+   their own inline show/hide state across expand/collapse. */
+#service-module .card > .card-title[data-svc-collapse] { cursor: pointer; user-select: none; }
+#service-module .card.svc-collapsed > :not(.card-title) { display: none !important; }
+#service-module .card.svc-collapsed > .card-title { margin-bottom: 0; }
+.svc-chevron { font-size: 14px; margin-right: 4px; display: inline-block; transition: transform .15s ease; }
+.card.svc-collapsed .svc-chevron { transform: rotate(-90deg); }
+th.svc-sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+th.svc-sortable .ti { font-size: 12px; opacity: .4; vertical-align: text-bottom; }
+th.svc-sortable.svc-sorted .ti { opacity: 1; }
+</style>
+
+<script>
+window.ServiceUI = (() => {
+
+  const QUARTER_OPTIONS = ['', 'AY', 'Fall', 'Winter', 'Spring', 'Fall/Winter', 'Winter/Spring', 'Fall/Spring', 'Fall/Winter/Spring'];
+
+  // Keep in sync with the role lists in the tab-bar template scriptlets,
+  // and with _isManager/_canSeeAll in ServiceModule.gs.
+  const _roles = <?!= userRoles ?>;
+  const _canManage = _roles.indexOf('super_admin') !== -1;
+  const _canSeeAll = _canManage || _roles.indexOf('service_history') !== -1;
+  const _canSeeProposed = _canManage || _roles.indexOf('department_chair') !== -1;
+
+  let S = {
+    boot: null, catByKey: {},
+    sort: { mine: null, full: null, asn: null, cat: null, corr: null, imp: null, nomq: null, nimp: null },
+    mineRows: null, fullRows: null,
+    people: null, catalog: null, corrections: null, asnRows: null,
+    proposed: null, myNoms: null, nomQueue: null,
+    editingAssignmentId: '', editingCategoryKey: '',
+    importData: null, nomImportData: null,
+    focusCorrectionId: '',
+  };
+
+  const $ = id => document.getElementById(id);
+  const _esc = v => String(v === null || v === undefined ? '' : v)
+    .replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const LOADING = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
+
+  // ── Column sorting (shared by every table) ────────────────
+  // S.sort[table] = { key, dir } with dir 1 asc / -1 desc; null = default
+  // order as loaded (server default) or filtered. Sorts copy the array,
+  // so clearing a sort returns to the default order. Quarter sorts in
+  // academic order, not alphabetically.
+  const QUARTER_SORT = { 'AY': 0, 'Fall': 1, 'Fall/Winter': 2, 'Fall/Spring': 3,
+                         'Fall/Winter/Spring': 4, 'Winter': 5, 'Winter/Spring': 6, 'Spring': 7 };
+
+  const HISTORY_SORT_SPEC = {
+    year:          { get: r => r.year,          type: 'year' },
+    name:          { get: r => r.nameLastFirst, type: 'text' },
+    categoryLabel: { get: r => r.categoryLabel, type: 'text' },
+    role:          { get: r => r.role,          type: 'text' },
+    quarter:       { get: r => r.quarter,       type: 'quarter' },
+    notes:         { get: r => r.notes,         type: 'text' },
+  };
+
+  const SORT_SPECS = {
+    mine: HISTORY_SORT_SPEC,
+    full: HISTORY_SORT_SPEC,
+    asn:  HISTORY_SORT_SPEC,
+    cat: {
+      label:              { get: r => r.label,              type: 'text' },
+      active:             { get: r => r.active,             type: 'bool' },
+      isQuarterly:        { get: r => r.isQuarterly,        type: 'bool' },
+      defaultRole:        { get: r => r.defaultRole,        type: 'text' },
+      isLeadership:       { get: r => r.isLeadership,       type: 'bool' },
+      sortWeight:         { get: r => r.sortWeight,         type: 'number' },
+      nominationEligible: { get: r => r.nominationEligible, type: 'bool' },
+      autoAssigns:        { get: r => r.autoAssigns,        type: 'text' },
+      usageCount:         { get: r => r.usageCount || 0,    type: 'number' },
+    },
+    corr: {
+      status:        { get: r => r.status,        type: 'text' },
+      personName:    { get: r => r.personName,    type: 'text' },
+      categoryLabel: { get: r => r.categoryLabel, type: 'text' },
+      year:          { get: r => r.year,          type: 'year' },
+      note:          { get: r => r.note,          type: 'text' },
+    },
+    nomq: {
+      personName:    { get: r => r.personName,    type: 'text' },
+      priority:      { get: r => r.priority,      type: 'number' },
+      categoryLabel: { get: r => r.categoryLabel, type: 'text' },
+      role:          { get: r => r.role,          type: 'text' },
+      quarter:       { get: r => r.quarter,       type: 'quarter' },
+      note:          { get: r => r.note,          type: 'text' },
+      year:          { get: r => r.year,          type: 'year' },
+      status:        { get: r => r.status,        type: 'text' },
+    },
+    // Import previews sort a { r, i } projection so checkbox/select ids
+    // stay keyed to the ORIGINAL row index regardless of display order.
+    imp: {
+      rawName:       { get: o => o.r.rawName,       type: 'text' },
+      categoryLabel: { get: o => o.r.categoryLabel, type: 'text' },
+      role:          { get: o => o.r.role,          type: 'text' },
+      year:          { get: o => o.r.year,          type: 'year' },
+      quarter:       { get: o => o.r.quarter,       type: 'quarter' },
+    },
+    nimp: {
+      rawName:       { get: o => o.r.rawName,       type: 'text' },
+      categoryLabel: { get: o => o.r.categoryLabel, type: 'text' },
+      role:          { get: o => o.r.role,          type: 'text' },
+      year:          { get: o => o.r.year,          type: 'year' },
+      quarter:       { get: o => o.r.quarter,       type: 'quarter' },
+      note:          { get: o => o.r.note,          type: 'text' },
+    },
+  };
+
+  function _cmpBy(spec, a, b) {
+    const va = spec.get(a), vb = spec.get(b);
+    if (spec.type === 'number') return (Number(va) || 0) - (Number(vb) || 0);
+    if (spec.type === 'bool')   return (vb ? 1 : 0) - (va ? 1 : 0);   // "Yes" first on first click
+    if (spec.type === 'quarter') {
+      const qa = QUARTER_SORT[String(va || '').trim()], qb = QUARTER_SORT[String(vb || '').trim()];
+      return (qa === undefined ? 99 : qa) - (qb === undefined ? 99 : qb);   // blanks/odd last
+    }
+    // 'text' and 'year' ("YYYY-YY" compares correctly as a string)
+    return String(va || '').toLowerCase().localeCompare(String(vb || '').toLowerCase());
+  }
+
+  function _applySort(table, rows) {
+    const st = S.sort[table];
+    if (!st || !st.key) return rows;
+    const spec = SORT_SPECS[table][st.key];
+    if (!spec) return rows;
+    return rows.slice().sort((a, b) => _cmpBy(spec, a, b) * st.dir);
+  }
+
+  function sortBy(table, key) {
+    const st = S.sort[table];
+    S.sort[table] = (st && st.key === key) ? { key: key, dir: -st.dir } : { key: key, dir: 1 };
+    if (table === 'mine') _renderMine();
+    if (table === 'full') applyFullFilters();
+    if (table === 'asn')  applyAsnFilters();
+    if (table === 'cat')  _renderCatalog();
+    if (table === 'corr') _renderCorrections();
+    if (table === 'imp')  { _syncImportIncludes(); _renderImportPreview(); }
+    if (table === 'nomq') _renderNomQueue();
+    if (table === 'nimp') { _syncNomImportIncludes(); _renderNomImportPreview(); }
+  }
+
+  /** Sortable <th>: neutral icon when inactive; direction icon + aria-sort when active. */
+  function _th(table, key, label) {
+    const st = S.sort[table];
+    const active = st && st.key === key;
+    const icon = active ? (st.dir === 1 ? 'ti-sort-ascending' : 'ti-sort-descending') : 'ti-arrows-sort';
+    const aria = active ? (st.dir === 1 ? 'ascending' : 'descending') : 'none';
+    return '<th class="svc-sortable' + (active ? ' svc-sorted' : '') + '" aria-sort="' + aria
+      + '" onclick="ServiceUI.sortBy(\'' + table + '\', \'' + key + '\')">'
+      + _esc(label) + ' <i class="ti ' + icon + '"></i></th>';
+  }
+
+  // ── Collapsible cards ─────────────────────────────────────
+  // Every static card collapses to its header (click or Enter/Space);
+  // chevron + aria-expanded reflect state. Buttons/inputs inside a
+  // header never toggle. The on-demand form cards (assignment,
+  // category, correction) keep their existing show/hide behavior and
+  // are not wired. The two one-time import tools start collapsed.
+  function _wireCollapsibles() {
+    const skip = { 'svc-asn-form-card': 1, 'svc-cat-form-card': 1, 'svc-correction-card': 1 };
+    document.querySelectorAll('#service-module .card').forEach(card => {
+      if (skip[card.id]) return;
+      const title = card.querySelector(':scope > .card-title');
+      if (!title || title.dataset.svcCollapse) return;
+      title.dataset.svcCollapse = '1';
+
+      const chev = document.createElement('i');
+      chev.className = 'ti ti-chevron-down svc-chevron';
+      chev.setAttribute('aria-hidden', 'true');
+      const firstSpan = title.querySelector(':scope > span');
+      (firstSpan || title).insertBefore(chev, (firstSpan || title).firstChild);
+
+      title.setAttribute('role', 'button');
+      title.setAttribute('tabindex', '0');
+      title.setAttribute('aria-expanded', 'true');
+      title.addEventListener('click', e => {
+        if (e.target.closest('button, a, input, select, label')) return;
+        _toggleCard(card);
+      });
+      title.addEventListener('keydown', e => {
+        if (e.target !== title) return;
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        e.preventDefault();
+        _toggleCard(card);
+      });
+    });
+    // One-time tools: both importers start collapsed.
+    document.querySelectorAll('#svc-tab-import .card').forEach(c => _setCardCollapsed(c, true));
+  }
+
+  function _toggleCard(card) {
+    _setCardCollapsed(card, !card.classList.contains('svc-collapsed'));
+  }
+
+  function _setCardCollapsed(card, collapsed) {
+    card.classList.toggle('svc-collapsed', collapsed);
+    const title = card.querySelector(':scope > .card-title');
+    if (title) title.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+  }
+
+  // ── Init / bootstrap ──────────────────────────────────────
+  function init() {
+    _wireCollapsibles();
+    const f = window.__focus;
+    if (f && f.sourceType === 'service_correction' && f.sourceId) S.focusCorrectionId = f.sourceId;
+
+    App.call('service', 'bootstrap', {}, boot => {
+      S.boot = boot;
+      S.catByKey = {};
+      (boot.catalog || []).forEach(c => { S.catByKey[c.key] = c; });
+
+      $('svc-directory-title').textContent = 'Current Assignments (' + boot.currentYear + ')';
+      _fillDatalists();
+      _fillQuarterSelect($('svc-corr-quarter'));
+      _fillQuarterSelect($('svc-asn-quarter'));
+      _fillQuarterSelect($('svc-nom-quarter'));
+      _fillNomCategorySelect();
+      // Also (re)fill the assignment-form category picker here: the
+      // Assignments tab can be opened before this bootstrap returns, and
+      // its own fill would then have run against an empty catalog.
+      _fillAsnCategorySelect();
+      renderDirectory(boot.currentAssignments || [], 'svc-directory-body');
+
+      // Deep link from a correction task → open the corrections queue.
+      if (S.focusCorrectionId && _canManage) switchTab('corrections');
+    });
+  }
+
+  function _fillDatalists() {
+    $('svc-role-list').innerHTML = (S.boot.roleSuggestions || [])
+      .map(r => '<option value="' + _esc(r) + '"></option>').join('');
+    $('svc-catalog-list').innerHTML = (S.boot.catalog || [])
+      .filter(c => c.active)
+      .map(c => '<option value="' + _esc(c.label) + '"></option>').join('');
+  }
+
+  function _fillQuarterSelect(sel, value) {
+    if (!sel) return;
+    sel.innerHTML = QUARTER_OPTIONS
+      .map(q => '<option value="' + _esc(q) + '">' + (q === '' ? '(none)' : _esc(q)) + '</option>').join('');
+    sel.value = value || '';
+  }
+
+  // ── Tab switching (house pattern) ─────────────────────────
+  function switchTab(tab) {
+    document.querySelectorAll('#service-module .module-tab').forEach(b => {
+      const on = b.dataset.tab === tab;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    document.querySelectorAll('#service-module .tab-panel').forEach(p => {
+      p.style.display = (p.id === 'svc-tab-' + tab) ? '' : 'none';
+    });
+    if (tab === 'proposed' && _canSeeProposed && S.proposed === null) loadProposed();
+    if (tab === 'mine' && S.mineRows === null) loadMine();
+    if (tab === 'nominate' && S.myNoms === null) loadNominate();
+    if (tab === 'full' && S.fullRows === null) loadFull();
+    if (tab === 'assignments' && S.asnRows === null) loadManageAssignments();
+    if (tab === 'categories' && S.catalog === null) loadCatalog();
+    if (tab === 'corrections' && S.corrections === null) loadCorrections();
+    if (tab === 'nominations' && S.nomQueue === null) loadNomQueue();
+  }
+
+  // ── Directory ─────────────────────────────────────────────
+  /** Sweep one year's assignments, creating missing auto-assign companions. */
+  function reapplyAutoAssigns() {
+    const year = prompt('Re-apply auto-assign rules for which academic year?', (S.boot && S.boot.currentYear) || '');
+    if (year === null) return;
+    App.call('service', 'reapplyAutoAssigns', { year: year.trim() }, res => {
+      let msg;
+      if (res.created.length) {
+        const sample = res.created.slice(0, 4).map(c => c.name + ' → ' + c.categoryLabel + ' (' + c.role + ')');
+        msg = res.created.length + ' companion assignment(s) created for ' + res.year + ': '
+          + sample.join('; ') + (res.created.length > 4 ? '; …' : '') + '.';
+      } else {
+        msg = 'Scanned ' + res.scanned + ' assignment(s) for ' + res.year + ' — no missing companions; everything already in place.';
+      }
+      if (res.skippedUnknownTargets) msg += ' (' + res.skippedUnknownTargets + ' rule target(s) unknown — check the Categories rules.)';
+      Toast.show(msg, 'success');
+      if (res.created.length) {
+        S.asnRows = null; S.fullRows = null; S.mineRows = null;
+        loadManageAssignments();
+        refreshDirectory();
+      }
+    });
+  }
+
+  function refreshDirectory() {
+    $('svc-directory-body').innerHTML = LOADING;
+    App.call('service', 'currentAssignments', {}, rows => renderDirectory(rows || [], 'svc-directory-body'));
+  }
+
+  function loadProposed() {
+    $('svc-proposed-body').innerHTML = LOADING;
+    App.call('service', 'proposedSlate', {}, res => {
+      S.proposed = res || { year: '', open: false, rows: [] };
+      $('svc-proposed-title').textContent = 'Proposed Slate' + (S.proposed.year ? ' (' + S.proposed.year + ')' : '');
+      _renderProposedSlate();
+    });
+  }
+
+  function _renderProposedSlate() {
+    const body = $('svc-proposed-body');
+    const rows = (S.proposed && S.proposed.rows) || [];
+    if (!S.proposed || !S.proposed.year) {
+      body.innerHTML = '<div class="empty-state"><i class="ti ti-calendar" style="font-size:32px;display:block;margin-bottom:8px;"></i>No nomination cycle yet — open one on the Nominations tab.</div>';
+      return;
+    }
+    if (!rows.length) {
+      body.innerHTML = '<div class="empty-state"><i class="ti ti-calendar" style="font-size:32px;display:block;margin-bottom:8px;"></i>No nominations yet for ' + _esc(S.proposed.year) + '.</div>';
+      return;
+    }
+    // Enumerate the nominable catalog (plus any category that somehow
+    // holds slate rows), so vacancies show as "No nominations yet" —
+    // that is the Proposed view's job, unlike Current, which renders
+    // only populated committees.
+    const groups = {};
+    rows.forEach(r => { (groups[r.categoryKey] = groups[r.categoryKey] || []).push(r); });
+    const cards = {};
+    ((S.boot && S.boot.catalog) || []).forEach(c => {
+      if (c.active && c.nominationEligible) {
+        cards[c.key] = { key: c.key, label: c.label, isLeadership: c.isLeadership, sortWeight: c.sortWeight };
+      }
+    });
+    Object.keys(groups).forEach(k => {
+      if (!cards[k]) {
+        const g0 = groups[k][0];
+        cards[k] = { key: k, label: g0.categoryLabel, isLeadership: g0.isLeadership, sortWeight: g0.sortWeight };
+      }
+    });
+    const keys = Object.keys(cards).sort((a, b) =>
+      (cards[a].sortWeight - cards[b].sortWeight) || String(cards[a].label).localeCompare(String(cards[b].label)));
+    const spanKey = _spanCategoryKey(keys.map(k => cards[k]));
+
+    body.innerHTML = '<div class="svc-grid">' + keys.map(k => {
+      const g = groups[k] || [];
+      g.sort((a, b) => ((a.status === 'ACCEPTED' ? 0 : 1) - (b.status === 'ACCEPTED' ? 0 : 1))
+        || String(a.nameLastFirst).localeCompare(String(b.nameLastFirst)));
+      const members = g.length ? g.map(m => {
+        const qbadges = (m.quarter && m.quarter !== 'AY')
+          ? m.quarter.split('/').map(q => '<span class="badge badge-gold">' + _esc(q.trim()) + '</span>').join('') : '';
+        const assigned = m.status === 'ACCEPTED' ? ' <span class="badge badge-success">Assigned</span>' : '';
+        const nm = (!cards[k].isLeadership && /chair/i.test(m.role)) ? '<strong>' + _esc(m.name) + '</strong>' : _esc(m.name);
+        const detail = '<div id="svc-prop-detail-' + _esc(m.nominationId) + '" class="text-muted text-sm" style="display:none;padding:2px 0 4px;">'
+          + 'Priority #' + _esc(m.priority)
+          + (m.note ? ' — ' + _esc(m.note) : '')
+          + '</div>';
+        return '<div class="svc-member" style="cursor:pointer;" role="button" tabindex="0" aria-expanded="false"'
+          + ' onclick="ServiceUI.toggleProposedDetail(\'' + _esc(m.nominationId) + '\', this)"'
+          + ' onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();ServiceUI.toggleProposedDetail(\'' + _esc(m.nominationId) + '\', this);}">'
+          + '<i class="ti ti-chevron-right svc-chevron" aria-hidden="true" style="font-size:12px;"></i>'
+          + nm + qbadges + assigned + '</div>' + detail;
+      }).join('') : '<div class="svc-empty-cat">No nominations yet</div>';
+      const span = (k === spanKey) ? ' svc-span' : '';
+      return '<div class="svc-cat-card' + span + '"><div class="svc-cat-title">' + _esc(cards[k].label) + '</div>' + members + '</div>';
+    }).join('') + '</div>';
+  }
+
+  /** Expand/collapse one slate entry's priority + note line. */
+  function toggleProposedDetail(id, el) {
+    const d = $('svc-prop-detail-' + id);
+    if (!d) return;
+    const show = d.style.display === 'none';
+    d.style.display = show ? '' : 'none';
+    if (el) {
+      el.setAttribute('aria-expanded', show ? 'true' : 'false');
+      const chev = el.querySelector('.svc-chevron');
+      if (chev) chev.style.transform = show ? 'rotate(90deg)' : '';
+    }
+  }
+
+  function renderDirectory(rows, elId) {
+    const body = $(elId);
+    if (!rows.length) {
+      body.innerHTML = '<div class="empty-state"><i class="ti ti-users-group" style="font-size:32px;display:block;margin-bottom:8px;"></i>No assignments recorded for this year yet.</div>';
+      return;
+    }
+    const groups = {};
+    rows.forEach(r => { (groups[r.categoryKey] = groups[r.categoryKey] || []).push(r); });
+    const keys = Object.keys(groups).sort((a, b) => {
+      const ga = groups[a][0], gb = groups[b][0];
+      return (ga.sortWeight - gb.sortWeight) || String(ga.categoryLabel).localeCompare(String(gb.categoryLabel));
+    });
+
+    const spanKey = _spanCategoryKey(keys.map(k => ({
+      key: k, isLeadership: groups[k][0].isLeadership, sortWeight: groups[k][0].sortWeight,
+    })));
+    body.innerHTML = '<div class="svc-grid">' + keys.map(k => {
+      const g = groups[k];
+      g.sort((a, b) => {
+        const ac = /chair|coordinator/i.test(a.role) ? 0 : 1;
+        const bc = /chair|coordinator/i.test(b.role) ? 0 : 1;
+        if (ac !== bc) return ac - bc;
+        return String(a.nameLastFirst).localeCompare(String(b.nameLastFirst));
+      });
+      // Bold marks the chair AMONG members of a committee; a one-person
+      // leadership card has nobody to distinguish, so it renders plain
+      // (matches the legacy layout: Lars plain under DGS, bold inside
+      // Graduate Admissions). Keyed on the category's Leadership flag.
+      const isLead = g[0].isLeadership;
+      const members = g.map(m => {
+        const badges = (m.quarter && m.quarter !== 'AY')
+          ? m.quarter.split('/').map(q => '<span class="badge badge-gold">' + _esc(q.trim()) + '</span>').join('') : '';
+        const nm = (!isLead && /chair/i.test(m.role)) ? '<strong>' + _esc(m.name) + '</strong>' : _esc(m.name);
+        return '<div class="svc-member">' + nm + badges + '</div>';
+      }).join('');
+      const span = (k === spanKey) ? ' svc-span' : '';
+      return '<div class="svc-cat-card' + span + '"><div class="svc-cat-title">' + _esc(g[0].categoryLabel) + '</div>' + members + '</div>';
+    }).join('') + '</div>';
+  }
+
+  /**
+   * The full-width slot, catalog-driven (no category names in code):
+   * the single lowest-sortWeight LEADERSHIP category spans both
+   * columns — with the tuned weights that is the Department Chair.
+   */
+  function _spanCategoryKey(cats) {
+    let best = null;
+    cats.forEach(c => {
+      if (!c.isLeadership) return;
+      if (!best || c.sortWeight < best.sortWeight) best = c;
+    });
+    return best ? best.key : '';
+  }
+
+  // ── My history ────────────────────────────────────────────
+  function loadMine() {
+    $('svc-mine-body').innerHTML = LOADING;
+    App.call('service', 'myHistory', {}, rows => {
+      S.mineRows = rows || [];
+      _renderMine();
+    });
+  }
+
+  function _renderMine() {
+    $('svc-mine-body').innerHTML = (S.mineRows && S.mineRows.length)
+      ? _historyTable(_applySort('mine', S.mineRows), { table: 'mine', showName: false })
+      : '<div class="empty-state"><i class="ti ti-inbox" style="font-size:32px;display:block;margin-bottom:8px;"></i>No service history found on record for your account.</div>';
+  }
+
+  function exportMyCsv() { _downloadCsv(_applySort('mine', S.mineRows || []), 'My_Service_History.csv', false); }
+
+  // ── Corrections (requester side) ──────────────────────────
+  function openCorrection()   { switchTab('mine'); $('svc-correction-card').style.display = ''; }
+  function cancelCorrection() { $('svc-correction-card').style.display = 'none'; }
+
+  function submitCorrection() {
+    const payload = {
+      categoryLabel: $('svc-corr-category').value,
+      year: $('svc-corr-year').value,
+      role: $('svc-corr-role').value,
+      quarter: $('svc-corr-quarter').value,
+      note: $('svc-corr-note').value,
+    };
+    App.call('service', 'submitCorrection', payload, () => {
+      Toast.show('Correction request submitted for review.', 'success');
+      $('svc-corr-category').value = ''; $('svc-corr-year').value = '';
+      $('svc-corr-role').value = ''; $('svc-corr-quarter').value = ''; $('svc-corr-note').value = '';
+      cancelCorrection();
+    });
+  }
+
+  // ── Full history ──────────────────────────────────────────
+  function loadFull() {
+    $('svc-full-body').innerHTML = LOADING;
+    App.call('service', 'fullHistory', {}, rows => {
+      S.fullRows = rows || [];
+      _fillFilterSelect($('svc-full-name'), S.fullRows.map(r => r.nameLastFirst), 'All names');
+      _fillFilterSelect($('svc-full-year'), S.fullRows.map(r => r.year), 'All years', true);
+      _fillFilterSelect($('svc-full-cat'), S.fullRows.map(r => r.categoryLabel), 'All categories');
+      applyFullFilters();
+    });
+  }
+
+  function _fillFilterSelect(sel, values, allLabel, descending) {
+    const uniq = Array.from(new Set(values.filter(Boolean))).sort();
+    if (descending) uniq.reverse();
+    sel.innerHTML = '<option value="">' + _esc(allLabel) + '</option>'
+      + uniq.map(v => '<option value="' + _esc(v) + '">' + _esc(v) + '</option>').join('');
+  }
+
+  function _filteredFullRows() {
+    const q = $('svc-full-search').value.toLowerCase().trim();
+    const nm = $('svc-full-name').value, yr = $('svc-full-year').value, ct = $('svc-full-cat').value;
+    return (S.fullRows || []).filter(r => {
+      if (nm && r.nameLastFirst !== nm) return false;
+      if (yr && r.year !== yr) return false;
+      if (ct && r.categoryLabel !== ct) return false;
+      if (q && (r.year + ' ' + r.nameLastFirst + ' ' + r.categoryLabel + ' ' + r.role + ' ' + r.quarter + ' ' + r.notes).toLowerCase().indexOf(q) === -1) return false;
+      return true;
+    });
+  }
+
+  function applyFullFilters() {
+    const rows = _applySort('full', _filteredFullRows());
+    $('svc-full-body').innerHTML = rows.length
+      ? _historyTable(rows, { table: 'full', showName: true })
+      : '<div class="empty-state">No records match your filters.</div>';
+  }
+
+  function exportFullCsv() { _downloadCsv(_applySort('full', _filteredFullRows()), 'Department_Service_History.csv', true); }
+
+  // ── Shared history table + CSV ────────────────────────────
+  function _historyTable(rows, opts) {
+    const t = opts.table;
+    const nameTh = opts.showName ? _th(t, 'name', 'Name') : '';
+    return '<div class="table-wrap"><table class="data-table"><thead><tr>'
+      + _th(t, 'year', 'Year') + nameTh + _th(t, 'categoryLabel', 'Committee / Service')
+      + _th(t, 'role', 'Role') + _th(t, 'quarter', 'Quarter') + _th(t, 'notes', 'Notes')
+      + '</tr></thead><tbody>'
+      + rows.map(r =>
+          '<tr><td><strong>' + _esc(r.year) + '</strong></td>'
+          + (opts.showName ? '<td>' + _esc(r.nameLastFirst) + (r.hasProfile ? '' : ' <span class="badge badge-neutral">no profile</span>') + '</td>' : '')
+          + '<td>' + _esc(r.categoryLabel) + '</td><td>' + _esc(r.role) + '</td>'
+          + '<td>' + _esc(r.quarter) + '</td><td class="text-muted">' + _esc(r.notes) + '</td></tr>'
+        ).join('')
+      + '</tbody></table></div>';
+  }
+
+  function _downloadCsv(rows, filename, withName) {
+    if (!rows.length) { Toast.show('No data to export.', 'error'); return; }
+    const esc = v => '"' + String(v === null || v === undefined ? '' : v).replace(/"/g, '""') + '"';
+    const head = ['Academic Year'].concat(withName ? ['Name'] : [], ['Committee / Service', 'Role', 'Quarter', 'Notes']);
+    const lines = [head.map(esc).join(',')].concat(rows.map(r =>
+      [r.year].concat(withName ? [r.nameLastFirst] : [], [r.categoryLabel, r.role, r.quarter, r.notes]).map(esc).join(',')));
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(a.href);
+  }
+
+  // ── Manage: assignments ───────────────────────────────────
+  function loadManageAssignments() {
+    $('svc-asn-body').innerHTML = LOADING;
+    App.call('service', 'fullHistory', {}, rows => {
+      S.asnRows = rows || [];
+      _fillFilterSelect($('svc-asn-year'), S.asnRows.map(r => r.year), 'All years', true);
+      applyAsnFilters();
+    });
+    if (S.people === null) {
+      App.call('service', 'listPeople', {}, people => {
+        S.people = people || [];
+        $('svc-asn-person').innerHTML = '<option value="">— choose —</option>'
+          + S.people.map(p => '<option value="' + _esc(p.email) + '">' + _esc(p.name) + '</option>').join('');
+      });
+    }
+    _fillAsnCategorySelect();
+  }
+
+  function _fillAsnCategorySelect() {
+    const cats = (S.boot ? S.boot.catalog : []).filter(c => c.active)
+      .sort((a, b) => (a.sortWeight - b.sortWeight) || a.label.localeCompare(b.label));
+    $('svc-asn-category').innerHTML = '<option value="">— choose —</option>'
+      + cats.map(c => '<option value="' + _esc(c.key) + '">' + _esc(c.label) + '</option>').join('');
+  }
+
+  function applyAsnFilters() {
+    const q = $('svc-asn-search').value.toLowerCase().trim();
+    const yr = $('svc-asn-year').value;
+    const rows = (S.asnRows || []).filter(r => {
+      if (yr && r.year !== yr) return false;
+      if (q && (r.year + ' ' + r.nameLastFirst + ' ' + r.categoryLabel + ' ' + r.role + ' ' + r.quarter).toLowerCase().indexOf(q) === -1) return false;
+      return true;
+    });
+    if (!rows.length) { $('svc-asn-body').innerHTML = '<div class="empty-state">No assignments match.</div>'; return; }
+    $('svc-asn-body').innerHTML = '<div class="table-wrap"><table class="data-table"><thead><tr>'
+      + _th('asn', 'year', 'Year') + _th('asn', 'name', 'Name') + _th('asn', 'categoryLabel', 'Committee / Service')
+      + _th('asn', 'role', 'Role') + _th('asn', 'quarter', 'Quarter') + _th('asn', 'notes', 'Notes') + '<th></th>'
+      + '</tr></thead><tbody>'
+      + _applySort('asn', rows).map(r =>
+          '<tr><td>' + _esc(r.year) + '</td>'
+          + '<td>' + _esc(r.nameLastFirst) + (r.hasProfile ? '' : ' <span class="badge badge-neutral">no profile</span>') + '</td>'
+          + '<td>' + _esc(r.categoryLabel) + '</td><td>' + _esc(r.role) + '</td><td>' + _esc(r.quarter) + '</td>'
+          + '<td class="text-muted">' + _esc(r.notes) + '</td>'
+          + '<td style="white-space:nowrap;">'
+          +   '<button class="btn btn-secondary btn-sm" onclick="ServiceUI.editAssignment(\'' + _esc(r.assignmentId) + '\')" aria-label="Edit assignment"><i class="ti ti-pencil"></i></button> '
+          +   '<button class="btn btn-secondary btn-sm" onclick="ServiceUI.deleteAssignment(\'' + _esc(r.assignmentId) + '\')" aria-label="Delete assignment"><i class="ti ti-trash"></i></button>'
+          + '</td></tr>'
+        ).join('')
+      + '</tbody></table></div>';
+  }
+
+  function startAddAssignment() {
+    S.editingAssignmentId = '';
+    $('svc-asn-form-title').textContent = 'Add assignment';
+    $('svc-asn-historical').checked = false; togglePersonMode();
+    $('svc-asn-person').value = ''; $('svc-asn-rawname').value = '';
+    $('svc-asn-category').value = ''; $('svc-asn-role').value = '';
+    $('svc-asn-yearval').value = S.boot ? S.boot.currentYear : '';
+    $('svc-asn-quarter').value = '';
+    $('svc-asn-notes').value = '';
+    $('svc-asn-form-card').style.display = '';
+    $('svc-asn-form-card').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  function editAssignment(id) {
+    const r = (S.asnRows || []).find(x => x.assignmentId === id);
+    if (!r) return;
+    S.editingAssignmentId = id;
+    $('svc-asn-form-title').textContent = 'Edit assignment';
+    const historical = !r.personEmail;
+    $('svc-asn-historical').checked = historical; togglePersonMode();
+    $('svc-asn-person').value = r.personEmail || '';
+    $('svc-asn-rawname').value = r.rawName || '';
+    $('svc-asn-category').value = r.categoryKey;
+    $('svc-asn-role').value = r.role;
+    $('svc-asn-yearval').value = r.year;
+    $('svc-asn-quarter').value = QUARTER_OPTIONS.indexOf(r.quarter) !== -1 ? r.quarter : '';
+    $('svc-asn-notes').value = r.notes;
+    $('svc-asn-form-card').style.display = '';
+    $('svc-asn-form-card').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  function cancelAssignment() { $('svc-asn-form-card').style.display = 'none'; }
+
+  function togglePersonMode() {
+    const historical = $('svc-asn-historical').checked;
+    $('svc-asn-person-wrap').style.display = historical ? 'none' : '';
+    $('svc-asn-rawname-wrap').style.display = historical ? '' : 'none';
+  }
+
+  function onAsnCategoryChange() {
+    const cat = S.catByKey[$('svc-asn-category').value];
+    if (cat && !$('svc-asn-role').value) $('svc-asn-role').value = cat.defaultRole || '';
+  }
+
+  function saveAssignment() {
+    const historical = $('svc-asn-historical').checked;
+    const payload = {
+      personEmail: historical ? '' : $('svc-asn-person').value,
+      rawName: historical ? $('svc-asn-rawname').value : '',
+      categoryKey: $('svc-asn-category').value,
+      role: $('svc-asn-role').value,
+      year: $('svc-asn-yearval').value,
+      quarter: $('svc-asn-quarter').value,
+      notes: $('svc-asn-notes').value,
+    };
+    const done = res => {
+      Toast.show('Assignment saved.' + _autoSummary(res && res.autoAssigned), 'success');
+      cancelAssignment();
+      S.asnRows = null; S.fullRows = null; S.mineRows = null;
+      loadManageAssignments();
+      refreshDirectory();
+    };
+    if (S.editingAssignmentId) {
+      payload.assignmentId = S.editingAssignmentId;
+      App.call('service', 'updateAssignment', payload, done);
+    } else {
+      App.call('service', 'addAssignment', payload, done);
+    }
+  }
+
+  function deleteAssignment(id) {
+    const r = (S.asnRows || []).find(x => x.assignmentId === id);
+    if (!r) return;
+    if (!confirm('Delete this assignment?\n\n' + r.nameLastFirst + ' — ' + r.categoryLabel + ' (' + r.year + ')')) return;
+    App.call('service', 'deleteAssignment', { assignmentId: id }, () => {
+      Toast.show('Assignment deleted.', 'success');
+      S.asnRows = null; S.fullRows = null; S.mineRows = null;
+      loadManageAssignments();
+      refreshDirectory();
+    });
+  }
+
+  // ── Manage: categories ────────────────────────────────────
+  function loadCatalog() {
+    $('svc-cat-body').innerHTML = LOADING;
+    App.call('service', 'listCatalog', {}, cats => {
+      S.catalog = cats || [];
+      _renderCatalog();
+    });
+  }
+
+  function _renderCatalog() {
+    const yn = v => v ? 'Yes' : '—';
+    if (!S.catalog.length) {
+      $('svc-cat-body').innerHTML = '<div class="empty-state">No categories yet — add one, or run the import.</div>';
+      return;
+    }
+    $('svc-cat-body').innerHTML = '<div class="table-wrap"><table class="data-table"><thead><tr>'
+      + _th('cat', 'label', 'Label') + _th('cat', 'active', 'Status') + _th('cat', 'isQuarterly', 'Quarterly')
+      + _th('cat', 'defaultRole', 'Default role') + _th('cat', 'isLeadership', 'Leadership')
+      + _th('cat', 'sortWeight', 'Weight') + _th('cat', 'nominationEligible', 'Nomination')
+      + _th('cat', 'autoAssigns', 'Auto-assigns') + _th('cat', 'usageCount', 'In use') + '<th></th>'
+      + '</tr></thead><tbody>'
+      + _applySort('cat', S.catalog).map(c =>
+          '<tr><td>' + _esc(c.label) + '</td>'
+          + '<td>' + (c.active ? '<span class="badge badge-success">Active</span>' : '<span class="badge badge-neutral">Inactive</span>') + '</td>'
+          + '<td>' + yn(c.isQuarterly) + '</td><td>' + _esc(c.defaultRole) + '</td>'
+          + '<td>' + yn(c.isLeadership) + '</td><td>' + _esc(c.sortWeight) + '</td>'
+          + '<td>' + yn(c.nominationEligible) + '</td><td class="text-muted text-sm">' + _esc(c.autoAssigns || '') + '</td><td>' + _esc(c.usageCount || 0) + '</td>'
+          + '<td style="white-space:nowrap;">'
+          +   '<button class="btn btn-secondary btn-sm" onclick="ServiceUI.editCategory(\'' + _esc(c.key) + '\')" aria-label="Edit category"><i class="ti ti-pencil"></i></button>'
+          +   (c.usageCount ? '' : ' <button class="btn btn-secondary btn-sm" onclick="ServiceUI.deleteCategory(\'' + _esc(c.key) + '\')" aria-label="Delete category"><i class="ti ti-trash"></i></button>')
+          + '</td></tr>'
+        ).join('')
+      + '</tbody></table></div>';
+  }
+
+  // ── Auto-assigns picker (checkbox + per-target role) ──────
+  /** Client-side mirror of the server's rule parser. Stored values are
+   *  canonical (server-normalized), so keys parse directly. */
+  function _parseAutoAssignsClient(raw) {
+    return String(raw || '').split(',').map(s => s.trim()).filter(Boolean).map(e => {
+      const at = e.indexOf(':');
+      return { key: at === -1 ? e : e.slice(0, at).trim(), role: at === -1 ? '' : e.slice(at + 1).trim() };
+    }).filter(e => e.key);
+  }
+
+  /**
+   * Renders the picker: every active category except the one being
+   * edited, alphabetical — plus any inactive (or missing) category the
+   * existing rule references, so editing never silently drops it.
+   * Checked targets show a role input prefilled with the target's
+   * default role.
+   */
+  function _renderAutoAssignPicker(selfKey, ruleStr) {
+    const box = $('svc-cat-aa-list');
+    if (!box) return;
+    const rule = {};
+    _parseAutoAssignsClient(ruleStr).forEach(e => { rule[e.key] = e.role; });
+
+    const cats = (S.boot ? S.boot.catalog : []) || [];
+    const byKey = {};
+    cats.forEach(c => { byKey[c.key] = c; });
+
+    const list = cats.filter(c => c.active && c.key !== selfKey)
+      .sort((a, b) => a.label.localeCompare(b.label))
+      .map(c => ({ key: c.key, label: c.label, defaultRole: c.defaultRole || 'Member', marker: '' }));
+    // Referenced-but-not-listed targets (inactive, or defensively missing)
+    Object.keys(rule).forEach(k => {
+      if (k === selfKey || list.some(x => x.key === k)) return;
+      const c = byKey[k];
+      list.push(c
+        ? { key: k, label: c.label, defaultRole: c.defaultRole || 'Member', marker: ' (inactive)' }
+        : { key: k, label: k, defaultRole: 'Member', marker: ' (missing)' });
+    });
+
+    if (!list.length) {
+      box.innerHTML = '<span class="text-muted text-sm">No other categories yet.</span>';
+      return;
+    }
+    box.innerHTML = list.map(c => {
+      const checked = Object.prototype.hasOwnProperty.call(rule, c.key);
+      const role = checked ? (rule[c.key] || c.defaultRole) : c.defaultRole;
+      return '<div style="display:flex;align-items:center;gap:8px;padding:2px 0;">'
+        + '<label style="display:flex;align-items:center;gap:8px;font-weight:normal;margin:0;flex:1;">'
+        + '<input type="checkbox" class="svc-aa-box" id="svc-cat-aa-' + _esc(c.key) + '" data-key="' + _esc(c.key)
+        + '" data-default="' + _esc(c.defaultRole) + '"' + (checked ? ' checked' : '')
+        + ' onchange="ServiceUI.toggleAutoAssignTarget(\'' + _esc(c.key) + '\')">'
+        + _esc(c.label) + '<span class="text-muted text-sm">' + _esc(c.marker) + '</span></label>'
+        + '<input class="form-input" list="svc-role-list" id="svc-cat-aa-role-' + _esc(c.key) + '"'
+        + ' value="' + _esc(role) + '" aria-label="Role for ' + _esc(c.label) + '"'
+        + ' style="width:130px;padding:3px 8px;font-size:12.5px;' + (checked ? '' : 'display:none;') + '">'
+        + '</div>';
+    }).join('');
+  }
+
+  function toggleAutoAssignTarget(key) {
+    const box = $('svc-cat-aa-' + key);
+    const role = $('svc-cat-aa-role-' + key);
+    if (!box || !role) return;
+    role.style.display = box.checked ? '' : 'none';
+    if (box.checked && !role.value) role.value = box.dataset.default || 'Member';
+  }
+
+  /**
+   * Composes the canonical rule string from the picker. A role left
+   * equal to the target's default is stored as a bare key (follows the
+   * default dynamically); an edited role is pinned as key:Role.
+   */
+  function _composeAutoAssigns() {
+    const out = [];
+    document.querySelectorAll('#svc-cat-aa-list .svc-aa-box').forEach(box => {
+      if (!box.checked) return;
+      const key = box.dataset.key;
+      const roleEl = $('svc-cat-aa-role-' + key);
+      const role = roleEl ? roleEl.value.trim() : '';
+      const dflt = String(box.dataset.default || '').trim();
+      out.push(role && role.toLowerCase() !== dflt.toLowerCase() ? key + ':' + role : key);
+    });
+    return out.join(', ');
+  }
+
+  function newCategory() {
+    S.editingCategoryKey = '';
+    $('svc-cat-form-title').textContent = 'Add category';
+    $('svc-cat-key-note').textContent = '';
+    $('svc-cat-label').value = ''; $('svc-cat-defaultrole').value = 'Member';
+    _renderAutoAssignPicker('', '');
+    $('svc-cat-sortweight').value = '100';
+    $('svc-cat-active').checked = true; $('svc-cat-quarterly').checked = false;
+    $('svc-cat-leadership').checked = false; $('svc-cat-nomination').checked = true;
+    $('svc-cat-notes').value = '';
+    $('svc-cat-form-card').style.display = '';
+    $('svc-cat-form-card').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  function editCategory(key) {
+    const c = (S.catalog || []).find(x => x.key === key);
+    if (!c) return;
+    S.editingCategoryKey = key;
+    $('svc-cat-form-title').textContent = 'Edit category';
+    $('svc-cat-key-note').textContent = 'Key: ' + key + ' (permanent)';
+    $('svc-cat-label').value = c.label; $('svc-cat-defaultrole').value = c.defaultRole;
+    _renderAutoAssignPicker(key, c.autoAssigns || '');
+    $('svc-cat-sortweight').value = c.sortWeight;
+    $('svc-cat-active').checked = c.active; $('svc-cat-quarterly').checked = c.isQuarterly;
+    $('svc-cat-leadership').checked = c.isLeadership; $('svc-cat-nomination').checked = c.nominationEligible;
+    $('svc-cat-notes').value = c.notes;
+    $('svc-cat-form-card').style.display = '';
+    $('svc-cat-form-card').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  function cancelCategory() { $('svc-cat-form-card').style.display = 'none'; }
+
+  function saveCategory() {
+    const payload = {
+      key: S.editingCategoryKey,
+      label: $('svc-cat-label').value,
+      defaultRole: $('svc-cat-defaultrole').value,
+      sortWeight: $('svc-cat-sortweight').value,
+      active: $('svc-cat-active').checked,
+      isQuarterly: $('svc-cat-quarterly').checked,
+      isLeadership: $('svc-cat-leadership').checked,
+      nominationEligible: $('svc-cat-nomination').checked,
+      autoAssigns: _composeAutoAssigns(),
+      notes: $('svc-cat-notes').value,
+    };
+    App.call('service', 'upsertCategory', payload, () => {
+      Toast.show('Category saved.', 'success');
+      cancelCategory();
+      _reloadBootCatalog();
+      loadCatalog();
+    });
+  }
+
+  function deleteCategory(key) {
+    const c = (S.catalog || []).find(x => x.key === key);
+    if (!c) return;
+    if (!confirm('Delete the category "' + c.label + '"? (Only possible while unused.)')) return;
+    App.call('service', 'removeCategory', { key: key }, () => {
+      Toast.show('Category deleted.', 'success');
+      _reloadBootCatalog();
+      loadCatalog();
+    });
+  }
+
+  /** One-line summary of auto-assign results for toasts. */
+  function _autoSummary(auto) {
+    if (!auto || !auto.length) return '';
+    const made = auto.filter(a => a.created).map(a => a.categoryLabel + (a.role ? ' (' + a.role + ')' : ''));
+    const skip = auto.filter(a => !a.created).map(a => a.categoryLabel + ' — ' + a.reason);
+    let s = '';
+    if (made.length) s += ' Also assigned to ' + made.join(', ') + '.';
+    if (skip.length) s += ' Skipped: ' + skip.join('; ') + '.';
+    return s;
+  }
+
+  /** Catalog changed → refresh the cached copy that drives pickers/directory. */
+  function _reloadBootCatalog() {
+    App.call('service', 'bootstrap', {}, boot => {
+      S.boot = boot;
+      S.catByKey = {};
+      (boot.catalog || []).forEach(c => { S.catByKey[c.key] = c; });
+      _fillDatalists();
+      _fillAsnCategorySelect();
+      _fillNomCategorySelect();
+      $('svc-directory-title').textContent = 'Current Assignments (' + boot.currentYear + ')';
+      renderDirectory(boot.currentAssignments || [], 'svc-directory-body');
+    });
+  }
+
+  // ── Manage: corrections queue ─────────────────────────────
+  function loadCorrections() {
+    $('svc-corrq-body').innerHTML = LOADING;
+    App.call('service', 'listCorrections', {}, rows => {
+      S.corrections = rows || [];
+      _renderCorrections();
+    });
+  }
+
+  function _renderCorrections() {
+    if (!S.corrections.length) {
+      $('svc-corrq-body').innerHTML = '<div class="empty-state"><i class="ti ti-inbox" style="font-size:32px;display:block;margin-bottom:8px;"></i>No correction requests.</div>';
+      return;
+    }
+    $('svc-corrq-body').innerHTML = '<div class="table-wrap"><table class="data-table"><thead><tr>'
+      + _th('corr', 'status', 'Status') + _th('corr', 'personName', 'Requested by')
+      + _th('corr', 'categoryLabel', 'Committee / Service') + _th('corr', 'year', 'Year')
+      + _th('corr', 'note', 'Request') + '<th>Resolution</th><th></th>'
+      + '</tr></thead><tbody>'
+      + _applySort('corr', S.corrections).map(c => {
+          const focus = (c.correctionId === S.focusCorrectionId) ? ' class="svc-focus"' : '';
+          const badge = c.status === 'OPEN'
+            ? '<span class="badge badge-warning">Open</span>'
+            : '<span class="badge badge-success">Resolved</span>';
+          const detail = [c.role, c.quarter].filter(Boolean).join(', ');
+          const resolution = c.status === 'RESOLVED'
+            ? _esc(c.resolutionNote || '') + '<div class="text-muted text-sm">' + _esc(c.resolvedBy) + '</div>' : '';
+          const action = c.status === 'OPEN'
+            ? '<button class="btn btn-secondary btn-sm" onclick="ServiceUI.resolveCorrection(\'' + _esc(c.correctionId) + '\')"><i class="ti ti-check"></i> Resolve</button>' : '';
+          return '<tr' + focus + '><td>' + badge + '</td><td>' + _esc(c.personName) + '</td>'
+            + '<td>' + _esc(c.categoryLabel) + (detail ? ' <span class="text-muted">(' + _esc(detail) + ')</span>' : '') + '</td>'
+            + '<td>' + _esc(c.year) + '</td><td>' + _esc(c.note) + '</td><td>' + resolution + '</td><td>' + action + '</td></tr>';
+        }).join('')
+      + '</tbody></table></div>';
+  }
+
+  function resolveCorrection(id) {
+    const note = prompt('Optional resolution note (what was changed):', '');
+    if (note === null) return;   // cancelled
+    App.call('service', 'resolveCorrection', { correctionId: id, resolutionNote: note }, () => {
+      Toast.show('Correction marked resolved.', 'success');
+      S.corrections = null;
+      loadCorrections();
+    });
+  }
+
+  // ── Manage: import ────────────────────────────────────────
+  function onImportFile() {
+    const input = $('svc-import-file');
+    if (!input.files || !input.files.length) return;
+    const reader = new FileReader();
+    reader.onload = e => { $('svc-import-text').value = e.target.result; };
+    reader.readAsText(input.files[0]);
+  }
+
+  function runImportPreview() {
+    const csvText = $('svc-import-text').value;
+    if (!csvText.trim()) { Toast.show('Paste or upload the CSV first.', 'error'); return; }
+    $('svc-import-preview').innerHTML = LOADING;
+    App.call('service', 'importPreview', { csvText: csvText }, data => {
+      S.importData = data;
+      _renderImportPreview();
+    }, () => { $('svc-import-preview').innerHTML = ''; });
+  }
+
+  function _renderImportPreview() {
+    const d = S.importData;
+    const s = d.summary;
+    const summary = '<p><strong>' + s.total + '</strong> rows — '
+      + s.matched + ' matched to profiles, '
+      + s.ambiguous + ' ambiguous, '
+      + s.unmatched + ' without a profile match'
+      + (s.badYears ? ', <span class="badge badge-danger">' + s.badYears + ' invalid year(s) — skipped</span>' : '')
+      + (s.movedQuarters ? ', ' + s.movedQuarters + ' quarter value(s) moved to Notes' : '')
+      + '.</p>'
+      + (s.newCategories.length
+          ? '<p>New categories to be created: ' + s.newCategories.map(c => '<span class="badge badge-warning">' + _esc(c) + '</span>').join(' ') + '</p>'
+          : '');
+
+    const ack = d.existingCount > 0
+      ? '<p><label style="display:flex;align-items:center;gap:8px;font-weight:normal;"><input type="checkbox" id="svc-import-ack"> The service record already has '
+        + d.existingCount + ' assignment(s) — append this import to them (exact duplicates are skipped).</label></p>'
+      : '';
+
+    const rowsHtml = _applySort('imp', d.rows.map((r, i) => ({ r: r, i: i }))).map(o => {
+      const r = o.r, i = o.i;
+      let match;
+      if (r.personEmail) {
+        match = '<span class="badge badge-success">' + _esc(r.matchedName) + '</span>';
+      } else {
+        const cands = (r.candidates || []);
+        const sel = cands.length
+          ? '<select class="form-select" id="svc-imp-cand-' + i + '" style="width:auto;display:inline-block;padding:4px 8px;font-size:12.5px;">'
+            + cands.map(c => '<option value="' + _esc(c.email) + '">' + _esc(c.name) + '</option>').join('')
+            + '</select> <button class="btn btn-secondary btn-sm" onclick="ServiceUI.linkImportRow(' + i + ')"><i class="ti ti-link"></i> Link</button>'
+          : '';
+        const badge = r.matchMethod === 'ambiguous'
+          ? '<span class="badge badge-warning">ambiguous</span>'
+          : '<span class="badge badge-neutral">no profile — kept as historical</span>';
+        match = badge + (sel ? '<div style="margin-top:4px;">' + sel + '</div>' : '');
+      }
+      const cat = _esc(r.categoryLabel) + (r.knownCategory ? '' : ' <span class="badge badge-warning">new</span>');
+      const year = r.yearOk ? _esc(r.year) : '<span class="badge badge-danger">' + _esc(r.year || '(blank)') + '</span>';
+      const qtr = _esc(r.quarter) + (r.quarterMoved ? ' <span class="badge badge-warning">"' + _esc(r.quarterMoved) + '" → Notes</span>' : '');
+      return '<tr>'
+        + '<td><input type="checkbox" id="svc-imp-inc-' + i + '"' + (r.include !== false ? ' checked' : '') + '></td>'
+        + '<td>' + _esc(r.rawName) + '<br>' + match + '</td>'
+        + '<td>' + cat + '</td><td>' + _esc(r.role) + '</td><td>' + year + '</td><td>' + qtr + '</td>'
+        + '</tr>';
+    }).join('');
+
+    $('svc-import-preview').innerHTML = summary + ack
+      + '<div class="table-wrap" style="max-height:420px;overflow-y:auto;"><table class="data-table"><thead><tr>'
+      + '<th></th>' + _th('imp', 'rawName', 'Name') + _th('imp', 'categoryLabel', 'Category')
+      + _th('imp', 'role', 'Role') + _th('imp', 'year', 'Year') + _th('imp', 'quarter', 'Quarter')
+      + '</tr></thead><tbody>' + rowsHtml + '</tbody></table></div>'
+      + '<div class="form-actions"><button class="btn btn-primary" onclick="ServiceUI.commitImport()"><i class="ti ti-database-import"></i> Commit import</button>'
+      + '<span class="text-muted text-sm" style="align-self:center;">Rows with invalid years are skipped automatically — fix the CSV and re-preview to include them.</span></div>';
+  }
+
+  /** Read the live include-checkbox states back into the data before any
+   *  re-render (sort, link) — ids are keyed by original row index. */
+  function _syncImportIncludes() {
+    if (!S.importData) return;
+    S.importData.rows.forEach((r, i) => {
+      const el = $('svc-imp-inc-' + i);
+      if (el) r.include = el.checked;
+    });
+  }
+
+  function linkImportRow(i) {
+    _syncImportIncludes();
+    const r = S.importData.rows[i];
+    const sel = $('svc-imp-cand-' + i);
+    if (!r || !sel || !sel.value) return;
+    App.call('service', 'resolveImportName', { first: r.first, last: r.last, email: sel.value }, res => {
+      r.personEmail = res.email;
+      r.matchedName = res.name;
+      r.matchMethod = 'linked';
+      S.importData.summary.matched++;
+      if (r.candidates && r.candidates.length > 1) S.importData.summary.ambiguous--; else S.importData.summary.unmatched--;
+      Toast.show('Linked "' + r.rawName + '" to ' + res.name + ' (saved as an alternate spelling).', 'success');
+      _renderImportPreview();
+    });
+  }
+
+  function commitImport() {
+    const d = S.importData;
+    if (!d) return;
+    if (d.existingCount > 0) {
+      const ack = $('svc-import-ack');
+      if (!ack || !ack.checked) { Toast.show('Confirm the append checkbox before committing.', 'error'); return; }
+    }
+    _syncImportIncludes();
+    $('svc-import-preview').innerHTML = LOADING;
+    App.call('service', 'importCommit', { rows: d.rows, acknowledgeExisting: d.existingCount > 0 }, res => {
+      const skippedList = (res.skipped || []).slice(0, 20)
+        .map(sk => '<li>Row ' + sk.row + ': ' + _esc(sk.reason) + '</li>').join('');
+      $('svc-import-preview').innerHTML =
+        '<p><strong>Import complete.</strong> ' + res.inserted + ' assignment(s) added ('
+        + res.withProfile + ' linked to profiles, ' + res.rawNameOnly + ' historical names).'
+        + (res.createdCategories.length ? ' Created categories: ' + res.createdCategories.map(_esc).join(', ') + '.' : '')
+        + '</p>'
+        + ((res.skipped || []).length
+            ? '<p>' + res.skipped.length + ' row(s) skipped:</p><ul class="text-muted text-sm">' + skippedList
+              + ((res.skipped.length > 20) ? '<li>…and ' + (res.skipped.length - 20) + ' more</li>' : '') + '</ul>'
+            : '');
+      S.importData = null;
+      S.asnRows = null; S.fullRows = null; S.mineRows = null; S.catalog = null;
+      _reloadBootCatalog();
+    }, () => { _renderImportPreview(); });
+  }
+
+  // ── Nominate (ranked self-nomination, everyone) ───────────
+  function _fillNomCategorySelect() {
+    const sel = $('svc-nom-category');
+    if (!sel || !S.boot) return;
+    const cats = (S.boot.catalog || []).filter(c => c.active && c.nominationEligible)
+      .sort((a, b) => (a.sortWeight - b.sortWeight) || a.label.localeCompare(b.label));
+    sel.innerHTML = '<option value="">— choose —</option>'
+      + cats.map(c => '<option value="' + _esc(c.key) + '">' + _esc(c.label) + '</option>').join('');
+  }
+
+  function onNomCategoryChange() {
+    const cat = S.catByKey[$('svc-nom-category').value];
+    if (cat && !$('svc-nom-role').value) $('svc-nom-role').value = cat.defaultRole || '';
+  }
+
+  function loadNominate() {
+    $('svc-nom-body').innerHTML = LOADING;
+    App.call('service', 'myNominations', {}, res => {
+      S.myNoms = res || { state: { open: false, targetYear: '' }, rows: [] };
+      _renderNominate();
+    });
+  }
+
+  const NOM_STATUS_BADGE = {
+    OPEN:      '<span class="badge badge-navy">Submitted</span>',
+    ACCEPTED:  '<span class="badge badge-success">Accepted</span>',
+    DECLINED:  '<span class="badge badge-neutral">Not selected</span>',
+    WITHDRAWN: '<span class="badge badge-neutral">Withdrawn</span>',
+  };
+
+  function _renderNominate() {
+    const st = S.myNoms.state;
+    $('svc-nom-title').textContent = 'Self-Nomination' + (st.targetYear ? ' (' + st.targetYear + ')' : '');
+    $('svc-nom-banner').innerHTML = st.open
+      ? ''
+      : '<div class="empty-state" style="margin-bottom:14px;"><i class="ti ti-lock" style="font-size:32px;display:block;margin-bottom:8px;"></i>Self-nomination is currently closed.'
+        + (S.myNoms.rows.length ? ' Your submissions for ' + _esc(st.targetYear) + ' are shown below.' : '') + '</div>';
+    $('svc-nom-form').style.display = st.open ? '' : 'none';
+
+    const rows = S.myNoms.rows || [];
+    if (!rows.length) {
+      $('svc-nom-body').innerHTML = st.open
+        ? '<div class="empty-state">No preferences yet — add your first choice above.</div>' : '';
+      return;
+    }
+    $('svc-nom-body').innerHTML = '<div class="table-wrap"><table class="data-table"><thead><tr>'
+      + '<th>#</th><th>Committee / Service</th><th>Role</th><th>Quarter</th><th>Note</th><th>Status</th><th></th>'
+      + '</tr></thead><tbody>'
+      + rows.map(n => {
+          const isOpen = n.status === 'OPEN';
+          const actions = (st.open && isOpen)
+            ? '<button class="btn btn-secondary btn-sm" onclick="ServiceUI.moveNomination(\'' + _esc(n.nominationId) + '\', \'up\')" aria-label="Move up"><i class="ti ti-arrow-up"></i></button> '
+              + '<button class="btn btn-secondary btn-sm" onclick="ServiceUI.moveNomination(\'' + _esc(n.nominationId) + '\', \'down\')" aria-label="Move down"><i class="ti ti-arrow-down"></i></button> '
+              + '<button class="btn btn-secondary btn-sm" onclick="ServiceUI.withdrawNomination(\'' + _esc(n.nominationId) + '\')">Withdraw</button>'
+            : '';
+          return '<tr><td>' + (isOpen ? '<strong>' + _esc(n.priority) + '</strong>' : '') + '</td>'
+            + '<td>' + _esc(n.categoryLabel) + '</td><td>' + _esc(n.role) + '</td><td>' + _esc(n.quarter) + '</td>'
+            + '<td class="text-muted">' + _esc(n.note) + '</td>'
+            + '<td>' + (NOM_STATUS_BADGE[n.status] || _esc(n.status)) + '</td>'
+            + '<td style="white-space:nowrap;">' + actions + '</td></tr>';
+        }).join('')
+      + '</tbody></table></div>';
+  }
+
+  function submitNomination() {
+    const payload = {
+      categoryKey: $('svc-nom-category').value,
+      role: $('svc-nom-role').value,
+      quarter: $('svc-nom-quarter').value,
+      note: $('svc-nom-note').value,
+    };
+    App.call('service', 'submitNomination', payload, res => {
+      Toast.show('Preference added.', 'success');
+      S.proposed = null;
+      $('svc-nom-category').value = ''; $('svc-nom-role').value = '';
+      $('svc-nom-quarter').value = ''; $('svc-nom-note').value = '';
+      S.myNoms = res;
+      _renderNominate();
+    });
+  }
+
+  function withdrawNomination(id) {
+    if (!confirm('Withdraw this nomination?')) return;
+    App.call('service', 'withdrawNomination', { nominationId: id }, res => {
+      S.proposed = null;
+      S.myNoms = res;
+      _renderNominate();
+    });
+  }
+
+  function moveNomination(id, direction) {
+    App.call('service', 'moveNomination', { nominationId: id, direction: direction }, res => {
+      S.myNoms = res;
+      _renderNominate();
+    });
+  }
+
+  // ── Nominations (manage: window + decisions, super_admin) ─
+  function loadNomQueue() {
+    $('svc-nomq-body').innerHTML = LOADING;
+    App.call('service', 'listNominations', {}, res => {
+      S.nomQueue = res || { state: { open: false, targetYear: '' }, rows: [] };
+      if (S.boot) S.boot.nomination = S.nomQueue.state;
+      _renderNomWindow();
+      _renderNomQueue();
+    });
+  }
+
+  function _renderNomWindow() {
+    const st = S.nomQueue.state;
+    $('svc-nomwin-body').innerHTML = st.open
+      ? '<p><span class="badge badge-success">Open</span> Nominations are open for <strong>'
+        + _esc(st.targetYear) + '</strong>.</p>'
+        + '<div class="form-actions"><button class="btn btn-secondary" onclick="ServiceUI.closeNomWindow()"><i class="ti ti-lock"></i> Close nominations</button></div>'
+      : '<p><span class="badge badge-neutral">Closed</span>'
+        + (st.targetYear ? ' Last window targeted <strong>' + _esc(st.targetYear) + '</strong>.' : ' No window has been opened yet.') + '</p>'
+        + '<div class="form-group" style="max-width:220px;"><label class="form-label" for="svc-nomwin-year">Target academic year</label>'
+        + '<input class="form-input" id="svc-nomwin-year" value="' + _esc((S.boot && S.boot.nextYear) || '') + '">'
+        + '<div class="form-hint">Locked in when the window opens.</div></div>'
+        + '<div class="form-actions"><button class="btn btn-primary" onclick="ServiceUI.openNomWindow()"><i class="ti ti-lock-open"></i> Open nominations</button></div>';
+  }
+
+  function openNomWindow() {
+    App.call('service', 'setNominationWindow', { open: true, targetYear: $('svc-nomwin-year').value }, st => {
+      Toast.show('Nominations opened for ' + st.targetYear + '.', 'success');
+      S.nomQueue.state = st;
+      if (S.boot) S.boot.nomination = st;
+      S.myNoms = null;
+      _renderNomWindow();
+    });
+  }
+
+  function closeNomWindow() {
+    if (!confirm('Close the nomination window? Faculty will no longer be able to add, reorder, or withdraw preferences. You can still accept and decline.')) return;
+    App.call('service', 'setNominationWindow', { open: false }, st => {
+      Toast.show('Nominations closed.', 'success');
+      S.nomQueue.state = st;
+      if (S.boot) S.boot.nomination = st;
+      S.myNoms = null;
+      _renderNomWindow();
+    });
+  }
+
+  function _renderNomQueue() {
+    const rows = _applySort('nomq', (S.nomQueue && S.nomQueue.rows) || []);
+    if (!rows.length) {
+      $('svc-nomq-body').innerHTML = '<div class="empty-state"><i class="ti ti-star" style="font-size:32px;display:block;margin-bottom:8px;"></i>No nominations yet.</div>';
+      return;
+    }
+    $('svc-nomq-body').innerHTML = '<div class="table-wrap"><table class="data-table"><thead><tr>'
+      + _th('nomq', 'personName', 'Person') + _th('nomq', 'priority', '#')
+      + _th('nomq', 'categoryLabel', 'Committee / Service') + _th('nomq', 'role', 'Role')
+      + _th('nomq', 'quarter', 'Quarter') + _th('nomq', 'note', 'Note')
+      + _th('nomq', 'year', 'Year') + _th('nomq', 'status', 'Status') + '<th></th>'
+      + '</tr></thead><tbody>'
+      + rows.map(n => {
+          const actions = n.status === 'OPEN'
+            ? '<button class="btn btn-secondary btn-sm" onclick="ServiceUI.acceptNomination(\'' + _esc(n.nominationId) + '\')"><i class="ti ti-check"></i> Accept</button> '
+              + '<button class="btn btn-secondary btn-sm" onclick="ServiceUI.declineNomination(\'' + _esc(n.nominationId) + '\')"><i class="ti ti-x"></i> Decline</button>'
+            : '<span class="text-muted text-sm">' + _esc(n.decidedBy || '') + '</span>';
+          return '<tr><td>' + _esc(n.personName) + '</td><td>' + _esc(n.priority) + '</td>'
+            + '<td>' + _esc(n.categoryLabel) + '</td><td>' + _esc(n.role) + '</td><td>' + _esc(n.quarter) + '</td>'
+            + '<td class="text-muted">' + _esc(n.note) + '</td><td>' + _esc(n.year) + '</td>'
+            + '<td>' + (NOM_STATUS_BADGE[n.status] || _esc(n.status)) + '</td>'
+            + '<td style="white-space:nowrap;">' + actions + '</td></tr>';
+        }).join('')
+      + '</tbody></table></div>';
+  }
+
+  function acceptNomination(id) {
+    const n = ((S.nomQueue && S.nomQueue.rows) || []).find(x => x.nominationId === id);
+    if (!n) return;
+    if (!confirm('Accept this nomination?\n\n' + n.personName + ' — ' + n.categoryLabel + ' (' + n.year + ')\n\nThis creates the proposed assignment.')) return;
+    App.call('service', 'acceptNomination', { nominationId: id }, res => {
+      let msg = res.assignmentCreated ? 'Accepted — assignment created.' : 'Accepted (an identical assignment already existed).';
+      msg += _autoSummary(res.autoAssigned);
+      if (res.autoResolvedNominations && res.autoResolvedNominations.length) {
+        msg += ' Their pending nomination(s) for ' + res.autoResolvedNominations.join(', ') + ' were auto-accepted.';
+      }
+      Toast.show(msg, 'success');
+      S.nomQueue = null; S.proposed = null; S.asnRows = null; S.fullRows = null; S.mineRows = null;
+      loadNomQueue();
+    });
+  }
+
+  function declineNomination(id) {
+    const note = prompt('Optional internal note (never shown to the nominator):', '');
+    if (note === null) return;
+    App.call('service', 'declineNomination', { nominationId: id, decisionNote: note }, () => {
+      Toast.show('Nomination declined.', 'success');
+      S.nomQueue = null; S.proposed = null;
+      loadNomQueue();
+    });
+  }
+
+  // ── Import: legacy self-nominations (super_admin) ─────────
+  function onNomImportFile() {
+    const input = $('svc-nimp-file');
+    if (!input.files || !input.files.length) return;
+    const reader = new FileReader();
+    reader.onload = e => { $('svc-nimp-text').value = e.target.result; };
+    reader.readAsText(input.files[0]);
+  }
+
+  function runNomImportPreview() {
+    const csvText = $('svc-nimp-text').value;
+    if (!csvText.trim()) { Toast.show('Paste or upload the CSV first.', 'error'); return; }
+    $('svc-nimp-preview').innerHTML = LOADING;
+    App.call('service', 'importNominationsPreview', { csvText: csvText }, data => {
+      S.nomImportData = data;
+      _renderNomImportPreview();
+    }, () => { $('svc-nimp-preview').innerHTML = ''; });
+  }
+
+  function _syncNomImportIncludes() {
+    if (!S.nomImportData) return;
+    S.nomImportData.rows.forEach((r, i) => {
+      const el = $('svc-nimp-inc-' + i);
+      if (el) r.include = el.checked;
+    });
+  }
+
+  function _renderNomImportPreview() {
+    const d = S.nomImportData;
+    const s = d.summary;
+    const summary = '<p><strong>' + s.total + '</strong> rows — '
+      + s.matched + ' matched to profiles, '
+      + s.ambiguous + ' ambiguous, '
+      + (s.unmatched ? '<span class="badge badge-danger">' + s.unmatched + ' without a profile — will be skipped</span>' : '0 without a profile')
+      + (s.badYears ? ', <span class="badge badge-danger">' + s.badYears + ' invalid year(s) — skipped</span>' : '')
+      + (s.movedQuarters ? ', ' + s.movedQuarters + ' quarter value(s) moved to the note' : '')
+      + '.</p>'
+      + (s.newCategories.length
+          ? '<p>New categories to be created: ' + s.newCategories.map(c => '<span class="badge badge-warning">' + _esc(c) + '</span>').join(' ') + '</p>'
+          : '')
+      + (d.windowState.open
+          ? '<p class="text-muted text-sm">The nomination window is currently OPEN for ' + _esc(d.windowState.targetYear) + ' — it will not be changed by this import.</p>'
+          : '<p class="text-muted text-sm">After import, the (closed) Nominate tab will point at the imported year so faculty can see their submissions.</p>');
+
+    const rowsHtml = _applySort('nimp', d.rows.map((r, i) => ({ r: r, i: i }))).map(o => {
+      const r = o.r, i = o.i;
+      let match;
+      if (r.personEmail) {
+        match = '<span class="badge badge-success">' + _esc(r.matchedName) + '</span>';
+      } else {
+        const cands = (r.candidates || []);
+        const sel = cands.length
+          ? '<select class="form-select" id="svc-nimp-cand-' + i + '" style="width:auto;display:inline-block;padding:4px 8px;font-size:12.5px;">'
+            + cands.map(c => '<option value="' + _esc(c.email) + '">' + _esc(c.name) + '</option>').join('')
+            + '</select> <button class="btn btn-secondary btn-sm" onclick="ServiceUI.linkNomImportRow(' + i + ')"><i class="ti ti-link"></i> Link</button>'
+          : '';
+        const badge = r.matchMethod === 'ambiguous'
+          ? '<span class="badge badge-warning">ambiguous</span>'
+          : '<span class="badge badge-danger">no profile — will be skipped</span>';
+        match = badge + (sel ? '<div style="margin-top:4px;">' + sel + '</div>' : '');
+      }
+      const cat = _esc(r.categoryLabel) + (r.knownCategory ? '' : ' <span class="badge badge-warning">new</span>');
+      const year = r.yearOk ? _esc(r.year) : '<span class="badge badge-danger">' + _esc(r.year || '(blank)') + '</span>';
+      const qtr = _esc(r.quarter) + (r.quarterMoved ? ' <span class="badge badge-warning">"' + _esc(r.quarterMoved) + '" → note</span>' : '');
+      return '<tr>'
+        + '<td><input type="checkbox" id="svc-nimp-inc-' + i + '"' + (r.include !== false ? ' checked' : '') + '></td>'
+        + '<td>' + _esc(r.rawName) + '<br>' + match + '</td>'
+        + '<td>' + cat + '</td><td>' + _esc(r.role) + '</td><td>' + year + '</td><td>' + qtr + '</td>'
+        + '<td class="text-muted">' + _esc(r.note) + '</td>'
+        + '</tr>';
+    }).join('');
+
+    $('svc-nimp-preview').innerHTML = summary
+      + '<div class="table-wrap" style="max-height:420px;overflow-y:auto;"><table class="data-table"><thead><tr>'
+      + '<th></th>' + _th('nimp', 'rawName', 'Name') + _th('nimp', 'categoryLabel', 'Category')
+      + _th('nimp', 'role', 'Role') + _th('nimp', 'year', 'Year') + _th('nimp', 'quarter', 'Quarter')
+      + _th('nimp', 'note', 'Note')
+      + '</tr></thead><tbody>' + rowsHtml + '</tbody></table></div>'
+      + '<div class="form-actions"><button class="btn btn-primary" onclick="ServiceUI.commitNomImport()"><i class="ti ti-database-import"></i> Commit import</button>'
+      + '<span class="text-muted text-sm" style="align-self:center;">Imported rows land as OPEN nominations in the queue.</span></div>';
+  }
+
+  function linkNomImportRow(i) {
+    _syncNomImportIncludes();
+    const r = S.nomImportData.rows[i];
+    const sel = $('svc-nimp-cand-' + i);
+    if (!r || !sel || !sel.value) return;
+    App.call('service', 'resolveImportName', { first: r.first, last: r.last, email: sel.value }, res => {
+      r.personEmail = res.email;
+      r.matchedName = res.name;
+      r.matchMethod = 'linked';
+      S.nomImportData.summary.matched++;
+      if (r.candidates && r.candidates.length > 1) S.nomImportData.summary.ambiguous--; else S.nomImportData.summary.unmatched--;
+      Toast.show('Linked "' + r.rawName + '" to ' + res.name + ' (saved as an alternate spelling).', 'success');
+      _renderNomImportPreview();
+    });
+  }
+
+  function commitNomImport() {
+    const d = S.nomImportData;
+    if (!d) return;
+    _syncNomImportIncludes();
+    $('svc-nimp-preview').innerHTML = LOADING;
+    App.call('service', 'importNominationsCommit', { rows: d.rows }, res => {
+      const skippedList = (res.skipped || []).slice(0, 20)
+        .map(sk => '<li>Row ' + sk.row + ': ' + _esc(sk.reason) + '</li>').join('');
+      $('svc-nimp-preview').innerHTML =
+        '<p><strong>Import complete.</strong> ' + res.inserted + ' nomination(s) added to the queue.'
+        + (res.createdCategories.length ? ' Created categories: ' + res.createdCategories.map(_esc).join(', ') + '.' : '')
+        + (res.targetYearSet ? ' The Nominate tab now shows ' + _esc(res.targetYearSet) + ' submissions (window remains closed).' : '')
+        + '</p>'
+        + ((res.skipped || []).length
+            ? '<p>' + res.skipped.length + ' row(s) skipped:</p><ul class="text-muted text-sm">' + skippedList
+              + ((res.skipped.length > 20) ? '<li>…and ' + (res.skipped.length - 20) + ' more</li>' : '') + '</ul>'
+            : '');
+      S.nomImportData = null;
+      S.nomQueue = null; S.myNoms = null; S.proposed = null;
+      if (S.boot) S.boot.nomination = res.windowState;
+      _reloadBootCatalog();
+    }, () => { _renderNomImportPreview(); });
+  }
+
+  // ── Exports (every onclick/onchange/onkeyup handler) ──────
+  return {
+    init, switchTab, sortBy, refreshDirectory, loadProposed,
+    loadMine, loadFull, loadManageAssignments, loadCatalog, loadCorrections,
+    loadNominate, onNomCategoryChange, submitNomination, withdrawNomination, moveNomination,
+    loadNomQueue, openNomWindow, closeNomWindow, acceptNomination, declineNomination, toggleProposedDetail,
+    exportMyCsv, exportFullCsv, applyFullFilters,
+    openCorrection, cancelCorrection, submitCorrection,
+    startAddAssignment, editAssignment, cancelAssignment, saveAssignment, reapplyAutoAssigns,
+    deleteAssignment, togglePersonMode, onAsnCategoryChange, applyAsnFilters,
+    newCategory, editCategory, cancelCategory, saveCategory, deleteCategory, toggleAutoAssignTarget,
+    resolveCorrection,
+    onImportFile, runImportPreview, linkImportRow, commitImport,
+    onNomImportFile, runNomImportPreview, linkNomImportRow, commitNomImport,
+  };
+
+})();
+ServiceUI.init();
+</script>

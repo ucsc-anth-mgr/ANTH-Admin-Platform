@@ -52,6 +52,10 @@ const CONFIG = {
     // tier). Tabs: PersonAttributes (person-attribute extension table) and
     // Cases (review cases from the Call).
     PERSONNEL:     '1MEE2WYjHddPfEVo7SEOU7tbNp1CFbUM90sFIFkbdPh0',
+    // Department Service module — its OWN spreadsheet (per-module storage
+    // tier). Tabs: ServiceCatalog, ServiceAssignments, ServiceCorrections,
+    // ServiceNominations, ServiceSettings.
+    SERVICE:       '18VWph7a3gVZwWve0pq_Lhm8olQuf2yI_yZQHWkot3lU',
   },
 
   // Optional: Drive folder where setUp() creates new spreadsheets.
@@ -105,6 +109,12 @@ const CONFIG = {
     // Academic Personnel module tabs (live in SHEETS.PERSONNEL)
     PERSON_ATTRIBUTES: 'PersonAttributes',
     CASES:             'Cases',
+    // Department Service module tabs (live in SHEETS.SERVICE)
+    SERVICE_CATALOG:     'ServiceCatalog',
+    SERVICE_ASSIGNMENTS: 'ServiceAssignments',
+    SERVICE_CORRECTIONS: 'ServiceCorrections',
+    SERVICE_NOMINATIONS: 'ServiceNominations',
+    SERVICE_SETTINGS:    'ServiceSettings',
   },
 
   // ── Storage convention (three tiers) ───────────────────────
