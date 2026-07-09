@@ -33,7 +33,7 @@
       <i class="ti ti-list-search"></i> All Petitions
     </button>
     <button class="module-tab" data-tab="schedule" onclick="IndividualStudiesUI.switchTab('schedule')">
-      <i class="ti ti-settings"></i> Settings
+      <i class="ti ti-table-import"></i> Class Schedule
     </button>
     <? } ?>
   </div>
@@ -96,7 +96,7 @@
                 <select class="form-select" id="is-tpl-pick" onchange="IndividualStudiesUI.onTemplatePick(this.value)">
                   <option value="">— None (start blank) —</option>
                 </select>
-                <div class="form-hint">Your sponsor's template fills the fields below; you can edit anything before submitting.</div>
+                <div class="form-hint">Optional — pick one to pre-fill the fields below; you can edit anything before submitting.</div>
               </div>
             </div>
             <div class="form-group">
@@ -420,8 +420,6 @@
       </div>
       <div id="is-import-history"><div class="empty-state">No imports yet.</div></div>
     </div>
-
-    <div id="is-deeplink-card"></div>
   </div>
 
   <!-- Detail / action modal -->
@@ -510,6 +508,7 @@ window.IndividualStudiesUI = (() => {
   let _csvPayload = null;     // { csvBase64 }
   let _preview = null;        // parsed import preview being resolved
   let _lastFocus = null;
+  let _lastDetailRec = null;  // record currently shown in the detail modal (for prefills)
 
   function esc(s) {
     return String(s == null ? '' : s)
@@ -544,19 +543,6 @@ window.IndividualStudiesUI = (() => {
       switchTab('advisor');
     }
 
-    // Deep-link to the petition form: focus 'form' opens the New Petition tab
-    // (standardized "open this module's form" token). Only a student submits;
-    // for anyone else the form tab does not exist, so the request is ignored
-    // and the normal role default (set above) stands. Checked before the
-    // petition-id branch below so 'form' is never treated as a record id.
-    const ff = window.__focus;
-    if (ff && ff.sourceId === 'form') {
-      if (_isStudent) {
-        _ensureFormData(function () { switchTab('new'); });
-      }
-      return;
-    }
-
     const f = window.__focus;
     if (f && f.sourceId) {
       _busy('Loading petition…');
@@ -585,19 +571,7 @@ window.IndividualStudiesUI = (() => {
     if (tab === 'advisor')   loadAdvisor();
     if (tab === 'all')       loadAll();
     if (tab === 'templates') loadTemplates();
-    if (tab === 'schedule')  { loadImportHistory(); _renderDeepLinkCard(); }
-  }
-
-  // Standardized deep-link card on the Class Schedule tab (the advisor's
-  // admin home for this module — it has no dedicated settings tab). Direct
-  // link to the student petition form.
-  function _renderDeepLinkCard() {
-    const dl = document.getElementById('is-deeplink-card');
-    if (dl) dl.innerHTML = App.deepLinkCard('individual_studies', {
-      roles: ['undergraduate_student'],
-      title: 'Student petition link',
-      note: 'Send students straight to the new Individual Studies petition form.'
-    });
+    if (tab === 'schedule')  loadImportHistory();
   }
 
   // ── Form bootstrap ────────────────────────────────
@@ -680,7 +654,10 @@ window.IndividualStudiesUI = (() => {
     if (group) group.style.display = 'none';
     if (!sponsorEmail) return;
 
+    // Brief server round-trip; overlay so impatient students see progress.
+    _busy('Checking for sponsor templates…');
     App.call('individual_studies', 'templatesForSponsor', { sponsorEmail: sponsorEmail }, function (rows) {
+      _idle();
       _sponsorTemplates = rows || [];
       if (!_sponsorTemplates.length) return;
       let opts = '<option value="">— None (start blank) —</option>';
@@ -689,13 +666,10 @@ window.IndividualStudiesUI = (() => {
       });
       if (pick) pick.innerHTML = opts;
       if (group) group.style.display = 'block';
-      // Auto-apply the default, if there is one.
-      const def = _sponsorTemplates.find(function (t) { return t.isDefault; });
-      if (def) {
-        if (pick) pick.value = def.templateId;
-        _applyTemplate(def);
-      }
-    }, function () { /* templates are optional; ignore errors */ });
+      // Opt-in: nothing applies until the student picks a template. The
+      // default is labeled in the list but not auto-applied, so students
+      // doing something different keep a blank form.
+    }, function () { _idle(); /* templates are optional; ignore errors */ });
   }
 
   function onTemplatePick(templateId) {
@@ -713,6 +687,8 @@ window.IndividualStudiesUI = (() => {
     if (t.evidenceOfPreparation) _setVal('is-evidence', t.evidenceOfPreparation);
     if (t.workToBeSubmitted) _setVal('is-work', t.workToBeSubmitted);
     if (t.gradeOption) _setVal('is-grade', t.gradeOption);
+    // The room/lab space doubles as the study site for lab-style studies.
+    if (t.roomAccessRoom) _setVal('is-site', t.roomAccessRoom);
 
     // Course: only apply if it's offered in the selected term, so credits and
     // the SR 760 hours total resolve correctly.
@@ -1163,6 +1139,7 @@ window.IndividualStudiesUI = (() => {
 
   function _openDetail(rec) {
     _lastFocus = document.activeElement;
+    _lastDetailRec = rec;
     const meta = STAGE_META[rec.stage] || { cls: 'badge-neutral', label: rec.stage };
     document.getElementById('is-modal-title').textContent = (rec.course || 'Petition') + ' — ' + (rec.term || '');
 
@@ -1281,7 +1258,7 @@ window.IndividualStudiesUI = (() => {
       +   '<input type="checkbox" id="is-sp-roomreq" onchange="IndividualStudiesUI.onRoomReqToggle()"> Request room / lab-space access</label></div>'
       + '<div class="form-group" id="is-sp-room-group" style="display:none;">'
       +   '<label class="form-label">Room / space</label>'
-      +   '<input class="form-input" id="is-sp-room" placeholder="e.g. Historical Ecology Laboratory">'
+      +   '<input class="form-input" id="is-sp-room" value="' + esc(rec.roomAccessRoom || rec.studySiteAddress || '') + '" placeholder="e.g. Historical Ecology Laboratory">'
       +   '<input class="form-input" id="is-sp-room-note" style="margin-top:6px;" placeholder="Note for facilities (optional)"></div>'
       + '<div class="form-actions">'
       +   '<button class="btn btn-primary" onclick="IndividualStudiesUI.sponsorApprove(\'' + esc(rec.petitionId) + '\')"><i class="ti ti-check"></i> Approve</button>'
@@ -1405,7 +1382,11 @@ window.IndividualStudiesUI = (() => {
   }
 
   function requestRoomAccess(petitionId) {
-    const room = window.prompt('Which room or lab space needs access?');
+    // Pre-fill: an existing request's room wins (it's what facilities was
+    // told), else the petition's study site address.
+    const pre = (_lastDetailRec && _lastDetailRec.petitionId === petitionId)
+      ? (_lastDetailRec.roomAccessRoom || _lastDetailRec.studySiteAddress || '') : '';
+    const room = window.prompt('Which room or lab space needs access?', pre);
     if (room === null) return;
     if (!room.trim()) { Toast.show('Enter the room or space.', 'error'); return; }
     const note = window.prompt('Note for facilities (optional):') || '';

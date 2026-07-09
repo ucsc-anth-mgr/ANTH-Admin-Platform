@@ -163,6 +163,11 @@ function getModuleHTML(moduleKey) {  const user     = Session.getActiveUser().ge
  * Adding a module to the Modules sheet without a matching entry
  * here will surface a friendly "handler not registered" warning
  * in the Module Manager.
+ *
+ * NOTE: CalendarModule is registered ACTIVE below — the files
+ * Calendarservice.gs and Calendarmodule.gs must be in the project
+ * BEFORE this Code.gs is saved, or the app fails with
+ * "CalendarModule is not defined".
  */
 function getModuleHandler(name) {
   const handlers = {
@@ -174,6 +179,7 @@ function getModuleHandler(name) {
     IndividualStudiesModule: IndividualStudiesModule,
     PersonnelModule:   PersonnelModule,
     ServiceModule:     ServiceModule,
+    CalendarModule:    CalendarModule,
     // HRModule:       HRModule,
   };
   if (!handlers[name]) throw new Error('Handler not found: ' + name);
@@ -186,7 +192,7 @@ function getModuleHandler(name) {
  * Used by the Module Manager to validate sheet entries.
  */
 function getRegisteredHandlers() {
-  return ['AdminModule', 'SubmissionsModule', 'UserManagerModule', 'ThesisModule', 'TranscriptModule', 'IndividualStudiesModule', 'PersonnelModule', 'ServiceModule'];
+  return ['AdminModule', 'SubmissionsModule', 'UserManagerModule', 'ThesisModule', 'TranscriptModule', 'IndividualStudiesModule', 'PersonnelModule', 'ServiceModule', 'CalendarModule'];
 }
 
 
@@ -203,8 +209,8 @@ function getRegisteredHandlers() {
  *
  * Each listener fn is called as fn(data, eventName, context), where context
  * carries { user } (the acting user) plus any ambient info the emitter added.
- * A listener that throws is logged and audited by EventBus, then skipped —
- * it can never break the action that emitted the event.
+ * A listener that throws is logged/audited and skipped — it can never break
+ * the action that emitted the event.
  *
  * Read lazily by EventBus on the first emit() of a request, so the order in
  * which .gs files are evaluated at load does not matter; every handler object
@@ -263,6 +269,11 @@ function getScheduledJobs() {
   return {
     daily: [
       { name: 'Transcript:dailyDigest', fn: TranscriptModule.dailyDigest },
+      // Calendar Phase 2: nightly import-source refresh. Fetches each
+      // enabled source, diffs against imported deadlines (honoring pins),
+      // writes the pending review queue, and creates a staff-pool Task
+      // when there is something to review. Never auto-commits.
+      { name: 'Calendar:nightlyRefresh', fn: CalendarModule.nightlyRefresh },
     ],
   };
 }

@@ -1,0 +1,1232 @@
+<!-- ============================================================
+     calendar.html — Calendar module UI (Phase 3.5.2)
+     View: month grid + list, "aimed at me" filtering, deadline
+     badges and event blocks, day detail panel.
+     Manage: deadline CRUD (multi-date create, duplicate-to-date,
+     pin-respecting edits) — shown only to configured manager roles.
+     Settings: manager-role picker — super_admin only.
+
+     Phase 3.5.2: the create form gains a date-RANGE expander ("from /
+     to" -> one chip per day) for contiguous runs like Winter
+     Curtailment. Purely a creation convenience: each materialized row
+     remains an independent deadline — no linked series, no
+     edit-all-instances semantics, by long-standing design.
+
+     Phase 3.5.1: every deadline mutation refreshes the calendar VIEW
+     as well as the manage table (previously only the table reloaded,
+     so a kind/color/date edit looked like it hadn't persisted until
+     the month was re-navigated), and the day-detail panel closes on
+     save so it can never show pre-edit state.
+
+     Phase 1.1: mutating actions lock while in flight. The save
+     buttons disable with a loading state and a busy flag makes
+     re-entrant clicks no-ops (double-click protection, paired with
+     the server-side duplicate guard in Calendarservice.gs).
+     ============================================================ -->
+
+<div id="calendar-module">
+
+  <div class="card" style="margin-bottom:0;">
+    <div class="card-title between">
+      <span><i class="ti ti-calendar"></i> Department Calendar</span>
+    </div>
+    <div class="module-tabs" role="tablist" style="margin-top:8px;">
+      <button class="module-tab active" data-tab="view" onclick="CalendarUI.switchTab('view')" role="tab">Calendar</button>
+      <button class="module-tab" data-tab="manage" id="cal-tab-btn-manage" onclick="CalendarUI.switchTab('manage')" role="tab" style="display:none;">Manage Deadlines</button>
+      <button class="module-tab" data-tab="imports" id="cal-tab-btn-imports" onclick="CalendarUI.switchTab('imports')" role="tab" style="display:none;">Imports <span id="cal-pending-badge" class="badge badge-gold" style="display:none;"></span></button>
+      <button class="module-tab" data-tab="settings" id="cal-tab-btn-settings" onclick="CalendarUI.switchTab('settings')" role="tab" style="display:none;">Settings</button>
+    </div>
+  </div>
+
+  <!-- ── Tab: Calendar view ─────────────────────────────────── -->
+  <div id="cal-tab-view" class="tab-panel" role="tabpanel">
+    <div class="card" style="margin-top:20px;">
+      <div class="calmod-toolbar">
+        <div class="calmod-nav">
+          <button class="btn btn-secondary btn-sm" onclick="CalendarUI.nav(-1)" aria-label="Previous month"><i class="ti ti-chevron-left"></i></button>
+          <button class="btn btn-secondary btn-sm" onclick="CalendarUI.goToday()">Today</button>
+          <button class="btn btn-secondary btn-sm" onclick="CalendarUI.nav(1)" aria-label="Next month"><i class="ti ti-chevron-right"></i></button>
+          <span id="cal-month-label" class="calmod-month-label"></span>
+        </div>
+        <div class="calmod-controls">
+          <select id="cal-filter" class="form-input calmod-select" onchange="CalendarUI.onFilterChange()" aria-label="Audience filter">
+            <option value="mine">Aimed at me</option>
+            <option value="all">Everything</option>
+          </select>
+          <div class="calmod-viewtoggle">
+            <button class="btn btn-secondary btn-sm calmod-vt active" id="cal-vt-month" onclick="CalendarUI.setView('month')"><i class="ti ti-layout-grid"></i> Month</button>
+            <button class="btn btn-secondary btn-sm calmod-vt" id="cal-vt-list" onclick="CalendarUI.setView('list')"><i class="ti ti-list"></i> List</button>
+          </div>
+        </div>
+      </div>
+      <div id="cal-body"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
+    </div>
+    <div class="card" id="cal-day-detail" style="margin-top:20px;display:none;">
+      <div class="card-title between">
+        <span><i class="ti ti-calendar-event"></i> <span id="cal-day-detail-title"></span></span>
+        <button class="btn btn-secondary btn-sm" onclick="CalendarUI.closeDetail()" aria-label="Close day detail"><i class="ti ti-x"></i></button>
+      </div>
+      <div id="cal-day-detail-body"></div>
+    </div>
+  </div>
+
+  <!-- ── Tab: Manage Deadlines ──────────────────────────────── -->
+  <div id="cal-tab-manage" class="tab-panel" role="tabpanel" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title"><i class="ti ti-pencil-plus"></i> <span id="cal-form-title">Add a Deadline</span></div>
+      <p class="text-muted text-sm" style="margin:-4px 0 14px;">
+        Deadlines are set outside the department — this is the central place to track them.
+        Add the same deadline on several dates at once (e.g. one per quarter).
+      </p>
+      <div id="cal-dl-form">
+        <div class="form-group">
+          <label class="form-label" for="cal-f-title">Title *</label>
+          <input class="form-input" id="cal-f-title" type="text" maxlength="200" placeholder="e.g. Graduate Leave of Absence petition">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="cal-f-desc">Description</label>
+          <textarea class="form-input" id="cal-f-desc" rows="2" placeholder="Optional details shown on the calendar"></textarea>
+        </div>
+        <div class="calmod-form-row">
+          <div class="form-group">
+            <label class="form-label" for="cal-f-source">Source</label>
+            <input class="form-input" id="cal-f-source" type="text" maxlength="120" placeholder="e.g. Office of the Registrar">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="cal-f-link">Link</label>
+            <input class="form-input" id="cal-f-link" type="url" maxlength="500" placeholder="https://…">
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Audience (leave empty for everyone)</label>
+          <div id="cal-f-roles" class="calmod-chips"></div>
+        </div>
+        <!-- Create mode: build a list of dates. Edit mode: single date. -->
+        <div class="form-group" id="cal-f-dates-group">
+          <label class="form-label" for="cal-f-date">Date(s) *</label>
+          <div class="calmod-daterow">
+            <input class="form-input calmod-date" id="cal-f-date" type="date">
+            <button class="btn btn-secondary btn-sm" id="cal-f-adddate" onclick="CalendarUI.addFormDate()"><i class="ti ti-plus"></i> Add date</button>
+          </div>
+          <div class="calmod-daterow" id="cal-f-rangerow" style="margin-top:8px;">
+            <span class="text-sm text-muted">or a range:</span>
+            <input class="form-input calmod-date" id="cal-f-range-from" type="date" aria-label="Range start">
+            <span class="text-sm text-muted">to</span>
+            <input class="form-input calmod-date" id="cal-f-range-to" type="date" aria-label="Range end">
+            <button class="btn btn-secondary btn-sm" onclick="CalendarUI.addFormRange()"><i class="ti ti-arrows-horizontal"></i> Add range</button>
+          </div>
+          <div id="cal-f-datechips" class="calmod-chips" style="margin-top:8px;"></div>
+        </div>
+        <div class="form-group">
+          <label class="calmod-checkline">
+            <input type="checkbox" id="cal-f-perennial">
+            <span>Perennial — same date every year (informational; used by future imports)</span>
+          </label>
+        </div>
+        <div class="calmod-form-row">
+          <div class="form-group">
+            <label class="form-label" for="cal-f-kind">Kind</label>
+            <select class="form-input" id="cal-f-kind">
+              <option value="deadline">Deadline</option>
+              <option value="closure">Campus closure / holiday (non-working day)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Color</label>
+            <div id="cal-f-color" class="calmod-swatches"></div>
+          </div>
+        </div>
+        <div id="cal-f-pinhint" class="text-sm" style="display:none;margin-bottom:10px;color:var(--color-muted);">
+          <i class="ti ti-pin"></i> This deadline was imported. Changing its <strong>title or date</strong> pins it:
+          future refreshes will report upstream changes instead of overwriting your edit.
+          Audience, description, source, and link are always yours to edit.
+        </div>
+        <div class="flex gap-2">
+          <button class="btn btn-primary" id="cal-f-save" onclick="CalendarUI.saveDeadline()"><i class="ti ti-device-floppy"></i> <span id="cal-f-save-label">Save deadline</span></button>
+          <button class="btn btn-secondary" onclick="CalendarUI.clearForm()">Clear</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title between">
+        <span><i class="ti ti-flag"></i> All Deadlines</span>
+        <button class="btn btn-secondary btn-sm" onclick="CalendarUI.loadDeadlines()" aria-label="Refresh deadlines"><i class="ti ti-refresh"></i></button>
+      </div>
+      <div id="cal-dl-table"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
+    </div>
+  </div>
+
+
+  <!-- ── Tab: Imports (Phase 2, manager-gated) ──────────────── -->
+  <div id="cal-tab-imports" class="tab-panel" role="tabpanel" style="display:none;">
+
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title between">
+        <span><i class="ti ti-cloud-download"></i> Import Sources</span>
+        <button class="btn btn-secondary btn-sm" onclick="CalendarUI.loadImports()" aria-label="Refresh sources"><i class="ti ti-refresh"></i></button>
+      </div>
+      <p class="text-muted text-sm" style="margin:-4px 0 14px;">
+        Registered calendars and pages the nightly refresh checks for deadline changes.
+        Google Calendar sources need the Calendar advanced service enabled in the Apps Script editor.
+        HTML and published-sheet sources can be registered now; their extractors arrive in Phase 3.
+      </p>
+      <div id="cal-src-table"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
+
+      <div style="margin-top:16px;border-top:1px solid var(--color-border,#eee);padding-top:14px;">
+        <div style="font-weight:600;font-size:14px;margin-bottom:10px;" id="cal-src-form-title">Add a Source</div>
+        <div class="calmod-form-row">
+          <div class="form-group">
+            <label class="form-label" for="cal-s-label">Label *</label>
+            <input class="form-input" id="cal-s-label" type="text" maxlength="120" placeholder="e.g. Registrar Academic Calendar">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="cal-s-type">Type</label>
+            <select class="form-input" id="cal-s-type" onchange="CalendarUI.srcTypeChanged()">
+              <option value="gcal">Google Calendar (live)</option>
+              <option value="html">HTML page</option>
+              <option value="gsheet">Published Google Sheet</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group" id="cal-s-calid-group">
+          <label class="form-label" for="cal-s-calid">Google Calendar ID *</label>
+          <input class="form-input" id="cal-s-calid" type="text" maxlength="200" placeholder="xxxx@group.calendar.google.com">
+        </div>
+        <div class="form-group" id="cal-s-url-group" style="display:none;">
+          <label class="form-label" for="cal-s-url">URL *</label>
+          <input class="form-input" id="cal-s-url" type="url" maxlength="500" placeholder="https://…">
+        </div>
+        <div class="form-group" id="cal-s-parser-group" style="display:none;">
+          <label class="form-label" for="cal-s-parser">Parser</label>
+          <select class="form-input" id="cal-s-parser"><option value="">— none (source is skipped) —</option></select>
+          <p class="text-muted text-sm" style="margin:4px 0 0;">Each parser understands one specific page's structure.</p>
+        </div>
+        <div class="form-group">
+          <label class="calmod-checkline">
+            <input type="checkbox" id="cal-s-enabled" checked>
+            <span>Enabled — include in the nightly refresh</span>
+          </label>
+        </div>
+        <div class="flex gap-2">
+          <button class="btn btn-primary" id="cal-src-save" onclick="CalendarUI.srcSave()"><i class="ti ti-device-floppy"></i> Save source</button>
+          <button class="btn btn-secondary" onclick="CalendarUI.srcClear()">Clear</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title between">
+        <span><i class="ti ti-inbox"></i> Pending Review</span>
+        <span class="text-sm text-muted">changes found by refresh, awaiting your decision</span>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Audience override for committed NEW deadlines — leave empty to accept each item's suggested audience</label>
+        <div id="cal-p-roles" class="calmod-chips"></div>
+      </div>
+      <div id="cal-pending"><div class="empty-state">Nothing pending.</div></div>
+      <div class="flex gap-2" style="margin-top:12px;">
+        <button class="btn btn-primary" id="cal-p-commit" onclick="CalendarUI.pendCommit()"><i class="ti ti-check"></i> Commit selected</button>
+        <button class="btn btn-secondary" id="cal-p-commit-closure" onclick="CalendarUI.pendCommit('closure')" title="For holiday/closure entries (e.g. from the Registrar feed): commits as non-working days shown as a day wash, used for business-day math"><i class="ti ti-calendar-off"></i> Commit as closures</button>
+        <button class="btn btn-secondary" id="cal-p-dismiss" onclick="CalendarUI.pendDismiss()"><i class="ti ti-x"></i> Dismiss selected</button>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title"><i class="ti ti-world-download"></i> Harvest Deadlines from a Page</div>
+      <p class="text-muted text-sm" style="margin:-4px 0 14px;">
+        Paste any web page URL. Every date found is offered as a candidate — expect noise;
+        keep only what matters, fix titles, then add. Harvested deadlines are not refreshed automatically.
+      </p>
+      <div class="calmod-daterow" style="margin-bottom:12px;">
+        <input class="form-input" id="cal-h-url" type="url" maxlength="500" placeholder="https://…" style="flex:1;">
+        <button class="btn btn-primary" id="cal-h-preview" onclick="CalendarUI.harvestGo()"><i class="ti ti-search"></i> Preview</button>
+      </div>
+      <div class="form-group" id="cal-h-roles-group" style="display:none;">
+        <label class="form-label">Audience for added deadlines</label>
+        <div id="cal-h-roles" class="calmod-chips"></div>
+      </div>
+      <div id="cal-h-table"></div>
+      <div id="cal-h-actions" class="flex gap-2" style="margin-top:12px;display:none;">
+        <button class="btn btn-primary" id="cal-h-commit" onclick="CalendarUI.harvestCommit()"><i class="ti ti-plus"></i> Add selected to calendar</button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ── Tab: Settings (super_admin) ────────────────────────── -->
+  <div id="cal-tab-settings" class="tab-panel" role="tabpanel" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title"><i class="ti ti-settings"></i> Calendar Settings</div>
+      <div class="form-group">
+        <label class="form-label">Who can manage deadlines</label>
+        <p class="text-muted text-sm" style="margin:2px 0 10px;">
+          Existing roles only — no new role is created for this. Super admins can always manage deadlines.
+        </p>
+        <div id="cal-set-roles" class="calmod-chips"></div>
+      </div>
+      <button class="btn btn-primary" id="cal-set-save" onclick="CalendarUI.saveSettings()"><i class="ti ti-device-floppy"></i> Save settings</button>
+    </div>
+  </div>
+
+</div>
+
+<style>
+  #calendar-module .calmod-toolbar { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:14px; }
+  #calendar-module .calmod-nav { display:flex; align-items:center; gap:6px; }
+  #calendar-module .calmod-month-label { font-weight:600; font-size:16px; margin-left:8px; }
+  #calendar-module .calmod-controls { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  #calendar-module .calmod-select { width:auto; padding:6px 10px; font-size:13px; }
+  #calendar-module .calmod-viewtoggle { display:flex; gap:4px; }
+  #calendar-module .calmod-vt.active { background:var(--ucsc-navy, #003c6c); color:#fff; }
+
+  #calendar-module .calmod-grid { display:grid; grid-template-columns:repeat(7, 1fr); gap:4px; }
+  #calendar-module .calmod-dow { text-align:center; font-size:12px; font-weight:600; color:var(--color-muted); padding:4px 0; }
+  #calendar-module .calmod-cell { border:1px solid var(--color-border, #e0e0e0); border-radius:6px; min-height:86px; padding:4px; cursor:pointer; background:#fff; overflow:hidden; }
+  #calendar-module .calmod-cell:hover { border-color:var(--ucsc-navy, #003c6c); }
+  #calendar-module .calmod-cell.dim { opacity:0.45; }
+  #calendar-module .calmod-cell.today { box-shadow:inset 0 0 0 2px var(--ucsc-gold, #fdc700); }
+  #calendar-module .calmod-cell.selected { box-shadow:inset 0 0 0 2px var(--ucsc-navy, #003c6c); }
+  #calendar-module .calmod-daynum { font-size:12px; font-weight:600; margin-bottom:2px; }
+  #calendar-module .calmod-item { font-size:11px; line-height:1.25; border-radius:4px; padding:1px 4px; margin-bottom:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #calendar-module .calmod-item.dl { background:var(--ucsc-gold, #fdc700); color:#333; }
+  #calendar-module .calmod-item.ev { background:var(--ucsc-navy, #003c6c); color:#fff; }
+  #calendar-module .calmod-more { font-size:11px; color:var(--color-muted); }
+
+  #calendar-module .calmod-list-day { margin-bottom:14px; }
+  #calendar-module .calmod-list-date { font-weight:600; font-size:13px; margin-bottom:6px; }
+  #calendar-module .calmod-detail-item { padding:10px 0; border-bottom:1px solid var(--color-border, #eee); }
+  #calendar-module .calmod-detail-item:last-child { border-bottom:none; }
+
+  #calendar-module .calmod-chips { display:flex; flex-wrap:wrap; gap:8px; }
+  #calendar-module .calmod-form-row { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  #calendar-module .calmod-daterow { display:flex; gap:8px; align-items:center; }
+  #calendar-module .calmod-date { width:auto; }
+  #calendar-module .calmod-checkline { display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer; }
+  #calendar-module .calmod-datechip { display:inline-flex; align-items:center; gap:6px; background:var(--ucsc-gold, #fdc700); color:#333; border-radius:12px; padding:2px 10px; font-size:12px; }
+  #calendar-module .calmod-datechip button { background:none; border:none; cursor:pointer; font-size:12px; line-height:1; padding:0; }
+  #calendar-module .btn.calmod-busy { opacity:0.6; pointer-events:none; }
+  #calendar-module .calmod-pend { display:flex; gap:10px; align-items:flex-start; padding:9px 0; border-bottom:1px solid var(--color-border,#eee); }
+  #calendar-module .calmod-pend:last-child { border-bottom:none; }
+  #calendar-module .calmod-pend input[type=checkbox] { margin-top:3px; }
+  #calendar-module .calmod-kind { font-size:11px; font-weight:600; border-radius:4px; padding:1px 6px; white-space:nowrap; }
+  #calendar-module .calmod-kind.new { background:var(--ucsc-gold,#fdc700); color:#333; }
+  #calendar-module .calmod-kind.changed { background:var(--ucsc-navy,#003c6c); color:#fff; }
+  #calendar-module .calmod-kind.vanished { background:var(--color-danger,#c0392b); color:#fff; }
+  #calendar-module .calmod-kind.pinned_diverged { background:var(--color-border,#ddd); color:#333; }
+  #calendar-module .calmod-h-row td input.form-input { padding:4px 8px; font-size:13px; }
+  #calendar-module .calmod-fetching { font-size:12px; font-weight:600; color:var(--ucsc-navy,#003c6c); white-space:nowrap; }
+  #calendar-module .calmod-minispin { display:inline-block; width:12px; height:12px; border:2px solid var(--ucsc-navy,#003c6c); border-top-color:transparent; border-radius:50%; vertical-align:-2px; animation:calmodspin 0.8s linear infinite; }
+  @keyframes calmodspin { to { transform:rotate(360deg); } }
+  #calendar-module .calmod-item.c-gold   { background:#fdc700; color:#333; }
+  #calendar-module .calmod-item.c-navy   { background:#003c6c; color:#fff; }
+  #calendar-module .calmod-item.c-teal   { background:#0d7d87; color:#fff; }
+  #calendar-module .calmod-item.c-plum   { background:#7b3f8c; color:#fff; }
+  #calendar-module .calmod-item.c-rust   { background:#b5541c; color:#fff; }
+  #calendar-module .calmod-item.c-forest { background:#2e6b34; color:#fff; }
+  #calendar-module .calmod-item.c-slate  { background:#5b6770; color:#fff; }
+  #calendar-module .calmod-item.c-rose   { background:#b03a5b; color:#fff; }
+  #calendar-module .calmod-swatches { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+  #calendar-module .calmod-swatch { width:22px; height:22px; border-radius:50%; cursor:pointer; border:2px solid transparent; display:inline-block; }
+  #calendar-module .calmod-swatch.sel { border-color:#333; box-shadow:0 0 0 2px #fff inset; }
+  #calendar-module .calmod-swatch.none { background:#fff; border:2px dashed var(--color-border,#ccc); position:relative; }
+  #calendar-module .calmod-swatch.none.sel { border-color:#333; border-style:solid; }
+  #calendar-module .calmod-cell.closed { background:#eceef0; }
+  #calendar-module .calmod-cell.closed .calmod-daynum { color:#8a939b; }
+  #calendar-module .calmod-closure-label { font-size:10px; line-height:1.2; color:#5b6770; font-weight:600; margin-bottom:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #calendar-module .calmod-closure-inline { font-size:12px; color:#5b6770; font-weight:600; }
+  @media (max-width: 720px) {
+    #calendar-module .calmod-form-row { grid-template-columns:1fr; }
+    #calendar-module .calmod-cell { min-height:56px; }
+  }
+</style>
+
+<script>
+window.CalendarUI = (() => {   // window.X — module scripts re-execute on load
+
+  const S = {
+    boot: null,
+    view: 'month',
+    filter: 'mine',
+    cursor: null,          // Date, first of the displayed month
+    data: { events: [], deadlines: [] },
+    selectedDate: '',
+    deadlines: [],         // manage table
+    formDates: [],         // create-mode date chips
+    editId: null,          // deadline being edited, else null
+    editOrigin: 'manual',
+    saving: false,         // in-flight mutation lock (double-click guard)
+    sources: [],           // imports tab
+    pending: [],
+    srcEditKey: null,
+    fetchingKey: null,     // source currently being fetched (row-level state)
+    harvest: { url: '', candidates: [] },
+  };
+
+  // ── Init ──────────────────────────────────────────────────
+  function init() {
+    const now = new Date();
+    S.cursor = new Date(now.getFullYear(), now.getMonth(), 1);
+    App.call('calendar', 'bootstrap', {}, b => {
+      S.boot = b || {};
+      if (S.boot.canManage) {
+        document.getElementById('cal-tab-btn-manage').style.display = '';
+        document.getElementById('cal-tab-btn-imports').style.display = '';
+        _pendingBadge(S.boot.pendingCount || 0);
+      }
+      if (S.boot.isSuperAdmin) document.getElementById('cal-tab-btn-settings').style.display = '';
+      _renderRoleChips('cal-f-roles', []);
+      _renderSwatches('cal-f-color', '');
+      const psel = document.getElementById('cal-s-parser');
+      (S.boot.parsers || []).forEach(p => {
+        const o = document.createElement('option');
+        o.value = p.key; o.textContent = p.label + ' (' + p.key + ')';
+        psel.appendChild(o);
+      });
+      if (S.boot.isSuperAdmin) _renderSettings();
+      loadRange();
+      // Deep link: a refresh-review Task points at a calendar_source —
+      // land the reviewer directly on the Imports tab.
+      const f = window.__focus;
+      if (f && f.sourceType === 'calendar_source' && S.boot.canManage) switchTab('imports');
+    });
+  }
+
+  function switchTab(tab) {
+    document.querySelectorAll('#calendar-module .tab-panel').forEach(p => p.style.display = 'none');
+    document.querySelectorAll('#calendar-module .module-tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+    document.getElementById('cal-tab-' + tab).style.display = 'block';
+    if (tab === 'manage') loadDeadlines();
+    if (tab === 'imports') loadImports();
+  }
+
+  function _pendingBadge(n) {
+    const el = document.getElementById('cal-pending-badge');
+    if (!el) return;
+    el.textContent = n;
+    el.style.display = n > 0 ? '' : 'none';
+  }
+
+  // ── Busy lock (double-click protection) ───────────────────
+  // _beginBusy locks all mutating actions and puts the given button
+  // into a visible loading state; _endBusy releases both. Every
+  // mutating call path releases in BOTH success and error handlers,
+  // so a server-side validation error never leaves a dead button.
+  // A blocked re-entrant click now SAYS so instead of silently doing
+  // nothing (Phase 2.1) — a stuck-feeling UI was indistinguishable from
+  // a broken one.
+  function _busy() {
+    if (!S.saving) return false;
+    Toast.show('Still working on the previous action…', 'info');
+    return true;
+  }
+
+  function _beginBusy(buttonId) {
+    S.saving = true;
+    const btn = buttonId ? document.getElementById(buttonId) : null;
+    if (btn) {
+      btn.classList.add('calmod-busy');
+      btn.disabled = true;
+      btn.dataset.prevHtml = btn.innerHTML;
+      btn.innerHTML = '<i class="ti ti-loader-2"></i> Saving…';
+    }
+  }
+
+  function _endBusy(buttonId) {
+    S.saving = false;
+    const btn = buttonId ? document.getElementById(buttonId) : null;
+    if (btn) {
+      btn.classList.remove('calmod-busy');
+      btn.disabled = false;
+      if (btn.dataset.prevHtml) { btn.innerHTML = btn.dataset.prevHtml; delete btn.dataset.prevHtml; }
+    }
+  }
+
+  // ── View: data + navigation ───────────────────────────────
+  function nav(delta) {
+    S.cursor = new Date(S.cursor.getFullYear(), S.cursor.getMonth() + delta, 1);
+    closeDetail();
+    loadRange();
+  }
+
+  function goToday() {
+    const now = new Date();
+    S.cursor = new Date(now.getFullYear(), now.getMonth(), 1);
+    closeDetail();
+    loadRange();
+  }
+
+  function setView(v) {
+    S.view = v;
+    document.getElementById('cal-vt-month').classList.toggle('active', v === 'month');
+    document.getElementById('cal-vt-list').classList.toggle('active', v === 'list');
+    closeDetail();
+    _renderBody();
+  }
+
+  function onFilterChange() {
+    S.filter = document.getElementById('cal-filter').value;
+    closeDetail();
+    _renderBody();
+  }
+
+  function loadRange() {
+    const label = document.getElementById('cal-month-label');
+    label.textContent = S.cursor.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+    const body = document.getElementById('cal-body');
+    body.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
+    const r = _gridRange();
+    App.call('calendar', 'listRange', { start: _ds(r.start), end: _ds(r.end) }, res => {
+      S.data = res || { events: [], deadlines: [] };
+      _renderBody();
+    }, () => { body.innerHTML = '<div class="empty-state">Could not load the calendar. Try refreshing.</div>'; });
+  }
+
+  // The month grid spans full weeks: back to Sunday, forward to Saturday.
+  function _gridRange() {
+    const first = new Date(S.cursor.getFullYear(), S.cursor.getMonth(), 1);
+    const last  = new Date(S.cursor.getFullYear(), S.cursor.getMonth() + 1, 0);
+    const start = new Date(first); start.setDate(first.getDate() - first.getDay());
+    const end   = new Date(last);  end.setDate(last.getDate() + (6 - last.getDay()));
+    return { start, end };
+  }
+
+  // ── View: rendering ───────────────────────────────────────
+  function _renderBody() {
+    if (S.view === 'month') _renderMonth(); else _renderList();
+  }
+
+  function _visibleItems() {
+    const mine = S.filter === 'mine';
+    const keep = item => {
+      if (!mine) return true;
+      const aud = item.audienceRoles || [];
+      if (!aud.length) return true;                    // blank audience = everyone
+      if ((S.boot.userRoles || []).includes('super_admin')) return true;
+      return aud.some(r => (S.boot.userRoles || []).includes(r));
+    };
+    return {
+      deadlines: (S.data.deadlines || []).filter(keep),
+      events:    (S.data.events || []).filter(keep),
+    };
+  }
+
+  function _itemsByDate() {
+    const map = {};
+    const add = (d, item) => { (map[d] = map[d] || []).push(item); };
+    const vis = _visibleItems();
+    vis.deadlines.forEach(dl => add(dl.date, { kind: dl.kind === 'closure' ? 'closure' : 'dl', it: dl }));
+    vis.events.forEach(ev => {
+      // Multi-day events appear on each day they span.
+      let d = _pd(ev.startDate);
+      const end = _pd(ev.endDate || ev.startDate);
+      while (d <= end) { add(_ds(d), { kind: 'ev', it: ev }); d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1); }
+    });
+    return map;
+  }
+
+  function _renderMonth() {
+    const r = _gridRange();
+    const byDate = _itemsByDate();
+    const todayStr = S.boot && S.boot.today ? S.boot.today : _ds(new Date());
+    const thisMonth = S.cursor.getMonth();
+
+    let html = '<div class="calmod-grid">';
+    ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].forEach(d => { html += '<div class="calmod-dow">' + d + '</div>'; });
+
+    let day = new Date(r.start);
+    while (day <= r.end) {
+      const ds = _ds(day);
+      const all = byDate[ds] || [];
+      // Closures are a STATE of the day (gray wash + small label), not
+      // items on it — they never occupy chip slots.
+      const closures = all.filter(x => x.kind === 'closure');
+      const items = all.filter(x => x.kind !== 'closure');
+      const classes = ['calmod-cell'];
+      if (closures.length) classes.push('closed');
+      if (day.getMonth() !== thisMonth) classes.push('dim');
+      if (ds === todayStr) classes.push('today');
+      if (ds === S.selectedDate) classes.push('selected');
+
+      let chips = '';
+      closures.slice(0, 1).forEach(x => {
+        chips += '<div class="calmod-closure-label" title="' + _escAttr(x.it.title) + '">' + _esc(x.it.title) + '</div>';
+      });
+      items.slice(0, 3).forEach(x => {
+        const colorCls = (x.kind === 'dl' && x.it.color) ? ' c-' + _escAttr(x.it.color) : '';
+        chips += '<div class="calmod-item ' + x.kind + colorCls + '" title="' + _escAttr(x.it.title) + '">' + _esc(x.it.title) + '</div>';
+      });
+      if (items.length > 3) chips += '<div class="calmod-more">+' + (items.length - 3) + ' more</div>';
+
+      html += '<div class="' + classes.join(' ') + '" onclick="CalendarUI.openDetail(\'' + ds + '\')">'
+            + '<div class="calmod-daynum">' + day.getDate() + '</div>' + chips + '</div>';
+      day = new Date(day.getFullYear(), day.getMonth(), day.getDate() + 1);
+    }
+    html += '</div>';
+    document.getElementById('cal-body').innerHTML = html;
+  }
+
+  function _renderList() {
+    const byDate = _itemsByDate();
+    const monthPrefix = _ds(S.cursor).slice(0, 7);
+    const dates = Object.keys(byDate).filter(d => d.slice(0, 7) === monthPrefix).sort();
+    if (!dates.length) {
+      document.getElementById('cal-body').innerHTML =
+        '<div class="empty-state"><i class="ti ti-calendar-off" style="font-size:32px;display:block;margin-bottom:8px;"></i>Nothing on the calendar this month' + (S.filter === 'mine' ? ' for your roles — try "Everything"' : '') + '.</div>';
+      return;
+    }
+    let html = '';
+    dates.forEach(d => {
+      const closures = byDate[d].filter(x => x.kind === 'closure');
+      const items = byDate[d].filter(x => x.kind !== 'closure');
+      const closureNote = closures.length
+        ? ' <span class="calmod-closure-inline">· ' + closures.map(x => _esc(x.it.title)).join(', ') + ' (campus closed)</span>'
+        : '';
+      html += '<div class="calmod-list-day"><div class="calmod-list-date">' + _esc(_prettyDate(d)) + closureNote + '</div>';
+      items.forEach(x => { html += _itemDetailHtml(x, false); });
+      html += '</div>';
+    });
+    document.getElementById('cal-body').innerHTML = html;
+  }
+
+  function openDetail(ds) {
+    S.selectedDate = ds;
+    const byDate = _itemsByDate();
+    const items = byDate[ds] || [];
+    document.getElementById('cal-day-detail-title').textContent = _prettyDate(ds);
+    document.getElementById('cal-day-detail-body').innerHTML = items.length
+      ? items.map(x => _itemDetailHtml(x, true)).join('')
+      : '<div class="empty-state">Nothing scheduled this day.</div>';
+    document.getElementById('cal-day-detail').style.display = '';
+    _renderBody();   // repaint selection ring
+  }
+
+  function closeDetail() {
+    S.selectedDate = '';
+    document.getElementById('cal-day-detail').style.display = 'none';
+  }
+
+  function _itemDetailHtml(x, withActions) {
+    const it = x.it;
+    if (x.kind === 'closure') {
+      return '<div class="calmod-detail-item"><span class="calmod-closure-inline">'
+        + '<i class="ti ti-calendar-off"></i> Campus closed: ' + _esc(it.title) + '</span>'
+        + (withActions && S.boot && S.boot.canManage
+            ? ' <button class="btn btn-secondary btn-sm" onclick="CalendarUI.editFromView(\'' + _escAttr(it.deadlineId) + '\')"><i class="ti ti-pencil"></i></button>'
+            : '')
+        + '</div>';
+    }
+    const badge = x.kind === 'dl'
+      ? '<span class="badge badge-gold">Deadline</span>'
+      : '<span class="badge" style="background:var(--ucsc-navy,#003c6c);color:#fff;">Event</span>';
+    const aud = (it.audienceRoles && it.audienceRoles.length)
+      ? '<span class="text-muted text-sm"> · ' + it.audienceRoles.map(_esc).join(', ') + '</span>'
+      : '<span class="text-muted text-sm"> · everyone</span>';
+    const time = (x.kind === 'ev' && it.start && it.start.slice(11) !== '00:00')
+      ? '<span class="text-muted text-sm"> · ' + _esc(it.start.slice(11)) + (it.end ? '–' + _esc(it.end.slice(11)) : '') + '</span>' : '';
+    const loc  = (x.kind === 'ev' && it.locationLabel) ? '<span class="text-muted text-sm"> · ' + _esc(it.locationLabel) + '</span>' : '';
+    const src  = (x.kind === 'dl' && it.source) ? '<div class="text-sm text-muted">Source: ' + _esc(it.source) + '</div>' : '';
+    const desc = it.description ? '<div class="text-sm" style="margin-top:2px;">' + _esc(it.description) + '</div>' : '';
+    const link = it.link ? '<div class="text-sm"><a href="' + _escAttr(it.link) + '" target="_blank" rel="noopener">More information <i class="ti ti-external-link"></i></a></div>' : '';
+    const flags = x.kind === 'dl'
+      ? (it.pinned ? ' <span class="badge">Pinned</span>' : '') + (it.perennial ? ' <span class="badge">Annual</span>' : '')
+      : '';
+    const actions = (withActions && x.kind === 'dl' && S.boot && S.boot.canManage)
+      ? '<div style="margin-top:6px;"><button class="btn btn-secondary btn-sm" onclick="CalendarUI.editFromView(\'' + _escAttr(it.deadlineId) + '\')"><i class="ti ti-pencil"></i> Edit</button></div>'
+      : '';
+    return '<div class="calmod-detail-item">' + badge + ' <strong>' + _esc(it.title) + '</strong>' + flags + time + loc + aud + desc + src + link + actions + '</div>';
+  }
+
+  // ── Manage: table ─────────────────────────────────────────
+  function loadDeadlines() {
+    const el = document.getElementById('cal-dl-table');
+    if (!el) return;
+    el.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
+    App.call('calendar', 'listDeadlines', {}, rows => {
+      S.deadlines = rows || [];
+      _renderDeadlineTable();
+    });
+  }
+
+  function _renderDeadlineTable() {
+    const el = document.getElementById('cal-dl-table');
+    if (!S.deadlines.length) {
+      el.innerHTML = '<div class="empty-state"><i class="ti ti-flag" style="font-size:32px;display:block;margin-bottom:8px;"></i>No deadlines yet — add the first one above.</div>';
+      return;
+    }
+    const body = S.deadlines.map(d => {
+      const flags = (d.kind === 'closure' ? ' <span class="badge">closure</span>' : '')
+                  + (d.origin !== 'manual' ? ' <span class="badge">' + _esc(d.origin) + '</span>' : '')
+                  + (d.pinned ? ' <span class="badge">pinned</span>' : '')
+                  + (d.perennial ? ' <span class="badge">annual</span>' : '')
+                  + (d.color ? ' <span class="calmod-swatch" style="width:12px;height:12px;background:' + (PALETTE_HEX[d.color] || '#ccc') + ';cursor:default;vertical-align:middle;"></span>' : '');
+      const aud = (d.audienceRoles || []).length ? d.audienceRoles.map(_esc).join(', ') : 'everyone';
+      return '<tr>'
+        + '<td style="white-space:nowrap;">' + _esc(d.date) + '</td>'
+        + '<td>' + _esc(d.title) + flags + (d.source ? '<div class="text-sm text-muted">' + _esc(d.source) + '</div>' : '') + '</td>'
+        + '<td class="text-sm">' + aud + '</td>'
+        + '<td style="white-space:nowrap;">'
+        +   '<button class="btn btn-secondary btn-sm" onclick="CalendarUI.editDeadline(\'' + _escAttr(d.deadlineId) + '\')" aria-label="Edit"><i class="ti ti-pencil"></i></button> '
+        +   '<button class="btn btn-secondary btn-sm" onclick="CalendarUI.duplicateDeadline(\'' + _escAttr(d.deadlineId) + '\')" aria-label="Duplicate to a new date"><i class="ti ti-copy"></i></button> '
+        +   '<button class="btn btn-danger btn-sm" onclick="CalendarUI.deleteDeadline(\'' + _escAttr(d.deadlineId) + '\')" aria-label="Delete"><i class="ti ti-trash"></i></button>'
+        + '</td></tr>';
+    }).join('');
+    el.innerHTML = '<div class="table-wrap"><table class="data-table"><thead><tr>'
+      + '<th>Date</th><th>Deadline</th><th>Audience</th><th></th>'
+      + '</tr></thead><tbody>' + body + '</tbody></table></div>';
+  }
+
+  // ── Manage: form ──────────────────────────────────────────
+  function addFormDate() {
+    const input = document.getElementById('cal-f-date');
+    const v = input.value;
+    if (!v) { Toast.show('Pick a date first.', 'info'); return; }
+    if (!S.formDates.includes(v)) { S.formDates.push(v); S.formDates.sort(); }
+    input.value = '';
+    _renderDateChips();
+  }
+
+  function addFormRange() {
+    const fromEl = document.getElementById('cal-f-range-from');
+    const toEl   = document.getElementById('cal-f-range-to');
+    if (!fromEl.value || !toEl.value) { Toast.show('Pick both range dates.', 'info'); return; }
+    let d = _pd(fromEl.value);
+    const end = _pd(toEl.value);
+    if (end < d) { Toast.show('The range end is before its start.', 'error'); return; }
+    let added = 0;
+    while (d <= end) {
+      const s = _ds(d);
+      if (!S.formDates.includes(s)) {
+        if (S.formDates.length >= 40) { Toast.show('At most 40 dates per create — range truncated.', 'info'); break; }
+        S.formDates.push(s); added++;
+      }
+      d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1);
+    }
+    S.formDates.sort();
+    fromEl.value = ''; toEl.value = '';
+    _renderDateChips();
+    if (added) Toast.show('Added ' + added + ' date' + (added === 1 ? '' : 's') + '.', 'success');
+  }
+
+  function removeFormDate(d) {
+    S.formDates = S.formDates.filter(x => x !== d);
+    _renderDateChips();
+  }
+
+  function _renderDateChips() {
+    document.getElementById('cal-f-datechips').innerHTML = S.formDates.map(d =>
+      '<span class="calmod-datechip">' + _esc(d)
+      + '<button onclick="CalendarUI.removeFormDate(\'' + _escAttr(d) + '\')" aria-label="Remove date"><i class="ti ti-x"></i></button></span>'
+    ).join('');
+  }
+
+  function saveDeadline() {
+    if (_busy()) return;                              // re-entrant click: no-op
+    const title = document.getElementById('cal-f-title').value.trim();
+    if (!title) { Toast.show('Title is required.', 'error'); return; }
+    const payload = {
+      title: title,
+      description: document.getElementById('cal-f-desc').value.trim(),
+      source: document.getElementById('cal-f-source').value.trim(),
+      link: document.getElementById('cal-f-link').value.trim(),
+      audienceRoles: _checkedRoles('cal-f-roles'),
+      perennial: document.getElementById('cal-f-perennial').checked,
+      kind: document.getElementById('cal-f-kind').value,
+      color: _pickedColor('cal-f-color'),
+    };
+
+    if (S.editId) {
+      payload.deadlineId = S.editId;
+      payload.date = document.getElementById('cal-f-date').value;
+      if (!payload.date) { Toast.show('A date is required.', 'error'); return; }
+      _beginBusy('cal-f-save');
+      App.call('calendar', 'updateDeadline', payload, res => {
+        _endBusy('cal-f-save');
+        Toast.show(res.pinApplied
+          ? 'Saved — and pinned: refreshes will no longer overwrite this deadline.'
+          : 'Deadline saved.', 'success');
+        clearForm(); loadDeadlines(); closeDetail(); loadRange();
+      }, () => _endBusy('cal-f-save'));
+    } else {
+      const dates = S.formDates.slice();
+      const single = document.getElementById('cal-f-date').value;
+      if (single && !dates.includes(single)) dates.push(single);   // typed but not chip-added
+      if (!dates.length) { Toast.show('Add at least one date.', 'error'); return; }
+      payload.dates = dates;
+      _beginBusy('cal-f-save');
+      App.call('calendar', 'createDeadline', payload, res => {
+        _endBusy('cal-f-save');
+        const n = (res.created || []).length;
+        const k = (res.skipped || []).length;
+        let msg = 'Created ' + n + ' deadline' + (n === 1 ? '' : 's') + '.';
+        if (k) msg += ' Skipped ' + k + ' already on the calendar.';
+        Toast.show(msg, n ? 'success' : 'info');
+        clearForm(); loadDeadlines(); loadRange();
+      }, () => _endBusy('cal-f-save'));
+    }
+  }
+
+  function editDeadline(id) {
+    const d = S.deadlines.find(x => x.deadlineId === id);
+    if (!d) return;
+    S.editId = id;
+    S.editOrigin = d.origin;
+    S.formDates = [];
+    document.getElementById('cal-form-title').textContent = 'Edit Deadline';
+    document.getElementById('cal-f-save-label').textContent = 'Save changes';
+    document.getElementById('cal-f-title').value = d.title;
+    document.getElementById('cal-f-desc').value = d.description || '';
+    document.getElementById('cal-f-source').value = d.source || '';
+    document.getElementById('cal-f-link').value = d.link || '';
+    document.getElementById('cal-f-perennial').checked = !!d.perennial;
+    document.getElementById('cal-f-kind').value = d.kind || 'deadline';
+    _renderSwatches('cal-f-color', d.color || '');
+    document.getElementById('cal-f-date').value = d.date;
+    document.getElementById('cal-f-adddate').style.display = 'none';   // single date in edit mode
+    document.getElementById('cal-f-rangerow').style.display = 'none';
+    _renderDateChips();
+    _renderRoleChips('cal-f-roles', d.audienceRoles || []);
+    document.getElementById('cal-f-pinhint').style.display = (d.origin === 'imported' && !d.pinned) ? '' : 'none';
+    switchTab('manage');
+    document.getElementById('cal-dl-form').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function editFromView(id) {
+    // The detail panel's Edit jumps into the manage form; make sure the
+    // table state holding this row is loaded first.
+    App.call('calendar', 'listDeadlines', {}, rows => {
+      S.deadlines = rows || [];
+      _renderDeadlineTable();
+      editDeadline(id);
+    });
+  }
+
+  function clearForm() {
+    S.editId = null;
+    S.editOrigin = 'manual';
+    S.formDates = [];
+    document.getElementById('cal-form-title').textContent = 'Add a Deadline';
+    document.getElementById('cal-f-save-label').textContent = 'Save deadline';
+    ['cal-f-title','cal-f-desc','cal-f-source','cal-f-link','cal-f-date'].forEach(id => {
+      document.getElementById(id).value = '';
+    });
+    document.getElementById('cal-f-perennial').checked = false;
+    document.getElementById('cal-f-kind').value = 'deadline';
+    _renderSwatches('cal-f-color', '');
+    document.getElementById('cal-f-adddate').style.display = '';
+    document.getElementById('cal-f-rangerow').style.display = '';
+    document.getElementById('cal-f-range-from').value = '';
+    document.getElementById('cal-f-range-to').value = '';
+    document.getElementById('cal-f-pinhint').style.display = 'none';
+    _renderDateChips();
+    _renderRoleChips('cal-f-roles', []);
+  }
+
+  function duplicateDeadline(id) {
+    if (_busy()) return;
+    const d = S.deadlines.find(x => x.deadlineId === id);
+    if (!d) return;
+    const newDate = prompt('Duplicate "' + d.title + '" to which date? (YYYY-MM-DD)', d.date);
+    if (newDate === null) return;
+    _beginBusy(null);
+    App.call('calendar', 'duplicateDeadline', { deadlineId: id, newDate: newDate.trim() }, () => {
+      _endBusy(null);
+      Toast.show('Deadline duplicated.', 'success');
+      loadDeadlines(); loadRange();
+    }, () => _endBusy(null));
+  }
+
+  function deleteDeadline(id) {
+    if (_busy()) return;
+    const d = S.deadlines.find(x => x.deadlineId === id);
+    if (!d) return;
+    if (!confirm('Delete "' + d.title + '" (' + d.date + ')? This cannot be undone.')) return;
+    _beginBusy(null);
+    App.call('calendar', 'deleteDeadline', { deadlineId: id }, () => {
+      _endBusy(null);
+      Toast.show('Deadline deleted.', 'success');
+      loadDeadlines(); closeDetail(); loadRange();
+    }, () => _endBusy(null));
+  }
+
+
+  // ── Imports tab: sources ──────────────────────────────────
+  function loadImports() {
+    _renderRoleChips('cal-p-roles', []);
+    const el = document.getElementById('cal-src-table');
+    el.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
+    App.call('calendar', 'listSources', {}, rows => {
+      S.sources = rows || [];
+      _renderSources();
+      _loadPending();
+    });
+  }
+
+  function _renderSources() {
+    const el = document.getElementById('cal-src-table');
+    if (!S.sources.length) {
+      el.innerHTML = '<div class="empty-state">No sources yet — add the Registrar calendar below.</div>';
+      return;
+    }
+    const fetching = S.fetchingKey;
+    const body = S.sources.map(s => {
+      const isFetching = s.sourceKey === fetching;
+      const status = isFetching
+        ? '<span class="calmod-fetching"><span class="calmod-minispin"></span> Fetching…</span>'
+        : !s.enabled ? '<span class="badge">disabled</span>'
+        : (s.lastResult && s.lastResult.indexOf('ERROR') === 0)
+          ? '<span class="badge badge-danger">stale</span>'
+          : (s.lastSuccessAt ? '<span class="badge badge-success">ok</span>' : '<span class="badge">never fetched</span>');
+      const pend = s.openPending ? ' <span class="badge badge-gold">' + s.openPending + ' pending</span>' : '';
+      return '<tr>'
+        + '<td><strong>' + _esc(s.label) + '</strong>' + pend
+        +   '<div class="text-sm text-muted">' + _esc(s.type) + ' · ' + _esc(s.calendarId || s.url) + '</div>'
+        +   (s.lastResult ? '<div class="text-sm text-muted">' + _esc(s.lastResult) + '</div>' : '')
+        + '</td>'
+        + '<td class="text-sm" style="white-space:nowrap;">' + status
+        +   '<div class="text-muted">' + _esc(s.lastSuccessAt ? s.lastSuccessAt.replace('T', ' ') : '') + '</div></td>'
+        + '<td style="white-space:nowrap;">'
+        +   '<button class="btn btn-secondary btn-sm"' + (isFetching ? ' disabled' : '') + ' onclick="CalendarUI.srcFetch(\'' + _escAttr(s.sourceKey) + '\')" aria-label="Fetch now"><i class="ti ti-cloud-download"></i></button> '
+        +   '<button class="btn btn-secondary btn-sm"' + (isFetching ? ' disabled' : '') + ' onclick="CalendarUI.srcEdit(\'' + _escAttr(s.sourceKey) + '\')" aria-label="Edit"><i class="ti ti-pencil"></i></button> '
+        +   '<button class="btn btn-danger btn-sm"' + (isFetching ? ' disabled' : '') + ' onclick="CalendarUI.srcDelete(\'' + _escAttr(s.sourceKey) + '\')" aria-label="Delete"><i class="ti ti-trash"></i></button>'
+        + '</td></tr>';
+    }).join('');
+    const note = fetching
+      ? '<div class="text-sm text-muted" style="margin-top:8px;"><i class="ti ti-clock"></i> Fetching can take several minutes when a campus host is slow to respond — leave this tab open until it finishes.</div>'
+      : '';
+    el.innerHTML = '<div class="table-wrap"><table class="data-table"><thead><tr>'
+      + '<th>Source</th><th>Status</th><th></th></tr></thead><tbody>' + body + '</tbody></table></div>' + note;
+  }
+
+  function srcTypeChanged() {
+    const t = document.getElementById('cal-s-type').value;
+    document.getElementById('cal-s-calid-group').style.display  = (t === 'gcal') ? '' : 'none';
+    document.getElementById('cal-s-url-group').style.display    = (t === 'gcal') ? 'none' : '';
+    document.getElementById('cal-s-parser-group').style.display = (t === 'html' || t === 'gsheet') ? '' : 'none';
+  }
+
+  function srcEdit(key) {
+    const s = S.sources.find(x => x.sourceKey === key);
+    if (!s) return;
+    S.srcEditKey = key;
+    document.getElementById('cal-src-form-title').textContent = 'Edit Source: ' + s.label;
+    document.getElementById('cal-s-label').value = s.label;
+    document.getElementById('cal-s-type').value = s.type;
+    document.getElementById('cal-s-calid').value = s.calendarId || '';
+    document.getElementById('cal-s-url').value = s.url || '';
+    document.getElementById('cal-s-enabled').checked = !!s.enabled;
+    document.getElementById('cal-s-parser').value = s.parserKey || '';
+    srcTypeChanged();
+  }
+
+  function srcClear() {
+    S.srcEditKey = null;
+    document.getElementById('cal-src-form-title').textContent = 'Add a Source';
+    document.getElementById('cal-s-label').value = '';
+    document.getElementById('cal-s-type').value = 'gcal';
+    document.getElementById('cal-s-calid').value = '';
+    document.getElementById('cal-s-url').value = '';
+    document.getElementById('cal-s-enabled').checked = true;
+    document.getElementById('cal-s-parser').value = '';
+    srcTypeChanged();
+  }
+
+  function srcSave() {
+    if (_busy()) return;
+    const payload = {
+      sourceKey: S.srcEditKey || '',
+      label: document.getElementById('cal-s-label').value.trim(),
+      type: document.getElementById('cal-s-type').value,
+      calendarId: document.getElementById('cal-s-calid').value.trim(),
+      url: document.getElementById('cal-s-url').value.trim(),
+      parserKey: document.getElementById('cal-s-parser').value,
+      enabled: document.getElementById('cal-s-enabled').checked,
+    };
+    if (!payload.label) { Toast.show('A label is required.', 'error'); return; }
+    _beginBusy('cal-src-save');
+    App.call('calendar', 'saveSource', payload, () => {
+      _endBusy('cal-src-save');
+      Toast.show('Source saved.', 'success');
+      srcClear(); loadImports();
+    }, () => _endBusy('cal-src-save'));
+  }
+
+  function srcDelete(key) {
+    if (_busy()) return;
+    const s = S.sources.find(x => x.sourceKey === key);
+    if (!s) return;
+    if (!confirm('Delete source "' + s.label + '"? Already-imported deadlines are kept but will no longer refresh.')) return;
+    _beginBusy(null);
+    App.call('calendar', 'deleteSource', { sourceKey: key }, () => {
+      _endBusy(null); Toast.show('Source deleted.', 'success'); loadImports();
+    }, () => _endBusy(null));
+  }
+
+  function srcFetch(key) {
+    if (_busy()) return;
+    _beginBusy(null);
+    S.fetchingKey = key;          // persistent, on-the-row state — a
+    _renderSources();             // transient toast expires; this can't
+    App.call('calendar', 'refreshSource', { sourceKey: key }, res => {
+      _endBusy(null);
+      S.fetchingKey = null;
+      Toast.show(res.skipped ? res.reason : (res.summary || 'Fetched.'), res.skipped ? 'info' : 'success');
+      loadImports();
+    }, () => {
+      _endBusy(null);
+      S.fetchingKey = null;
+      _renderSources();           // repaint; the error lands in LastResult on next load
+      loadImports();
+    });
+  }
+
+  // ── Imports tab: pending review ───────────────────────────
+  function _loadPending() {
+    App.call('calendar', 'listPending', {}, rows => {
+      S.pending = rows || [];
+      _pendingBadge(S.pending.length);
+      _renderPending();
+    });
+  }
+
+  function _renderPending() {
+    const el = document.getElementById('cal-pending');
+    const hasRows = S.pending.length > 0;
+    document.getElementById('cal-p-commit').style.display = hasRows ? '' : 'none';
+    document.getElementById('cal-p-commit-closure').style.display = hasRows ? '' : 'none';
+    document.getElementById('cal-p-dismiss').style.display = hasRows ? '' : 'none';
+    if (!hasRows) { el.innerHTML = '<div class="empty-state">Nothing pending — the review queue is clear.</div>'; return; }
+
+    const srcLabel = k => { const s = S.sources.find(x => x.sourceKey === k); return s ? s.label : k; };
+    el.innerHTML = '<label class="calmod-checkline" style="margin-bottom:6px;"><input type="checkbox" id="cal-p-all" onchange="CalendarUI.pendToggleAll()"> <span class="text-sm">Select all</span></label>'
+      + S.pending.map(p => {
+        let desc;
+        if (p.kind === 'new') {
+          desc = '<strong>' + _esc(p.title) + '</strong> — ' + _esc(p.date)
+            + (p.detail ? '<div class="text-sm text-muted">' + _esc(p.detail) + '</div>' : '')
+            + ((p.suggestedAudience || []).length
+                ? '<div class="text-sm text-muted"><i class="ti ti-users"></i> suggested audience: ' + p.suggestedAudience.map(_esc).join(', ') + '</div>'
+                : '');
+        } else if (p.kind === 'changed') {
+          desc = '<strong>' + _esc(p.oldTitle) + '</strong>: ' + _esc(p.oldDate) + ' → ' + _esc(p.date)
+            + (p.title !== p.oldTitle ? '<div class="text-sm text-muted">retitled: ' + _esc(p.title) + '</div>' : '');
+        } else if (p.kind === 'vanished') {
+          desc = '<strong>' + _esc(p.oldTitle) + '</strong> (' + _esc(p.oldDate) + ') — removed upstream; commit hides it here too';
+        } else {
+          desc = '<strong>' + _esc(p.oldTitle) + '</strong> — pinned by you; upstream now says '
+            + _esc(p.title) + ' on ' + _esc(p.date) + ' (informational; commit/dismiss just clears this notice)';
+        }
+        return '<div class="calmod-pend">'
+          + '<input type="checkbox" class="cal-p-check" value="' + _escAttr(p.pendingId) + '">'
+          + '<span class="calmod-kind ' + _escAttr(p.kind) + '">' + _esc(p.kind.replace('_', ' ')) + '</span>'
+          + '<div style="flex:1;">' + desc
+          + '<div class="text-sm text-muted">' + _esc(srcLabel(p.sourceKey)) + '</div></div>'
+          + '</div>';
+      }).join('');
+  }
+
+  function pendToggleAll() {
+    const on = document.getElementById('cal-p-all').checked;
+    document.querySelectorAll('.cal-p-check').forEach(c => { c.checked = on; });
+  }
+
+  function _pendChecked() {
+    return Array.from(document.querySelectorAll('.cal-p-check:checked')).map(c => c.value);
+  }
+
+  function pendCommit(asKind) {
+    if (_busy()) return;
+    const ids = _pendChecked();
+    if (!ids.length) { Toast.show('Select at least one item.', 'info'); return; }
+    const audience = _checkedRoles('cal-p-roles');
+    const items = ids.map(id => ({ pendingId: id, audienceRoles: audience, kind: asKind === 'closure' ? 'closure' : 'deadline' }));
+    _beginBusy(asKind === 'closure' ? 'cal-p-commit-closure' : 'cal-p-commit');
+    App.call('calendar', 'commitPending', { items: items }, res => {
+      _endBusy('cal-p-commit');
+      _endBusy('cal-p-commit-closure');
+      const r = res.results || [];
+      const ok = r.filter(x => x.status === 'committed').length;
+      const skipped = r.filter(x => x.status === 'skipped' || x.status === 'dismissed').length;
+      const errs = r.filter(x => x.status === 'error');
+      let msg = 'Committed ' + ok + '.' + (skipped ? ' Skipped/cleared ' + skipped + '.' : '');
+      if (errs.length) msg += ' ' + errs.length + ' failed: ' + _esc(errs[0].reason);
+      Toast.show(msg, errs.length ? 'error' : 'success');
+      loadImports(); loadRange();
+    }, () => { _endBusy('cal-p-commit'); _endBusy('cal-p-commit-closure'); });
+  }
+
+  function pendDismiss() {
+    if (_busy()) return;
+    const ids = _pendChecked();
+    if (!ids.length) { Toast.show('Select at least one item.', 'info'); return; }
+    _beginBusy('cal-p-dismiss');
+    App.call('calendar', 'dismissPending', { pendingIds: ids }, res => {
+      _endBusy('cal-p-dismiss');
+      Toast.show('Dismissed ' + (res.dismissed || 0) + '.', 'success');
+      loadImports();
+    }, () => _endBusy('cal-p-dismiss'));
+  }
+
+  // ── Imports tab: harvest ──────────────────────────────────
+  function harvestGo() {
+    if (_busy()) return;
+    const url = document.getElementById('cal-h-url').value.trim();
+    if (!url) { Toast.show('Paste a URL first.', 'info'); return; }
+    _beginBusy('cal-h-preview');
+    App.call('calendar', 'harvestPreview', { url: url }, res => {
+      _endBusy('cal-h-preview');
+      S.harvest = { url: res.url, candidates: res.candidates || [] };
+      _renderHarvest();
+    }, () => _endBusy('cal-h-preview'));
+  }
+
+  function _renderHarvest() {
+    const el = document.getElementById('cal-h-table');
+    const c = S.harvest.candidates;
+    document.getElementById('cal-h-roles-group').style.display = c.length ? '' : 'none';
+    document.getElementById('cal-h-actions').style.display = c.length ? '' : 'none';
+    if (c.length) _renderRoleChips('cal-h-roles', []);
+    if (!c.length) { el.innerHTML = '<div class="empty-state">No dates found on that page.</div>'; return; }
+    const body = c.map((x, i) =>
+      '<tr class="calmod-h-row">'
+      + '<td><input type="checkbox" class="cal-h-check" value="' + i + '"></td>'
+      + '<td><input class="form-input" id="cal-h-title-' + i + '" type="text" maxlength="200" value="' + _escAttr(x.title) + '">'
+      +   '<div class="text-sm text-muted">' + _esc(x.context) + '</div></td>'
+      + '<td style="white-space:nowrap;"><input class="form-input" id="cal-h-date-' + i + '" type="date" value="' + _escAttr(x.date) + '"></td>'
+      + '</tr>').join('');
+    el.innerHTML = '<label class="calmod-checkline" style="margin:6px 0;"><input type="checkbox" id="cal-h-all" onchange="CalendarUI.harvestToggleAll()"> <span class="text-sm">Select all (' + c.length + ' candidates)</span></label>'
+      + '<div class="table-wrap"><table class="data-table"><thead><tr><th></th><th>Deadline</th><th>Date</th></tr></thead><tbody>'
+      + body + '</tbody></table></div>';
+  }
+
+  function harvestToggleAll() {
+    const on = document.getElementById('cal-h-all').checked;
+    document.querySelectorAll('.cal-h-check').forEach(x => { x.checked = on; });
+  }
+
+  function harvestCommit() {
+    if (_busy()) return;
+    const idxs = Array.from(document.querySelectorAll('.cal-h-check:checked')).map(x => Number(x.value));
+    if (!idxs.length) { Toast.show('Select at least one candidate.', 'info'); return; }
+    const audience = _checkedRoles('cal-h-roles');
+    const items = idxs.map(i => ({
+      title: document.getElementById('cal-h-title-' + i).value.trim(),
+      date: document.getElementById('cal-h-date-' + i).value,
+      description: '',
+      link: S.harvest.url,
+      audienceRoles: audience,
+    }));
+    _beginBusy('cal-h-commit');
+    App.call('calendar', 'harvestCommit', { items: items, url: S.harvest.url }, res => {
+      _endBusy('cal-h-commit');
+      const n = (res.created || []).length, k = (res.skipped || []).length;
+      Toast.show('Added ' + n + ' deadline' + (n === 1 ? '' : 's') + '.'
+        + (k ? ' Skipped ' + k + ' (' + _esc(res.skipped[0].reason) + '…).' : ''), n ? 'success' : 'info');
+      S.harvest = { url: '', candidates: [] };
+      document.getElementById('cal-h-url').value = '';
+      _renderHarvest(); loadDeadlines(); loadRange();
+    }, () => _endBusy('cal-h-commit'));
+  }
+
+  // ── Settings ──────────────────────────────────────────────
+  function _renderSettings() {
+    const managers = (S.boot.managerRoles || []);
+    const roles = (S.boot.allRoles || []).filter(r => r !== 'super_admin');
+    document.getElementById('cal-set-roles').innerHTML = roles.map(r =>
+      '<label class="role-chip' + (managers.includes(r) ? ' checked' : '') + '">'
+      + '<input type="checkbox" value="' + _escAttr(r) + '"' + (managers.includes(r) ? ' checked' : '')
+      + ' onchange="this.closest(\'.role-chip\').classList.toggle(\'checked\', this.checked)"> ' + _esc(r) + '</label>'
+    ).join('');
+  }
+
+  function saveSettings() {
+    if (_busy()) return;
+    const selected = _checkedRoles('cal-set-roles');
+    _beginBusy('cal-set-save');
+    App.call('calendar', 'saveSettings', { managerRoles: selected }, res => {
+      _endBusy('cal-set-save');
+      S.boot.managerRoles = res.managerRoles || [];
+      S.boot.canManage = S.boot.isSuperAdmin ||
+        (S.boot.userRoles || []).some(r => S.boot.managerRoles.includes(r));
+      document.getElementById('cal-tab-btn-manage').style.display = S.boot.canManage ? '' : 'none';
+      Toast.show('Settings saved. Deadline managers: '
+        + (S.boot.managerRoles.length ? S.boot.managerRoles.join(', ') : 'super admins only') + '.', 'success');
+    }, () => _endBusy('cal-set-save'));
+  }
+
+  // ── Shared helpers ────────────────────────────────────────
+  const PALETTE = ['gold', 'navy', 'teal', 'plum', 'rust', 'forest', 'slate', 'rose'];
+  const PALETTE_HEX = { gold:'#fdc700', navy:'#003c6c', teal:'#0d7d87', plum:'#7b3f8c',
+                        rust:'#b5541c', forest:'#2e6b34', slate:'#5b6770', rose:'#b03a5b' };
+
+  function _renderSwatches(containerId, selected) {
+    const el = document.getElementById(containerId);
+    let html = '<span class="calmod-swatch none' + (!selected ? ' sel' : '') + '" data-c="" title="Default" '
+      + 'onclick="CalendarUI.pickSwatch(this)"></span>';
+    PALETTE.forEach(c => {
+      html += '<span class="calmod-swatch' + (selected === c ? ' sel' : '') + '" data-c="' + c + '" '
+        + 'style="background:' + PALETTE_HEX[c] + ';" title="' + c + '" onclick="CalendarUI.pickSwatch(this)"></span>';
+    });
+    el.innerHTML = html;
+  }
+
+  function pickSwatch(elem) {
+    elem.parentElement.querySelectorAll('.calmod-swatch').forEach(s => s.classList.remove('sel'));
+    elem.classList.add('sel');
+  }
+
+  function _pickedColor(containerId) {
+    const sel = document.querySelector('#' + containerId + ' .calmod-swatch.sel');
+    return sel ? (sel.dataset.c || '') : '';
+  }
+
+  function _renderRoleChips(containerId, checked) {
+    const roles = (S.boot && S.boot.allRoles) ? S.boot.allRoles : [];
+    document.getElementById(containerId).innerHTML = roles.map(r =>
+      '<label class="role-chip' + (checked.includes(r) ? ' checked' : '') + '">'
+      + '<input type="checkbox" value="' + _escAttr(r) + '"' + (checked.includes(r) ? ' checked' : '')
+      + ' onchange="this.closest(\'.role-chip\').classList.toggle(\'checked\', this.checked)"> ' + _esc(r) + '</label>'
+    ).join('');
+  }
+
+  function _checkedRoles(containerId) {
+    return Array.from(document.querySelectorAll('#' + containerId + ' input:checked')).map(i => i.value);
+  }
+
+  function _ds(d) {   // Date → 'YYYY-MM-DD' (local, no UTC drift)
+    const p = n => (n < 10 ? '0' : '') + n;
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+  }
+
+  function _pd(s) {   // 'YYYY-MM-DD' → local Date (never new Date(s): UTC shift)
+    const m = String(s || '').split('-');
+    return new Date(Number(m[0]), Number(m[1]) - 1, Number(m[2] || 1));
+  }
+
+  function _prettyDate(s) {
+    return _pd(s).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+  }
+
+  function _esc(s) {
+    return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+  function _escAttr(s) {
+    return _esc(s).replace(/'/g,'&#39;');
+  }
+
+  return {
+    init, switchTab,
+    nav, goToday, setView, onFilterChange, openDetail, closeDetail,
+    loadDeadlines, addFormDate, addFormRange, removeFormDate, saveDeadline,
+    editDeadline, editFromView, clearForm, duplicateDeadline, deleteDeadline,
+    pickSwatch,
+    loadImports, srcTypeChanged, srcEdit, srcClear, srcSave, srcDelete, srcFetch,
+    pendToggleAll, pendCommit, pendDismiss,
+    harvestGo, harvestToggleAll, harvestCommit,
+    saveSettings,
+  };
+
+})();
+
+CalendarUI.init();
+</script>

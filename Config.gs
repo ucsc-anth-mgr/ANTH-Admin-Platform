@@ -56,6 +56,10 @@ const CONFIG = {
     // tier). Tabs: ServiceCatalog, ServiceAssignments, ServiceCorrections,
     // ServiceNominations, ServiceSettings.
     SERVICE:       '18VWph7a3gVZwWve0pq_Lhm8olQuf2yI_yZQHWkot3lU',
+    // Calendar service (CalendarService.gs) — its OWN spreadsheet.
+    // Tabs: CalendarEvents, CalendarDeadlines, CalendarSources.
+    // Blank until setUp() creates it and logs the id to paste back here.
+    CALENDAR:      '1WvFofmDCWm1QbxBjtMtUSAtLoURc-PJFUt2lg7pu_rI',
   },
 
   // Optional: Drive folder where setUp() creates new spreadsheets.
@@ -115,6 +119,11 @@ const CONFIG = {
     SERVICE_CORRECTIONS: 'ServiceCorrections',
     SERVICE_NOMINATIONS: 'ServiceNominations',
     SERVICE_SETTINGS:    'ServiceSettings',
+    // Calendar service tabs (live in SHEETS.CALENDAR)
+    CALENDAR_EVENTS:    'CalendarEvents',
+    CALENDAR_DEADLINES: 'CalendarDeadlines',
+    CALENDAR_SOURCES:   'CalendarSources',
+    CALENDAR_PENDING:   'CalendarPending',
   },
 
   // ── Storage convention (three tiers) ───────────────────────
@@ -228,6 +237,25 @@ const CONFIG = {
   // but works without it.
   INDIVIDUAL_STUDIES: {
     DRIVE_FOLDER_ID: '1goPXXH3b0v4k4Pn_qyonPJHZW67jOfLn',
+  },
+
+  // ── Calendar module (Phase 2 import layer) ─────────────────
+  // Set-once operational constants for the nightly source refresh.
+  // The SOURCES themselves (which calendars/pages to import) are data,
+  // UI-managed in the CalendarSources tab — never constants here.
+  CALENDAR: {
+    // A changed/new imported deadline landing within this many days of
+    // today additionally triggers a Notify email to the task pool (the
+    // dashboard Task is always created regardless). Middle-path rule:
+    // near-term changes are urgent; far-future ones wait for the queue.
+    NEAR_TERM_DAYS: 30,
+    // Google Calendar fetch window: now through this many months ahead.
+    // Covers the current academic year plus early postings for the next.
+    FETCH_MONTHS_AHEAD: 18,
+    // Role pool that refresh-review Tasks are assigned to. Deliberately
+    // the staff pool (who work review queues), independent of the
+    // UI-configurable deadlineManagerRoles setting.
+    REFRESH_TASK_ROLE: 'staff',
   },
 
   // ── Academic Personnel module ──────────────────────────────

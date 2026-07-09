@@ -457,6 +457,84 @@ const SETUP_SCHEMA = {
       ['NOMINATIONS_OPEN', 'FALSE'],
     ],
   },
+  CALENDAR_EVENTS: {
+    tab: 'CalendarEvents',
+    // Calendar service (CalendarService.gs) — timed department events.
+    // Phase 1 renders these read-only; creation arrives with the Events
+    // module. LocationKey stays blank until a Facilities module exists
+    // (free-text LocationLabel carries the venue until then); Attendees
+    // is reserved for future person-collision checking. Restricted TRUE
+    // hides the event from viewers whose roles don't intersect
+    // AudienceRoles (super_admin always sees). Meta via DataService.
+    headers: ['EventID', 'Title', 'Description', 'Start', 'End',
+              'LocationKey', 'LocationLabel', 'AudienceRoles',
+              'Restricted', 'Attendees', 'Status',
+              'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
+  CALENDAR_DEADLINES: {
+    tab: 'CalendarDeadlines',
+    // Calendar service — externally set deadlines the department tracks
+    // centrally. Origin: manual | harvested | imported. SourceKey /
+    // ExternalUID / LastSeenAt are Phase 2 import provenance. Pinned
+    // marks a human-edited imported row that a refresh must never
+    // overwrite (it reports divergence instead). Perennial marks a
+    // same-date-every-year deadline. AudienceRoles filters display
+    // ("aimed at me"), never visibility. Meta via DataService.
+    // Kind (Phase 3.5): 'deadline' (default) | 'closure'. Closures are
+    // non-working days (holidays, campus closures) — rendered as a
+    // day-state wash on the calendar, excluded from deadline queries,
+    // and served to the Personnel scheduler via listClosures(). The
+    // Registrar feed's holiday entries are committed AS closures.
+    // Color (Phase 3.5): optional per-entry palette key ('' = kind
+    // default). Reviewer metadata — never pins an imported row.
+    headers: ['DeadlineID', 'Title', 'Description', 'Date',
+              'AudienceRoles', 'Source', 'Link', 'Origin',
+              'SourceKey', 'ExternalUID', 'Perennial', 'Pinned',
+              'Status', 'LastSeenAt', 'Kind', 'Color',
+              'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
+  CALENDAR_SOURCES: {
+    tab: 'CalendarSources',
+    // Calendar service — Phase 2 import-source registry (created now so
+    // setUp runs once). Type: gcal | gsheet | html. ParserKey maps a
+    // source to its extractor function, mirroring how the Modules sheet's
+    // Handler column maps to code. LastFetchedAt vs LastSuccessAt lets a
+    // broken scraper surface as stale instead of silently serving old
+    // data. Meta via DataService.
+    // FailStreak (Phase 3.3): consecutive nightly-refresh failures.
+    // The fail-loud email fires at streak 3 (and every 3rd after), so
+    // one night of campus transport roulette doesn't cry wolf at 6 AM;
+    // the stale marking in the UI remains immediate. Reset on success.
+    headers: ['SourceKey', 'Label', 'Type', 'URL', 'CalendarID',
+              'ParserKey', 'Enabled', 'LastFetchedAt',
+              'LastSuccessAt', 'LastResult', 'FailStreak',
+              'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
+  CALENDAR_PENDING: {
+    tab: 'CalendarPending',
+    // Calendar service — the nightly refresh's REVIEW QUEUE. One row per
+    // proposed change from an import source, awaiting a human's
+    // commit/dismiss in the module's Imports tab. The refresh wholesale-
+    // replaces a source's OPEN rows each run (idempotent); committed/
+    // dismissed rows are kept as the review audit trail.
+    //   Kind: new | changed | vanished | pinned_diverged
+    //   DeadlineID: the existing imported deadline a changed/vanished/
+    //     pinned_diverged row targets (blank for new).
+    //   Old*/New* pairs let the UI show a side-by-side diff.
+    //   Status: open | committed | dismissed.
+    // SuggestedAudience (Phase 3): per-item audience roles proposed by a
+    // dedicated extractor (e.g. senate rows -> senate_faculty). Applied
+    // on commit unless the reviewer overrides via the shared picker.
+    headers: ['PendingID', 'SourceKey', 'Kind', 'ExternalUID', 'DeadlineID',
+              'Title', 'Date', 'OldTitle', 'OldDate', 'Detail', 'Link',
+              'SuggestedAudience',
+              'Status', 'DecidedBy', 'DecidedAt',
+              'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
 };
 
 
@@ -477,6 +555,7 @@ function setUp() {
   const indStudiesSS = _resolveSpreadsheet(CONFIG.SHEETS.INDIVIDUAL_STUDIES, 'Portal Individual Studies',     'INDIVIDUAL_STUDIES');
   const personnelSS = _resolveSpreadsheet(CONFIG.SHEETS.PERSONNEL,  'Portal Academic Personnel',             'PERSONNEL');
   const serviceSS = _resolveSpreadsheet(CONFIG.SHEETS.SERVICE,      'Portal Department Service',             'SERVICE');
+  const calendarSS = _resolveSpreadsheet(CONFIG.SHEETS.CALENDAR,    'Portal Calendar',                       'CALENDAR');
 
   // Config spreadsheet gets Users, Roles, Modules, Requests tabs
   _setupTab(usersSS, SETUP_SCHEMA.USERS);
@@ -530,6 +609,14 @@ function setUp() {
   _setupTab(serviceSS, SETUP_SCHEMA.SERVICE_NOMINATIONS);
   _setupTab(serviceSS, SETUP_SCHEMA.SERVICE_SETTINGS);
   _tidyDefaultSheet(serviceSS);
+
+  // Calendar service spreadsheet gets its three tabs (CalendarSources is
+  // Phase 2 machinery, created now so setUp runs once)
+  _setupTab(calendarSS, SETUP_SCHEMA.CALENDAR_EVENTS);
+  _setupTab(calendarSS, SETUP_SCHEMA.CALENDAR_DEADLINES);
+  _setupTab(calendarSS, SETUP_SCHEMA.CALENDAR_SOURCES);
+  _setupTab(calendarSS, SETUP_SCHEMA.CALENDAR_PENDING);
+  _tidyDefaultSheet(calendarSS);
 
   // Submissions spreadsheet: tabs are created per form type on demand,
   // so we just ensure the spreadsheet exists and remove the default
@@ -701,6 +788,7 @@ function checkSetup() {
     ['INDIVIDUAL_STUDIES', CONFIG.SHEETS.INDIVIDUAL_STUDIES, [SETUP_SCHEMA.INDIVIDUAL_STUDIES.tab, SETUP_SCHEMA.INDIVIDUAL_STUDIES_TEMPLATES.tab]],
     ['PERSONNEL',    CONFIG.SHEETS.PERSONNEL,    [SETUP_SCHEMA.PERSON_ATTRIBUTES.tab, SETUP_SCHEMA.CASES.tab]],
     ['SERVICE',      CONFIG.SHEETS.SERVICE,      [SETUP_SCHEMA.SERVICE_CATALOG.tab, SETUP_SCHEMA.SERVICE_ASSIGNMENTS.tab, SETUP_SCHEMA.SERVICE_CORRECTIONS.tab, SETUP_SCHEMA.SERVICE_NOMINATIONS.tab, SETUP_SCHEMA.SERVICE_SETTINGS.tab]],
+    ['CALENDAR',     CONFIG.SHEETS.CALENDAR,     [SETUP_SCHEMA.CALENDAR_EVENTS.tab, SETUP_SCHEMA.CALENDAR_DEADLINES.tab, SETUP_SCHEMA.CALENDAR_SOURCES.tab, SETUP_SCHEMA.CALENDAR_PENDING.tab]],
   ];
   Logger.log('=== Config check ===');
   checks.forEach(([key, id, tabs]) => {
@@ -753,6 +841,10 @@ function _schemaPlacement() {
     { sheetKey: 'SERVICE',      def: SETUP_SCHEMA.SERVICE_CORRECTIONS },
     { sheetKey: 'SERVICE',      def: SETUP_SCHEMA.SERVICE_NOMINATIONS },
     { sheetKey: 'SERVICE',      def: SETUP_SCHEMA.SERVICE_SETTINGS },
+    { sheetKey: 'CALENDAR',     def: SETUP_SCHEMA.CALENDAR_EVENTS },
+    { sheetKey: 'CALENDAR',     def: SETUP_SCHEMA.CALENDAR_DEADLINES },
+    { sheetKey: 'CALENDAR',     def: SETUP_SCHEMA.CALENDAR_SOURCES },
+    { sheetKey: 'CALENDAR',     def: SETUP_SCHEMA.CALENDAR_PENDING },
   ];
 }
 
