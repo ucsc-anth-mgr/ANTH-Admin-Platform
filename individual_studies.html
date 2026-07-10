@@ -7,12 +7,11 @@
   <div class="module-tabs">
     <? var isRoles = JSON.parse(userRoles); ?>
     <? if (isRoles.includes('undergraduate_student') || isRoles.includes('undergraduate_non_major') || isRoles.includes('super_admin')) { ?>
-    <button class="module-tab" data-tab="mine" onclick="IndividualStudiesUI.switchTab('mine')">
-      <i class="ti ti-list"></i> My Petitions
-    </button>
     <button class="module-tab" data-tab="new" onclick="IndividualStudiesUI.switchTab('new')">
       <i class="ti ti-file-plus"></i> New Petition
-    </button>
+    </button><button class="module-tab" data-tab="mine" onclick="IndividualStudiesUI.switchTab('mine')">
+      <i class="ti ti-list"></i> My Petitions
+    </button> 
     <? } ?>
     <? if (isRoles.includes('individual_studies_sponsor') || isRoles.includes('super_admin')) { ?>
     <button class="module-tab" data-tab="review" onclick="IndividualStudiesUI.switchTab('review')">
@@ -29,8 +28,8 @@
     <button class="module-tab" data-tab="advisor" onclick="IndividualStudiesUI.switchTab('advisor')">
       <i class="ti ti-clipboard-check"></i> Advisor Queue
     </button>
-    <button class="module-tab" data-tab="all" onclick="IndividualStudiesUI.switchTab('all')">
-      <i class="ti ti-list-search"></i> All Petitions
+    <button class="module-tab" data-tab="settings" onclick="IndividualStudiesUI.switchTab('settings')">
+      <i class="ti ti-settings"></i> Settings
     </button>
     <button class="module-tab" data-tab="schedule" onclick="IndividualStudiesUI.switchTab('schedule')">
       <i class="ti ti-table-import"></i> Class Schedule
@@ -359,7 +358,7 @@
   </div>
 
   <!-- ── Tab: All Petitions (advisor + super_admin) ──── -->
-  <div id="is-tab-all" class="tab-panel" style="display:none;">
+  <div id="is-tab-settings" class="tab-panel" style="display:none;">
     <div class="card" style="margin-top:20px;">
       <div class="card-title" style="justify-content:space-between;">
         <span><i class="ti ti-list-search"></i> All petitions</span>
@@ -389,6 +388,25 @@
       </div>
       <div id="is-all-list"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
     </div>
+
+    <!-- ── Student notifications (editable message templates) ── -->
+    <div class="card">
+      <div class="card-title"><i class="ti ti-mail"></i> Student notifications</div>
+      <p class="text-sm text-muted" style="margin-bottom:14px;">
+        The message emailed to a student when their petition is returned for revision
+        or completed. Tokens <code>{FirstName}</code> and <code>{Course}</code> are filled
+        in automatically. The essentials are always appended below the message and cannot
+        be edited away: the class number and enrollment instructions, your note to the
+        student, and the PDF link (completion); the sponsor's return note and the
+        resubmission link (returned).
+      </p>
+      <div id="is-notify-settings">
+        <div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>
+      </div>
+    </div>
+
+    <!-- ── Direct link to the student petition form ── -->
+    <div id="is-deeplink-card"></div>
   </div>
 
   <!-- ── Tab: Class Schedule (advisor import) ────────── -->
@@ -529,10 +547,20 @@ window.IndividualStudiesUI = (() => {
 
   // ── Init: pick default tab by role, wire deep-link ──
   function init() {
+    // Deep-link target from the shell (?page=individual_studies&focus=…):
+    //   'form' → the student's New Petition form (standardized token, used
+    //            by the Settings tab's shareable link)
+    //   other  → a petition id; opens its detail modal below
+    const f = window.__focus;
+    const target = f && f.sourceId ? String(f.sourceId) : '';
+
     if (_isStudent) {
+      _busy('Loading petition form…');
       _loadFormData(function () {
         loadMine(function (rows) {
-          switchTab(rows && rows.length ? 'mine' : 'new');
+          _idle();
+          if (target === 'form') switchTab('new');
+          else switchTab(rows && rows.length ? 'mine' : 'new');
         });
       });
     } else if (_isSponsor) {
@@ -543,10 +571,9 @@ window.IndividualStudiesUI = (() => {
       switchTab('advisor');
     }
 
-    const f = window.__focus;
-    if (f && f.sourceId) {
+    if (target && target !== 'form') {
       _busy('Loading petition…');
-      App.call('individual_studies', 'get', { petitionId: f.sourceId }, function (rec) {
+      App.call('individual_studies', 'get', { petitionId: target }, function (rec) {
         _idle();
         _openDetail(rec);
       }, function () { _idle(); });
@@ -569,7 +596,7 @@ window.IndividualStudiesUI = (() => {
     if (tab === 'review')    loadReview();
     if (tab === 'sponsored') loadSponsored();
     if (tab === 'advisor')   loadAdvisor();
-    if (tab === 'all')       loadAll();
+    if (tab === 'settings')  { loadAll(); loadNotifySettings(); _renderDeepLinkCard(); }
     if (tab === 'templates') loadTemplates();
     if (tab === 'schedule')  loadImportHistory();
   }
@@ -586,7 +613,8 @@ window.IndividualStudiesUI = (() => {
   }
   function _ensureFormData(cb) {
     if (_formData) { if (cb) cb(); return; }
-    _loadFormData(cb);
+    _busy('Loading petition form…');
+    _loadFormData(function () { _idle(); if (cb) cb(); });
   }
   function _populateForm(data) {
     // Term dropdown (only imported terms are present)
@@ -979,6 +1007,53 @@ window.IndividualStudiesUI = (() => {
     _renderSortable('is-sponsored-list', rows, { who: 'student', sortState: _sortSponsored, sortSetter: function (s) { _sortSponsored = s; renderSponsored(); }, remind: false });
   }
 
+  // ── Settings tab: student notification templates ──
+  // Mirrors the Transcript module: the template is the MESSAGE; the
+  // structural lines (class number, notes, links) are appended server-side
+  // and are not editable here.
+  function loadNotifySettings() {
+    const el = document.getElementById('is-notify-settings');
+    if (!el) return;
+    App.call('individual_studies', 'getSettings', {}, function (s) {
+      el.innerHTML =
+        '<div class="form-group">'
+        + '<label class="form-label" for="is-tmpl-complete">"Petition complete" message</label>'
+        + '<textarea class="form-textarea" id="is-tmpl-complete" rows="4">' + esc(s.NOTIFY_COMPLETE || '') + '</textarea>'
+        + '<div class="form-hint">Appended automatically: class number + enrollment instructions, your note to the student (if any), and the PDF link.</div>'
+        + '</div>'
+        + '<div class="form-group">'
+        + '<label class="form-label" for="is-tmpl-returned">"Returned for revision" message</label>'
+        + '<textarea class="form-textarea" id="is-tmpl-returned" rows="4">' + esc(s.NOTIFY_RETURNED || '') + '</textarea>'
+        + '<div class="form-hint">Appended automatically: the sponsor\'s return note and the resubmission link.</div>'
+        + '</div>'
+        + '<button class="btn btn-primary btn-sm" onclick="IndividualStudiesUI.saveNotifySettings()"><i class="ti ti-device-floppy"></i> Save notifications</button>';
+    }, function () {
+      el.innerHTML = '<div class="empty-state" style="padding:18px;">Could not load the notification settings. Refresh to retry.</div>';
+    });
+  }
+
+  function saveNotifySettings() {
+    const payload = {
+      NOTIFY_COMPLETE: (document.getElementById('is-tmpl-complete') || {}).value || '',
+      NOTIFY_RETURNED: (document.getElementById('is-tmpl-returned') || {}).value || '',
+    };
+    App.call('individual_studies', 'saveSettings', payload, function () {
+      Toast.show('Notification settings saved.', 'success');
+    });
+  }
+
+  // Standardized deep-link card: shareable link straight to the New
+  // Petition form (?focus=form, handled in init).
+  function _renderDeepLinkCard() {
+    const el = document.getElementById('is-deeplink-card');
+    if (!el) return;
+    el.innerHTML = App.deepLinkCard('individual_studies', {
+      roles: ['undergraduate_student', 'undergraduate_non_major'],
+      title: 'Student petition link',
+      note: 'Send students straight to the New Petition form.'
+    });
+  }
+
   function loadAll() {
     _listLoading('is-all-list');
     App.call('individual_studies', 'allPetitions', {}, function (rows) {
@@ -1160,7 +1235,7 @@ window.IndividualStudiesUI = (() => {
       + (rec.syllabusLink ? _row('Syllabus', '<a href="' + esc(rec.syllabusLink) + '" target="_blank" rel="noopener">' + esc(rec.syllabusName || 'View syllabus') + ' <i class="ti ti-external-link"></i></a>') : '')
       + (rec.sponsorComments ? _row('Sponsor comments', esc(rec.sponsorComments)) : '')
       + (rec.classNumber ? _row('Class number', esc(rec.classNumber) + (rec.classSection ? ' · sec ' + esc(rec.classSection) : '')) : '')
-      + (rec.advisorComments ? _row('Advisor comments', esc(rec.advisorComments)) : '')
+      + (rec.advisorComments ? _row('Advisor note', esc(rec.advisorComments)) : '')
       + (rec.documentLink ? _row('Completed petition', '<a href="' + esc(rec.documentLink) + '" target="_blank" rel="noopener">Open PDF <i class="ti ti-external-link"></i></a>') : '')
       + (rec.roomAccessRequested ? _row('Room access', 'Requested' + (rec.roomAccessRoom ? ' — ' + esc(rec.roomAccessRoom) : '') + (rec.roomAccessNote ? ' (' + esc(rec.roomAccessNote) + ')' : '')) : '')
       + (rec.returnNote && rec.stage === 'RETURNED' ? _row('Return note', esc(rec.returnNote)) : '')
@@ -1191,9 +1266,11 @@ window.IndividualStudiesUI = (() => {
       setTimeout(function () { _loadAdvisorPanel(rec); }, 50);
     }
 
-    // Room/lab-space access request: sponsor (or super_admin), any stage.
-    // Shows current state; re-requesting updates the room and re-notifies.
-    if (_isMe(rec.sponsorEmail) || _isSuper) {
+    // Room/lab-space access request: sponsor (or super_admin). Hidden at
+    // SUBMITTED — the approval panel's checkbox is the one control there —
+    // and shown on later stages as the catch-up/correction path (forgot at
+    // approval, or fixing the room; re-requesting updates and re-notifies).
+    if (rec.stage !== 'SUBMITTED' && (_isMe(rec.sponsorEmail) || _isSuper)) {
       const label = rec.roomAccessRequested ? 'Update room access request' : 'Request room access';
       let block = '<div style="margin-top:12px;">'
         + '<button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.requestRoomAccess(\'' + esc(rec.petitionId) + '\')">'
@@ -1267,7 +1344,15 @@ window.IndividualStudiesUI = (() => {
   }
 
   function _loadAdvisorPanel(rec) {
-    App.call('individual_studies', 'advisorContext', { petitionId: rec.petitionId }, function (ctx) {
+    _fetchAdvisorContext(rec, '');
+  }
+
+  // Fetches advisor context (optionally for a candidate corrected course)
+  // and renders the panel. Shared by the initial load and the course select.
+  function _fetchAdvisorContext(rec, course) {
+    const payload = { petitionId: rec.petitionId };
+    if (course) payload.course = course;
+    App.call('individual_studies', 'advisorContext', payload, function (ctx) {
       const panel = document.getElementById('is-advisor-panel');
       if (!panel) return;
       panel.innerHTML = _advisorPanelHtml(rec, ctx);
@@ -1281,6 +1366,19 @@ window.IndividualStudiesUI = (() => {
       if (panel) panel.innerHTML = '<div class="text-sm text-muted">Could not load class-number options. You can still enter a number below.</div>'
         + _advisorPanelHtml(rec, { sections: [], otherPetitions: [] });
     });
+  }
+
+  // Course dropdown changed: re-fetch context so the section list and
+  // pre-assignment reflect the candidate course. Nothing is saved until
+  // "Complete petition"; closing the modal abandons the correction.
+  function advisorCourseChanged(petitionId) {
+    const rec = _lastDetailRec;
+    if (!rec || rec.petitionId !== petitionId) return;
+    const sel = document.getElementById('is-adv-course');
+    const course = sel ? sel.value : '';
+    const panel = document.getElementById('is-advisor-panel');
+    if (panel) panel.innerHTML = '<div class="text-sm text-muted">Loading class-number options…</div>';
+    _fetchAdvisorContext(rec, course);
   }
 
   function _advisorPanelHtml(rec, ctx) {
@@ -1334,10 +1432,30 @@ window.IndividualStudiesUI = (() => {
       list = '<div class="text-sm text-muted" style="margin:6px 0;">No sections found for this course in the term schedule. Enter a class number manually.</div>';
     }
 
+    // Course correction dropdown: only rendered when the schedule offers an
+    // alternative at the SAME credit value (the current course is always in
+    // the list). ctx.course is the effective course after any candidate pick.
+    const effCourse = ctx.course || rec.course;
+    let courseSel = '';
+    const copts = ctx.courseOptions || [];
+    if (copts.length > 1) {
+      courseSel = '<div class="form-group"><label class="form-label">Course</label>'
+        + '<select class="form-select" id="is-adv-course" onchange="IndividualStudiesUI.advisorCourseChanged(\'' + esc(rec.petitionId) + '\')">'
+        + copts.map(function (o) {
+            return '<option value="' + esc(o.course) + '"' + (String(o.course) === String(effCourse) ? ' selected' : '') + '>'
+              + esc(o.course) + (o.title ? ' — ' + esc(o.title) : '') + '</option>';
+          }).join('')
+        + '</select>'
+        + '<div class="form-hint">Correct a mis-filed course here (e.g. field study vs tutorial). Only '
+        + esc(rec.credits) + '-credit courses offered this term are listed — a different credit level needs a return to the sponsor. The sponsor is emailed if you change it.</div>'
+        + '</div>';
+    }
+
     return '<div class="card" style="margin-top:8px;">'
       + '<div class="card-title" style="font-size:14px;"><i class="ti ti-hash"></i> Assign class number</div>'
-      + '<div class="text-sm text-muted" style="margin-bottom:4px;">' + esc(rec.course)
+      + '<div class="text-sm text-muted" style="margin-bottom:4px;">' + esc(effCourse)
         + (rec.credits ? ' · ' + esc(rec.credits) + ' credits' : '') + '</div>'
+      + courseSel
       + creditBlock + others + pre
       + '<div style="margin:6px 0;">' + list + '</div>'
       + '<div class="form-row">'
@@ -1347,7 +1465,7 @@ window.IndividualStudiesUI = (() => {
       +     '<input class="form-input" id="is-adv-section"></div>'
       + '</div>'
       + '<input type="hidden" id="is-adv-source" value="">'
-      + '<div class="form-group"><label class="form-label">Comments</label>'
+      + '<div class="form-group"><label class="form-label">Note to student <span class="text-muted">(optional — included in their completion email)</span></label>'
       +   '<textarea class="form-textarea" id="is-adv-comments" rows="2"></textarea></div>'
       + '<div class="form-actions">'
       +   '<button class="btn btn-primary" onclick="IndividualStudiesUI.advisorComplete(\'' + esc(rec.petitionId) + '\')"><i class="ti ti-check"></i> Complete petition</button>'
@@ -1472,6 +1590,8 @@ window.IndividualStudiesUI = (() => {
       classNumberSource: source,
       comments: document.getElementById('is-adv-comments').value.trim(),
     };
+    const courseEl = document.getElementById('is-adv-course');
+    if (courseEl && courseEl.value) payload.course = courseEl.value;
     if (authEl) payload.majorAuthorized = authEl.checked;
     if (source === 'reassigned') {
       if (!window.confirm('This number is listed under another instructor. Reassign it to this study?')) return;
@@ -1479,7 +1599,13 @@ window.IndividualStudiesUI = (() => {
     }
     _busy('Completing the petition…');
     App.call('individual_studies', 'advisorComplete', payload,
-      function () { _idle(); closeModal(); Toast.show('Petition complete.', 'success'); _afterAction(); },
+      function (res) {
+        _idle(); closeModal();
+        Toast.show(res && res.courseChanged
+          ? 'Petition complete — course corrected to ' + res.course + '; the sponsor has been emailed.'
+          : 'Petition complete.', 'success', res && res.courseChanged ? 6000 : undefined);
+        _afterAction();
+      },
       function () { _idle(); });
   }
 
@@ -1775,11 +1901,12 @@ window.IndividualStudiesUI = (() => {
     startResubmit, startResubmitFromModal,
     loadMine, loadReview, loadSponsored, renderSponsored, loadAdvisor,
     loadAll, renderAll, _sortBy, remind,
+    loadNotifySettings, saveNotifySettings,
     loadTemplates, newTemplate, editTemplate, cancelTemplate, saveTemplate,
     setTemplateDefault, deleteTemplate, onTplReportToggle, saveAsTemplate,
     open, rowKey, closeModal,
     withdraw, deletePetition, onSponsorSyllabusChange, onRoomReqToggle, onSponsorHoursChange, onSponsorReportToggle, sponsorApprove, sponsorReturn, requestRoomAccess,
-    pickClass, advisorComplete, advisorReturn,
+    pickClass, advisorComplete, advisorReturn, advisorCourseChanged,
     onCsvChange, previewImport, resolveInstructor, commitImport, loadImportHistory,
   };
 

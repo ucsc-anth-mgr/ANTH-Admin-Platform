@@ -331,6 +331,24 @@ const SETUP_SCHEMA = {
     seed: [],
   },
 
+  INDIVIDUAL_STUDIES_SETTINGS: {
+    tab: 'PetitionSettings',
+    // UI-managed operational settings (key/value), mirroring
+    // TranscriptSettings. Edited in the module's Settings tab; the sheet
+    // overrides these seeded defaults once saved. The two NOTIFY_* values
+    // are the student-email MESSAGE templates (tokens {FirstName} and
+    // {Course} filled at send time). The structural, load-bearing lines are
+    // appended in code, never stored here: the class number + enrollment
+    // instructions, the advisor's note, and the PDF link (completion); the
+    // sponsor's return note and the resubmission link (returned). Lives in
+    // the same spreadsheet as Petitions.
+    headers: ['Key', 'Value'],
+    seed: [
+      ['NOTIFY_COMPLETE', 'Your {Course} individual-studies petition is complete.'],
+      ['NOTIFY_RETURNED', 'Your {Course} petition was returned for revision.'],
+    ],
+  },
+
   PERSON_ATTRIBUTES: {
     tab: 'PersonAttributes',
     // Academic Personnel module — tall, namespaced person-attribute table.
@@ -595,6 +613,7 @@ function setUp() {
   // Individual Studies module spreadsheet gets the Petitions tab
   _setupTab(indStudiesSS, SETUP_SCHEMA.INDIVIDUAL_STUDIES);
   _setupTab(indStudiesSS, SETUP_SCHEMA.INDIVIDUAL_STUDIES_TEMPLATES);
+  _setupTab(indStudiesSS, SETUP_SCHEMA.INDIVIDUAL_STUDIES_SETTINGS);
   _tidyDefaultSheet(indStudiesSS);
 
   // Academic Personnel module spreadsheet gets the PersonAttributes + Cases tabs
@@ -785,7 +804,7 @@ function checkSetup() {
     ['THESIS',       CONFIG.SHEETS.THESIS,       [SETUP_SCHEMA.THESIS.tab]],
     ['TRANSCRIPT',   CONFIG.SHEETS.TRANSCRIPT,   [SETUP_SCHEMA.ARTICULATIONS.tab, SETUP_SCHEMA.ARTICULATION_REVIEW.tab, SETUP_SCHEMA.TRANSCRIPTS.tab, SETUP_SCHEMA.TRANSCRIPT_SETTINGS.tab]],
     ['CLASS_SCHEDULE', CONFIG.SHEETS.CLASS_SCHEDULE, [SETUP_SCHEMA.CLASS_SCHEDULE.tab, SETUP_SCHEMA.CLASS_SCHEDULE_IMPORTS.tab]],
-    ['INDIVIDUAL_STUDIES', CONFIG.SHEETS.INDIVIDUAL_STUDIES, [SETUP_SCHEMA.INDIVIDUAL_STUDIES.tab, SETUP_SCHEMA.INDIVIDUAL_STUDIES_TEMPLATES.tab]],
+    ['INDIVIDUAL_STUDIES', CONFIG.SHEETS.INDIVIDUAL_STUDIES, [SETUP_SCHEMA.INDIVIDUAL_STUDIES.tab, SETUP_SCHEMA.INDIVIDUAL_STUDIES_TEMPLATES.tab, SETUP_SCHEMA.INDIVIDUAL_STUDIES_SETTINGS.tab]],
     ['PERSONNEL',    CONFIG.SHEETS.PERSONNEL,    [SETUP_SCHEMA.PERSON_ATTRIBUTES.tab, SETUP_SCHEMA.CASES.tab]],
     ['SERVICE',      CONFIG.SHEETS.SERVICE,      [SETUP_SCHEMA.SERVICE_CATALOG.tab, SETUP_SCHEMA.SERVICE_ASSIGNMENTS.tab, SETUP_SCHEMA.SERVICE_CORRECTIONS.tab, SETUP_SCHEMA.SERVICE_NOMINATIONS.tab, SETUP_SCHEMA.SERVICE_SETTINGS.tab]],
     ['CALENDAR',     CONFIG.SHEETS.CALENDAR,     [SETUP_SCHEMA.CALENDAR_EVENTS.tab, SETUP_SCHEMA.CALENDAR_DEADLINES.tab, SETUP_SCHEMA.CALENDAR_SOURCES.tab, SETUP_SCHEMA.CALENDAR_PENDING.tab]],
@@ -834,6 +853,7 @@ function _schemaPlacement() {
     { sheetKey: 'CLASS_SCHEDULE', def: SETUP_SCHEMA.CLASS_SCHEDULE_IMPORTS },
     { sheetKey: 'INDIVIDUAL_STUDIES', def: SETUP_SCHEMA.INDIVIDUAL_STUDIES },
     { sheetKey: 'INDIVIDUAL_STUDIES', def: SETUP_SCHEMA.INDIVIDUAL_STUDIES_TEMPLATES },
+    { sheetKey: 'INDIVIDUAL_STUDIES', def: SETUP_SCHEMA.INDIVIDUAL_STUDIES_SETTINGS },
     { sheetKey: 'PERSONNEL',    def: SETUP_SCHEMA.PERSON_ATTRIBUTES },
     { sheetKey: 'PERSONNEL',    def: SETUP_SCHEMA.CASES },
     { sheetKey: 'SERVICE',      def: SETUP_SCHEMA.SERVICE_CATALOG },

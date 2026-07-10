@@ -1,10 +1,26 @@
 <!-- ============================================================
-     calendar.html — Calendar module UI (Phase 3.5.2)
+     calendar.html — Calendar module UI (Phase 3.5.4)
      View: month grid + list, "aimed at me" filtering, deadline
      badges and event blocks, day detail panel.
      Manage: deadline CRUD (multi-date create, duplicate-to-date,
      pin-respecting edits) — shown only to configured manager roles.
      Settings: manager-role picker — super_admin only.
+
+     Phase 3.5.4: Registrar-sourced deadlines carry a snapshot notice in
+     the day panel — the add-to-calendar copy won't follow upstream date
+     changes — pointing users at the Registrar's own subscribable
+     calendar for a live feed. Day panel only (the list view would
+     repeat it dozens of times); detection is a case-insensitive match
+     on the Source label, resilient to source-key spelling.
+
+     Phase 3.5.3: every deadline and closure gets an "Add to my Google
+     Calendar" button (day panel + list view, all users — it's a read
+     action, not manager-gated). Zero-auth URL-template approach: opens
+     the user's own Google Calendar prefilled; they click Save and own
+     an independent COPY (a snapshot — later upstream date changes do
+     not follow it). The subscribable synced-calendar product (Option
+     B) is deliberately deferred until usage of this button argues for
+     it.
 
      Phase 3.5.2: the create form gains a date-RANGE expander ("from /
      to" -> one chip per day) for contiguous runs like Winter
@@ -611,6 +627,7 @@ window.CalendarUI = (() => {   // window.X — module scripts re-execute on load
     if (x.kind === 'closure') {
       return '<div class="calmod-detail-item"><span class="calmod-closure-inline">'
         + '<i class="ti ti-calendar-off"></i> Campus closed: ' + _esc(it.title) + '</span>'
+        + _gcalBtn(it)
         + (withActions && S.boot && S.boot.canManage
             ? ' <button class="btn btn-secondary btn-sm" onclick="CalendarUI.editFromView(\'' + _escAttr(it.deadlineId) + '\')"><i class="ti ti-pencil"></i></button>'
             : '')
@@ -631,10 +648,21 @@ window.CalendarUI = (() => {   // window.X — module scripts re-execute on load
     const flags = x.kind === 'dl'
       ? (it.pinned ? ' <span class="badge">Pinned</span>' : '') + (it.perennial ? ' <span class="badge">Annual</span>' : '')
       : '';
-    const actions = (withActions && x.kind === 'dl' && S.boot && S.boot.canManage)
-      ? '<div style="margin-top:6px;"><button class="btn btn-secondary btn-sm" onclick="CalendarUI.editFromView(\'' + _escAttr(it.deadlineId) + '\')"><i class="ti ti-pencil"></i> Edit</button></div>'
+    const gcal = (x.kind === 'dl') ? _gcalBtn(it) : '';
+    const edit = (withActions && x.kind === 'dl' && S.boot && S.boot.canManage)
+      ? ' <button class="btn btn-secondary btn-sm" onclick="CalendarUI.editFromView(\'' + _escAttr(it.deadlineId) + '\')"><i class="ti ti-pencil"></i> Edit</button>'
       : '';
-    return '<div class="calmod-detail-item">' + badge + ' <strong>' + _esc(it.title) + '</strong>' + flags + time + loc + aud + desc + src + link + actions + '</div>';
+    const actions = (gcal || edit) ? '<div style="margin-top:6px;">' + gcal.trim() + edit + '</div>' : '';
+    // Registrar-sourced dates change; a personal copy is a snapshot.
+    // Point people at the Registrar's own subscribable calendar.
+    const snapNote = (withActions && x.kind === 'dl' && it.origin === 'imported'
+                      && /registrar/i.test(it.source || ''))
+      ? '<div class="text-sm text-muted" style="margin-top:4px;"><i class="ti ti-info-circle"></i> '
+        + 'Adding this to your calendar makes a one-time copy — Registrar dates can change. '
+        + 'For dates that stay in sync, subscribe to the '
+        + '<a href="https://registrar.ucsc.edu/calendars-resources/academic-calendar/" target="_blank" rel="noopener">Registrar\'s Academic &amp; Administrative Calendar</a>.</div>'
+      : '';
+    return '<div class="calmod-detail-item">' + badge + ' <strong>' + _esc(it.title) + '</strong>' + flags + time + loc + aud + desc + src + link + actions + snapNote + '</div>';
   }
 
   // ── Manage: table ─────────────────────────────────────────
@@ -684,6 +712,25 @@ window.CalendarUI = (() => {   // window.X — module scripts re-execute on load
     if (!S.formDates.includes(v)) { S.formDates.push(v); S.formDates.sort(); }
     input.value = '';
     _renderDateChips();
+  }
+
+  /** Google Calendar prefill URL for an all-day item (end exclusive). */
+  function _gcalUrl(it) {
+    const d = _pd(it.date);
+    const pad = n => (n < 10 ? '0' : '') + n;
+    const compact = x => '' + x.getFullYear() + pad(x.getMonth() + 1) + pad(x.getDate());
+    const next = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1);
+    const details = [it.description, it.source ? 'Source: ' + it.source : '', it.link]
+      .filter(Boolean).join('\n');
+    return 'https://calendar.google.com/calendar/render?action=TEMPLATE'
+      + '&text=' + encodeURIComponent(it.title)
+      + '&dates=' + compact(d) + '/' + compact(next)
+      + (details ? '&details=' + encodeURIComponent(details) : '');
+  }
+
+  function _gcalBtn(it) {
+    return ' <a class="btn btn-secondary btn-sm" href="' + _escAttr(_gcalUrl(it)) + '" target="_blank" rel="noopener" '
+      + 'title="Add to my Google Calendar" aria-label="Add to my Google Calendar"><i class="ti ti-calendar-plus"></i></a>';
   }
 
   function addFormRange() {

@@ -1,40 +1,74 @@
 <script>
 // ============================================================
-// _Scripts.html — Client-side App framework (v2)
+// _Scripts.html — Client-side App framework (v2.1)
+//
+// v2.1: Navigation state now lives in the PARENT (address-bar) URL via
+// google.script.history / google.script.url. Apps Script web apps run in
+// a sandboxed iframe, so window.location inside the app is the iframe's
+// URL — writing a hash there never reaches the address bar and never
+// survives a browser refresh. The google.script pair is the supported
+// bridge to the real URL. Side benefit: writing the hash with null params
+// consumes any ?page=&focus= deep-link parameters after first use, so a
+// deep link opens focused exactly once instead of replaying on every
+// refresh.
 // ============================================================
 
 const App = (() => {
 
   let _state = { userEmail: '', userName: '', userRoles: [], activePage: '', modules: [], tasks: [], publicBaseUrl: '' };
 
+  // Whether the parent URL carried a ?page= deep-link parameter this
+  // session. Apps Script's history.replace() does not reliably remove
+  // existing query params, so when this is true the shell always keeps an
+  // explicit restore hash (even #dashboard) — the hash outranks the
+  // lingering params at routing time, making them harmless.
+  let _hadPageParam = false;
+
   function init(state) {
     Object.assign(_state, state);
 
-    // Refresh-restore: if the URL hash names a module the current user may
-    // enter, reopen it so a browser refresh keeps you on the same view.
-    // Skipped when a deep-link focus is present (a fresh ?page=&focus= link
-    // should open focused; only plain refreshes restore the last view).
-    const hashKey = (window.location.hash || '').replace(/^#/, '').trim();
-    if (hashKey && !_state.initialFocus && _moduleAllowed(hashKey)) {
-      loadModule(hashKey, null);
+    // All routing decisions need the PARENT (address-bar) URL — the
+    // iframe's own window.location never survives a reload. getLocation is
+    // async; until it answers the shell just shows the empty container for
+    // a few dozen ms.
+    try {
+      google.script.url.getLocation(_route);
+    } catch (e) {
+      // google.script.url unavailable (shouldn't happen in IFRAME mode) —
+      // route with no location rather than showing a blank page.
+      _route(null);
+    }
+  }
+
+  // Routing precedence:
+  //   1. Restore hash (#module) — a hash means this session has already
+  //      navigated past any deep link, so it OUTRANKS ?page=&focus=. This
+  //      is what stops a lingering deep-link param from replaying on every
+  //      refresh. '#dashboard' is a valid sentinel (see _setHash).
+  //   2. Deep link — the server saw ?page= (and maybe &focus=) and passed
+  //      them through as activePage / initialFocus. Open focused; once the
+  //      module loads, _setHash() writes the hash so rule 1 takes over.
+  //   3. Dashboard — the default view.
+  function _route(loc) {
+    _hadPageParam = !!(loc && loc.parameter && loc.parameter.page);
+    const hashKey = ((loc && loc.hash) || '').trim();
+
+    if (hashKey === 'dashboard') { goDashboard(); return; }
+    if (hashKey && _moduleAllowed(hashKey)) { loadModule(hashKey, null); return; }
+
+    if (_state.activePage && _state.activePage !== 'dashboard') {
+      loadModule(_state.activePage, _state.initialFocus || null);
       return;
     }
 
-    // Dashboard is the default page; render it fresh so tasks appear at login.
-    if (!_state.activePage || _state.activePage === 'dashboard') {
-      goDashboard();
-    } else {
-      // initialFocus (from a deep-link URL like ?page=thesis&focus=ID) opens
-      // the module already focused on a record. Null for a normal load.
-      loadModule(_state.activePage, _state.initialFocus || null);
-    }
+    goDashboard();   // also clears a stale/forbidden hash via _setHash
   }
 
   // ── Dashboard ─────────────────────────────────────────────
   function goDashboard() {
     _setActiveNav('dashboard');
     _state.activePage = 'dashboard';
-    _setHash('dashboard');   // dashboard is the default → clears the hash
+    _setHash('dashboard');   // dashboard is the default → clears hash + params
     window.__focus = null;   // clear any stale deep-link focus
     const greeting = _state.userName ? `Welcome, ${_esc(_state.userName)}` : 'Welcome';
     document.getElementById('module-container').innerHTML = `
@@ -150,7 +184,8 @@ const App = (() => {
       .withSuccessHandler(html => {
         container.innerHTML = html;
         _state.activePage = moduleKey;
-        _setHash(moduleKey);   // persist the view so a refresh restores it
+        _setHash(moduleKey);   // persist the view in the parent URL (and
+                               // consume any deep-link ?page=&focus= params)
         // Publish the deep-link focus (or clear it) before scripts execute.
         window.__focus = focus || null;
         container.querySelectorAll('script').forEach(s => {
@@ -191,16 +226,28 @@ const App = (() => {
     document.querySelectorAll('.nav-item').forEach(a => a.classList.toggle('active', a.dataset.module === key));
   }
 
-  // Persist the current view in the URL hash so a browser refresh restores
-  // it (init() reads it back). Dashboard is the default, so it writes no
-  // hash and clears any existing one — keeping the URL clean on the home view.
+  // Persist the current view in the PARENT (address-bar) URL so a browser
+  // refresh restores it — _route() reads it back via
+  // google.script.url.getLocation(). window.location here would only touch
+  // the sandboxed iframe's URL, which never reaches the address bar and
+  // does not survive a reload.
+  //
+  // params is passed as {} in an attempt to scrub any ?page=&focus=
+  // deep-link query string, but Apps Script has been observed to leave
+  // existing params in place regardless. That's why the hash outranks the
+  // params in _route(), and why — when a deep link started this session —
+  // even the dashboard writes an explicit '#dashboard' sentinel instead of
+  // a clean URL: a refresh must find SOME hash, or the lingering ?page=
+  // would replay the deep link. replace (not push) keeps in-app navigation
+  // out of the browser's back-button history.
   function _setHash(key) {
-    const next = (key && key !== 'dashboard') ? key : '';
-    if (next) {
-      if (window.location.hash !== '#' + next) window.location.hash = next;
-    } else if (window.location.hash) {
-      // Drop the hash without piling up an empty browser-history entry.
-      history.replaceState(null, '', window.location.pathname + window.location.search);
+    let next = (key && key !== 'dashboard') ? key : '';
+    if (!next && _hadPageParam) next = 'dashboard';
+    try {
+      google.script.history.replace(null, {}, next);
+    } catch (e) {
+      // history API unavailable — navigation still works, refresh-restore
+      // just silently degrades to opening the dashboard.
     }
   }
 

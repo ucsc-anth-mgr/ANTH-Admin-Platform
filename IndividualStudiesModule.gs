@@ -51,6 +51,20 @@ const IndividualStudiesModule = (() => {
   const TAB    = function () { return CONFIG.TABS.INDIVIDUAL_STUDIES || 'Petitions'; };
   const SHEET  = function () { return CONFIG.SHEETS.INDIVIDUAL_STUDIES; };
   const TPL_TAB = function () { return CONFIG.TABS.INDIVIDUAL_STUDIES_TEMPLATES || 'Templates'; };
+  const SETTINGS_TAB = function () { return CONFIG.TABS.INDIVIDUAL_STUDIES_SETTINGS || 'PetitionSettings'; };
+
+  // Student-notification message templates (UI-managed in the Settings tab,
+  // stored key/value in PetitionSettings — mirrors TranscriptSettings).
+  // The template is the MESSAGE ONLY; the structural, load-bearing lines
+  // (class number + enrollment instructions, advisor note, PDF link, return
+  // note, portal links) are appended in code and cannot be edited away.
+  // Tokens {FirstName} and {Course} are filled at send time. These defaults
+  // reproduce the module's original wording and also serve as the fallback
+  // when the settings tab doesn't exist yet or a value is blank.
+  const NOTIFY_DEFAULTS = {
+    NOTIFY_COMPLETE: 'Your {Course} individual-studies petition is complete.',
+    NOTIFY_RETURNED: 'Your {Course} petition was returned for revision.',
+  };
 
   const STAGE = {
     SUBMITTED:       'SUBMITTED',
@@ -598,7 +612,7 @@ const IndividualStudiesModule = (() => {
     _assertAdvisor(roles);
     const rec = _byId((payload || {}).petitionId);
     if (!rec) throw new Error('Petition not found.');
-    return _advisorContext(rec);
+    return _advisorContext(rec, String((payload || {}).course || '').trim());
   }
 
   /**
@@ -630,6 +644,38 @@ const IndividualStudiesModule = (() => {
       throw new Error('Reassigning a class number listed under another instructor requires confirmation.');
     }
 
+    // Optional course correction (e.g. a field study filed as a tutorial and
+    // not caught by the sponsor). The credit level is the anchor: only a
+    // course offered this term at the petition's credit value may be
+    // substituted, so credits, the SR 760 hours split, and the over-cap math
+    // are all unchanged. A credit-level change is a return to the sponsor,
+    // not a correction. The change itself is traced by the audit log (the
+    // dispatch payload) and a courtesy email to the sponsor below.
+    const originalCourse = String(rec.Course || '').trim();
+    let course = String(payload.course || '').trim() || originalCourse;
+    const courseChanged = course.toUpperCase() !== originalCourse.toUpperCase();
+    if (courseChanged) {
+      const allowed = _sameCreditCourses(_recTerm(rec), _toNum(rec.Credits), originalCourse)
+        .find(c => String(c.course).trim().toUpperCase() === course.toUpperCase());
+      if (!allowed) {
+        throw new Error('That course is not offered this term at ' + rec.Credits +
+          ' credits. To change the credit level, return the petition to the sponsor.');
+      }
+      course = String(allowed.course).trim();   // canonical casing from the schedule
+      // The corrected course must not collide with another of the student's
+      // petitions on the (student, term, sponsor, course) duplicate key.
+      const dup = DataService.query(SHEET(), TAB(), 'StudentEmail', rec.StudentEmail).find(r =>
+        String(r.PetitionID) !== String(rec.PetitionID) &&
+        _recTerm(r) === _recTerm(rec) &&
+        _norm(r.SponsorEmail) === _norm(rec.SponsorEmail) &&
+        String(r.Course).trim().toUpperCase() === course.toUpperCase() &&
+        r.Stage !== STAGE.RETURNED);
+      if (dup) {
+        throw new Error('The student already has a ' + course + ' petition with this sponsor this term. ' +
+          'Resolve that petition instead of correcting this one\'s course.');
+      }
+    }
+
     // Major-department authorization: compute the term total ACROSS the
     // student's petitions (this one's credits already recorded by the
     // sponsor). If over the cap, the advisor must authorize.
@@ -642,6 +688,7 @@ const IndividualStudiesModule = (() => {
 
     const now = new Date().toISOString();
     DataService.update(SHEET(), TAB(), 'PetitionID', rec.PetitionID, {
+      Course: course,
       ClassNumber: classNumber,
       ClassSection: String(payload.classSection || '').trim(),
       ClassNumberSource: source,
@@ -674,8 +721,11 @@ const IndividualStudiesModule = (() => {
 
     Tasks.resolveForSource(MODULE, rec.PetitionID, { resolvedBy: user });
     _notifyComplete(finalRec, pdf);
-    EventBus.emit(MODULE + '.completed', { recordId: rec.PetitionID }, { user: user });
-    return { petitionId: rec.PetitionID, stage: STAGE.COMPLETE, documentLink: pdf ? pdf.url : '' };
+    if (courseChanged) _notifySponsorCourseChanged(finalRec, originalCourse, user);
+    EventBus.emit(MODULE + '.completed',
+      { recordId: rec.PetitionID, courseChangedFrom: courseChanged ? originalCourse : '' }, { user: user });
+    return { petitionId: rec.PetitionID, stage: STAGE.COMPLETE, documentLink: pdf ? pdf.url : '',
+             course: course, courseChanged: courseChanged };
   }
 
   /** Advisor returns the petition to the sponsor, clearing the decision. */
@@ -839,7 +889,7 @@ const IndividualStudiesModule = (() => {
     Notify.send({
       to: rec.StudentEmail,
       subject: 'Your individual-studies petition was returned',
-      body: 'Your ' + rec.Course + ' petition was returned for revision.\n\n' +
+      body: _fillNotifyTokens(_notifyTemplate('NOTIFY_RETURNED'), rec) + '\n\n' +
             'What to revise: ' + note + '\n\n' +
             'Revise and resubmit in the portal: ' + _deepLink(petitionId),
       replyTo: Settings.replyTo('individual_studies'),   // module reply-to (Admin → settings); falls back to CONFIG.DEFAULT_REPLY_TO
@@ -849,11 +899,14 @@ const IndividualStudiesModule = (() => {
   function _notifyComplete(rec, pdf) {
     const link = (pdf && pdf.url) ? pdf.url : (rec.DocumentLink || '');
     const lines = [
-      'Your ' + rec.Course + ' individual-studies petition is complete.',
+      _fillNotifyTokens(_notifyTemplate('NOTIFY_COMPLETE'), rec),
       '',
       'Class number: ' + (rec.ClassNumber || '(see portal)'),
       'Enroll in this course in MyUCSC using the class number above.',
     ];
+    if (String(rec.AdvisorComments || '').trim()) {
+      lines.push('', 'Note from the undergraduate advisor:', String(rec.AdvisorComments).trim());
+    }
     if (link) lines.push('', 'Your completed petition (PDF): ' + link);
     Notify.send({
       to: rec.StudentEmail,
@@ -863,14 +916,102 @@ const IndividualStudiesModule = (() => {
     });
   }
 
+  // ── Notification-template plumbing (Settings tab) ──
+
+  /** The effective template for a key: saved value, else the default. */
+  function _notifyTemplate(key) {
+    const v = String(_readSettings()[key] || '').trim();
+    return v || NOTIFY_DEFAULTS[key] || '';
+  }
+
+  /** Fills {FirstName} and {Course} from the petition + profile. */
+  function _fillNotifyTokens(tmpl, rec) {
+    const profile = Auth.getProfile(rec.StudentEmail);
+    const firstName = profile ? (profile.firstName || profile.name || '') : '';
+    return String(tmpl || '')
+      .replace(/\{FirstName\}/g, firstName)
+      .replace(/\{Course\}/g, rec.Course || '');
+  }
+
+  /** Key/value read with defaults — works even before the tab exists. */
+  function _readSettings() {
+    const out = {};
+    Object.keys(NOTIFY_DEFAULTS).forEach(k => { out[k] = NOTIFY_DEFAULTS[k]; });
+    try {
+      DataService.getAll(SHEET(), SETTINGS_TAB()).forEach(r => {
+        const k = String(r.Key || '').trim();
+        if (k) out[k] = String(r.Value != null ? r.Value : '');
+      });
+    } catch (e) { Logger.log('IndividualStudiesModule._readSettings failed: ' + e); }
+    return out;
+  }
+
+  function _writeSetting(key, value) {
+    const existing = DataService.query(SHEET(), SETTINGS_TAB(), 'Key', key);
+    if (existing.length) {
+      DataService.update(SHEET(), SETTINGS_TAB(), 'Key', key, { Value: value });
+    } else {
+      DataService.insert(SHEET(), SETTINGS_TAB(), { Key: key, Value: value });
+    }
+  }
+
+  /** Settings for the advisor's Settings tab. Advisor or super_admin. */
+  function getSettings(payload, user, roles) {
+    _assertAdvisor(roles);
+    return _readSettings();
+  }
+
+  /** Saves the notification templates. Only known keys are written; a key
+   *  absent from the payload is left untouched. Advisor or super_admin. */
+  function saveSettings(payload, user, roles) {
+    _assertAdvisor(roles);
+    payload = payload || {};
+    Object.keys(NOTIFY_DEFAULTS).forEach(key => {
+      if (payload[key] === undefined) return;
+      _writeSetting(key, String(payload[key]));
+    });
+    return _readSettings();
+  }
+
+  /**
+   * Courtesy note to the sponsor when the advisor corrected the course at
+   * completion. Their approval is on the record, so they should know what
+   * it now says. Best-effort — a notify failure must never break the
+   * completion (Notify.send already never throws, but keep the guard).
+   */
+  function _notifySponsorCourseChanged(rec, fromCourse, user) {
+    try {
+      Notify.send({
+        to: rec.SponsorEmail,
+        subject: 'Course corrected on a completed individual study',
+        body: 'While completing the individual-studies petition for ' + _studentLabel(rec.StudentEmail) +
+          ', the undergraduate advisor corrected the course from ' + fromCourse + ' to ' + rec.Course + '.\n\n' +
+          'Credits, grade option, and weekly hours are unchanged.\n\n' +
+          'Corrected by: ' + (_facultyLabel(user) || user) + '\n' +
+          'Petition: ' + _deepLink(rec.PetitionID),
+        replyTo: Settings.replyTo('individual_studies'),
+      });
+    } catch (e) {
+      Logger.log('IndividualStudiesModule._notifySponsorCourseChanged failed for ' + rec.PetitionID + ': ' + e);
+    }
+  }
+
 
   // ============================================================
   // PRIVATE — advisor decision context (credit total + class-number options)
   // ============================================================
 
-  function _advisorContext(rec) {
+  /**
+   * @param {Object} rec - the petition row
+   * @param {string} [courseOverride] - a candidate corrected course; the
+   *   section/preassignment lookups run against it so the advisor can
+   *   preview a correction before completing. Credits always stay the
+   *   petition's own (corrections are credit-matched by design).
+   */
+  function _advisorContext(rec, courseOverride) {
     const term = _recTerm(rec);
     const credits = _toNum(rec.Credits);
+    const course = String(courseOverride || '').trim() || rec.Course;
 
     // The student's individual-studies petitions for this term (this module
     // only — the grad/thesis credit picture is out of scope here).
@@ -890,17 +1031,18 @@ const IndividualStudiesModule = (() => {
       }
     });
 
-    // Class-number options from the ClassSchedule service.
+    // Class-number options from the ClassSchedule service, for the
+    // EFFECTIVE course (the petition's own, or the candidate correction).
     let preassigned = null, allSections = [], sectionsMatchedCredits = true;
     try {
-      const pre = ClassSchedule.findPreassigned(term, rec.Course, rec.SponsorEmail);
+      const pre = ClassSchedule.findPreassigned(term, course, rec.SponsorEmail);
       preassigned = pre ? _classRow(pre) : null;
 
       // The authoritative menu: every section for this course at the
       // petition's credit value, unassigned (Staff) sections first/
       // highlighted. Falls back to all course sections (flagged) if none
       // match the credit value, so the advisor is never stuck.
-      const res = ClassSchedule.sectionsForCourse(term, rec.Course, { units: credits });
+      const res = ClassSchedule.sectionsForCourse(term, course, { units: credits });
       sectionsMatchedCredits = res.matchedCredits;
       allSections = (res.sections || []).map(_sectionRow);
     } catch (e) {
@@ -911,6 +1053,8 @@ const IndividualStudiesModule = (() => {
       term: term,
       termLabel: _termLabel(rec),
       credits: credits,
+      course: course,
+      courseOptions: _sameCreditCourses(term, credits, rec.Course),
       creditTotal: creditTotal,
       creditCap: SPECIAL_STUDY_CREDIT_CAP,
       overCap: creditTotal > SPECIAL_STUDY_CREDIT_CAP,
@@ -943,6 +1087,27 @@ const IndividualStudiesModule = (() => {
       isStaff: s.isStaff, isAssigned: s.isAssigned,
       matchMethod: s.matchMethod,
     };
+  }
+
+  /**
+   * Courses the advisor may correct this petition to: those offered in the
+   * term (module allowlist) with at least one section at the petition's
+   * credit value. The petition's own course is always included. The credit
+   * level is the anchor by design — same credits means the SR 760 hours
+   * split and the over-cap math are untouched; changing the credit level
+   * is a return-to-sponsor, not a correction.
+   */
+  function _sameCreditCourses(term, credits, currentCourse) {
+    const cur = String(currentCourse || '').trim().toUpperCase();
+    return _coursesForTerm(term).filter(c => {
+      const name = String(c.course || '').trim();
+      if (name.toUpperCase() === cur) return true;
+      try {
+        return ClassSchedule.sectionsForCourse(term, name, { units: credits }).matchedCredits === true;
+      } catch (e) {
+        return false;
+      }
+    }).map(c => ({ course: c.course, title: c.title || '' }));
   }
 
 
@@ -1100,12 +1265,35 @@ const IndividualStudiesModule = (() => {
   // PRIVATE — Drive student viewer grant (mirrors TranscriptModule)
   // ============================================================
 
+  /**
+   * Grants the student read access on a generated file WITHOUT Drive's own
+   * "shared with you" email — the module's completion email already links
+   * the PDF, so the extra Drive notification was noise. Uses the Advanced
+   * Drive Service (already required by ReportService), handling both the
+   * v3 (create/sendNotificationEmail) and v2 (insert/sendNotificationEmails)
+   * shapes; falls back to DriveApp.addViewer (which does email) only if the
+   * advanced service is somehow unavailable. Best-effort, never throws.
+   */
   function _grantStudentViewer(fileId, studentEmail) {
     const id = String(fileId || '').trim();
     const email = String(studentEmail || '').trim();
     if (!id || !email) return;
     try {
-      DriveApp.getFileById(id).addViewer(email);
+      if (typeof Drive !== 'undefined' && Drive && Drive.Permissions) {
+        if (typeof Drive.Permissions.create === 'function') {          // v3
+          Drive.Permissions.create(
+            { role: 'reader', type: 'user', emailAddress: email },
+            id, { sendNotificationEmail: false });
+          return;
+        }
+        if (typeof Drive.Permissions.insert === 'function') {          // v2
+          Drive.Permissions.insert(
+            { role: 'reader', type: 'user', value: email },
+            id, { sendNotificationEmails: false });
+          return;
+        }
+      }
+      DriveApp.getFileById(id).addViewer(email);   // last resort: does notify
     } catch (e) {
       Logger.log('IndividualStudiesModule._grantStudentViewer: could not share ' + id + ' with ' + email + ': ' + e);
     }
@@ -1609,6 +1797,8 @@ const IndividualStudiesModule = (() => {
     advisorQueue, allPetitions, remindResponsible, advisorContext, advisorComplete, advisorReturn,
     // import (advisor admin)
     importPreview, importResolve, importCommit, importHistory,
+    // settings (advisor)
+    getSettings, saveSettings,
     // templates (sponsor-owned)
     myTemplates, templatesForSponsor, saveTemplate, saveAsTemplate, setDefaultTemplate, deleteTemplate,
   };

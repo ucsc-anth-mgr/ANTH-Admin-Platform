@@ -110,6 +110,10 @@ const CONFIG = {
     INDIVIDUAL_STUDIES:     'Petitions',
     // Sponsor-owned petition templates (same spreadsheet as Petitions)
     INDIVIDUAL_STUDIES_TEMPLATES: 'Templates',
+    // UI-managed operational settings for the Individual Studies module
+    // (key/value; student-notification templates). Same spreadsheet as
+    // Petitions, mirroring TranscriptSettings.
+    INDIVIDUAL_STUDIES_SETTINGS: 'PetitionSettings',
     // Academic Personnel module tabs (live in SHEETS.PERSONNEL)
     PERSON_ATTRIBUTES: 'PersonAttributes',
     CASES:             'Cases',
