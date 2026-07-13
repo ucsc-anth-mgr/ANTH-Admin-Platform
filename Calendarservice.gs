@@ -1949,3 +1949,10 @@ function testCurriculumExtractor() {
       + '\n    audience: ' + (c.audience || []).join(', ') + '\n    uid: ' + c.uid);
   });
 }
+
+function testCal() {
+  Logger.log(typeof CalendarService);
+  const r = CalendarService.findDeadlines({});
+  Logger.log('count: ' + (r ? r.length : 'null'));
+  Logger.log(JSON.stringify(r && r[0]));
+}

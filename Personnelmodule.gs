@@ -1241,17 +1241,210 @@ const PersonnelModule = (() => {
 
   // ── Schedule computation ───────────────────────────────────
 
-  function _computeBackward(submissionISO, closures, g) {
+  // ── Instruction windows (classes in session) ───────────────
+  // Committee members and faculty voters are only available while classes are
+  // in session, so the deliberation and vote dates must land inside one of
+  // these windows. They're derived from the calendar's paired "Instruction
+  // Begins (Fall 2026)" / "Instruction Ends (Fall 2026)" entries, so nobody
+  // maintains quarter dates by hand.
+
+  /**
+   * The instruction windows overlapping a date range, as [{start, end, term}]
+   * sorted by start. Pairs "Instruction Begins" with the matching
+   * "Instruction Ends" by the term in parentheses.
+   */
+  function _instructionWindows(fromISO, toISO) {
+    const pat = (CONFIG.PERSONNEL && CONFIG.PERSONNEL.INSTRUCTION_PATTERNS)
+      || { begins: ['instruction begins'], ends: ['instruction ends'] };
+    let list;
+    try {
+      list = CalendarService.findDeadlines({}) || [];
+    } catch (err) {
+      Logger.log('_instructionWindows: calendar read failed: ' + err);
+      return [];
+    }
+
+    // "Instruction Begins (Fall 2026)" → term "fall 2026"
+    const termOf = title => {
+      const m = /\(([^)]+)\)/.exec(String(title || ''));
+      return m ? m[1].trim().toLowerCase() : '';
+    };
+    const matches = (title, phrases) => {
+      const t = String(title || '').toLowerCase();
+      return phrases.some(p => t.indexOf(String(p).toLowerCase()) !== -1);
+    };
+
+    const begins = {}, ends = {};
+    list.forEach(d => {
+      if (!d.date) return;
+      const term = termOf(d.title);
+      if (!term) return;
+      if (matches(d.title, pat.begins)) begins[term] = d.date;
+      else if (matches(d.title, pat.ends)) ends[term] = d.date;
+    });
+
+    const windows = [];
+    Object.keys(begins).forEach(term => {
+      if (!ends[term]) return;                      // unpaired — skip
+      windows.push({ term: term, start: begins[term], end: ends[term] });
+    });
+    windows.sort((a, b) => a.start.localeCompare(b.start));
+
+    // Keep only those overlapping the range we care about (with slack).
+    if (fromISO && toISO) {
+      return windows.filter(w => !(w.end < fromISO || w.start > toISO));
+    }
+    return windows;
+  }
+
+  /** Is a date inside any instruction window? */
+  function _isInSession(iso, windows) {
+    if (!iso || !windows || !windows.length) return true;   // no data → don't block
+    return windows.some(w => iso >= w.start && iso <= w.end);
+  }
+
+  /**
+   * Move a date EARLIER onto the nearest day that is both a business day and
+   * in session. We're working backward from a fixed deadline, so slipping
+   * later is never an option.
+   *
+   * Two ways this fails, and both are reported rather than papered over:
+   *   · the date is BEFORE every known window — no earlier session exists to
+   *     retreat into, so the step simply cannot be scheduled;
+   *   · it would have to slide further than `maxSlideDays`, which means it is
+   *     being dragged into an unrelated earlier term rather than merely
+   *     nudged out of a break.
+   * @returns { date, moved, ok, reason? }
+   */
+  function _snapToInSession(iso, closures, windows, maxSlideDays) {
+    if (!iso || !windows || !windows.length) return { date: iso, moved: 0, ok: true };
+    const limit = maxSlideDays || 60;
+    const lookup = _schClosureSet(closures);
+
+    // Before every window: there is nothing earlier to fall back on.
+    const earliest = windows.reduce((a, w) => (!a || w.start < a ? w.start : a), '');
+    if (earliest && iso < earliest) {
+      return { date: iso, moved: 0, ok: false,
+               reason: 'falls before the first term in the calendar (' + earliest + ')' };
+    }
+
+    let cur = iso, moved = 0;
+    while (!(_schIsBusinessDay(cur, lookup) && _isInSession(cur, windows))) {
+      cur = _schAddDays(cur, -1);
+      moved++;
+      if (moved > limit) {
+        return { date: iso, moved: 0, ok: false,
+                 reason: 'no teaching day within ' + limit + ' days before ' + iso };
+      }
+    }
+    return { date: cur, moved: moved, ok: true };
+  }
+
+
+  /** Day of week for an ISO date: 0 = Sunday … 6 = Saturday. */
+  function _schDow(iso) {
+    const d = _schParseISO(iso);
+    return d ? d.getUTCDay() : -1;
+  }
+
+  /**
+   * The vote date: the last day ON OR BEFORE `iso` that is the department's
+   * voting weekday (Wednesday), falls while classes are in session, and isn't
+   * a campus closure. All three must hold at once — a Wednesday inside winter
+   * break is no good, and neither is a Wednesday that happens to be a holiday.
+   *
+   * Steps back a week at a time from the first candidate weekday, so it lands
+   * on a real meeting day rather than merely a nearby one. Reports failure
+   * rather than inventing a date.
+   * @returns { date, moved, ok, reason? }
+   */
+  function _snapToVoteDay(iso, closures, windows, maxWeeksBack) {
+    const want = (CONFIG.PERSONNEL && CONFIG.PERSONNEL.VOTE_WEEKDAY);
+    // No weekday rule configured → fall back to the plain in-session snap.
+    if (want === null || want === undefined || want < 0) {
+      return _snapToInSession(iso, closures, windows);
+    }
+    if (!iso) return { date: iso, moved: 0, ok: true };
+
+    const limitWeeks = maxWeeksBack || 12;
+    const lookup = _schClosureSet(closures);
+
+    // Step back to the most recent instance of the voting weekday (on or
+    // before the computed date), then keep stepping back a week at a time.
+    let cur = iso;
+    let back = (_schDow(cur) - want + 7) % 7;
+    cur = _schAddDays(cur, -back);
+
+    const earliest = (windows && windows.length)
+      ? windows.reduce((a, w) => (!a || w.start < a ? w.start : a), '') : '';
+
+    for (let i = 0; i <= limitWeeks; i++) {
+      const closed = !!lookup[cur];
+      const inSess = _isInSession(cur, windows);
+      if (!closed && inSess) {
+        return { date: cur, moved: _schDaysBetween(cur, iso), ok: true };
+      }
+      if (earliest && cur < earliest) {
+        return { date: iso, moved: 0, ok: false,
+                 reason: 'no meeting day falls before the first term in the calendar (' + earliest + ')' };
+      }
+      cur = _schAddDays(cur, -7);
+    }
+    return { date: iso, moved: 0, ok: false,
+             reason: 'no in-session meeting day within ' + limitWeeks + ' weeks before ' + iso };
+  }
+
+  /** Whole days between two ISO dates (b - a), non-negative. */
+  function _schDaysBetween(aISO, bISO) {
+    const a = _schParseISO(aISO), b = _schParseISO(bISO);
+    if (!a || !b) return 0;
+    return Math.round(Math.abs(b - a) / (24 * 3600 * 1000));
+  }
+
+
+  function _computeBackward(submissionISO, closures, g, windows) {
     const lateReviewStart = _schAddBusinessDays(submissionISO, g.candidateReviewDays, closures, -1);
     const lateReviewEnd   = _schAddBusinessDays(submissionISO, 1, closures, -1);
     const letterFinal = g.letterToReviewGap > 0
       ? _schAddBusinessDays(lateReviewStart, g.letterToReviewGap, closures, -1)
       : lateReviewStart;
-    const vote         = _schAddBusinessDays(letterFinal, g.voteToLetterGap, closures, -1);
-    const deliberateBy = _schAddBusinessDays(vote, g.deliberateToVoteGap, closures, -1);
-    const draftsDue    = _schAddBusinessDays(deliberateBy, g.draftsToDeliberateGap, closures, -1);
-    return { submission: submissionISO, lateReviewStart, lateReviewEnd,
-             letterFinal, vote, deliberateBy, draftsDue };
+
+    // The vote and the deliberation need faculty in a room, so their dates
+    // must land while classes are in session. Compute them normally, then
+    // move each EARLIER onto the nearest in-session business day — working
+    // backward from a fixed deadline, later is never an option.
+    // The vote is taken at a department meeting — a Wednesday, in session,
+    // not a holiday. Move back to the last day satisfying all three.
+    const voteRaw = _schAddBusinessDays(letterFinal, g.voteToLetterGap, closures, -1);
+    const voteSnap = _snapToVoteDay(voteRaw, closures, windows);
+    const vote = voteSnap.date;
+
+    // Deliberation precedes the vote and also needs faculty in session, but
+    // isn't tied to a weekday.
+    const deliberateRaw = _schAddBusinessDays(vote, g.deliberateToVoteGap, closures, -1);
+    const deliberateSnap = _snapToInSession(deliberateRaw, closures, windows);
+    const deliberateBy = deliberateSnap.date;
+
+    // An in-session step that cannot be placed at all is a real scheduling
+    // failure, not a date to fudge.
+    const sessionProblems = [];
+    if (!voteSnap.ok) sessionProblems.push('the faculty vote (' + voteRaw + ') — ' + voteSnap.reason);
+    if (!deliberateSnap.ok) sessionProblems.push('committee deliberation (' + deliberateRaw + ') — ' + deliberateSnap.reason);
+
+    // Drafts hang off the (possibly moved) deliberation date, so a vote pushed
+    // back into the previous term drags the drafting deadline with it.
+    const draftsDue = _schAddBusinessDays(deliberateBy, g.draftsToDeliberateGap, closures, -1);
+
+    return {
+      submission: submissionISO, lateReviewStart, lateReviewEnd,
+      letterFinal, vote, deliberateBy, draftsDue,
+      // How far each in-session step had to move, so the UI can explain it.
+      voteMovedDays: voteSnap.moved,
+      deliberateMovedDays: deliberateSnap.moved,
+      voteRaw: voteRaw,
+      deliberateRaw: deliberateRaw,
+      sessionProblems: sessionProblems,
+    };
   }
 
   function _computeForward(lettersDueISO, actualAddedISO, closures, g) {
@@ -1276,10 +1469,31 @@ const PersonnelModule = (() => {
    * @param {string[]} closures
    * @returns { backward, forward|null, feasible, warnings[] }
    */
-  function _computeSchedule(c, closures) {
+  function _computeSchedule(c, closures, windows) {
     const g = SCHEDULE_GAPS();
-    const backward = _computeBackward(c.submissionISO, closures, g);
+    const backward = _computeBackward(c.submissionISO, closures, g, windows);
     const out = { backward: backward, forward: null, feasible: true, warnings: [] };
+
+    // Say so when the vote or deliberation had to be pulled earlier to land
+    // while classes are in session — it's the difference between a schedule
+    // that looks comfortable and one that quietly isn't.
+    const moved = [];
+    if (backward.voteMovedDays) {
+      moved.push('the vote moved to ' + backward.vote + ' (from ' + backward.voteRaw +
+        ') — the last department meeting day in session');
+    }
+    if (backward.deliberateMovedDays) {
+      moved.push('deliberation moved to ' + backward.deliberateBy + ' (from ' +
+        backward.deliberateRaw + ') to stay in session');
+    }
+    if (moved.length) {
+      out.warnings.push(moved.join('; ') + '. Drafts are due correspondingly earlier.');
+    }
+    if ((backward.sessionProblems || []).length) {
+      out.feasible = false;
+      out.warnings.push('Does not fit the teaching calendar: ' + backward.sessionProblems.join('; ') +
+        '. Committee members and faculty voters are only available while classes are in session.');
+    }
     if (c.isPromotion && c.lettersDueISO) {
       const forward = _computeForward(c.lettersDueISO, c.actualLettersAddedISO, closures, g);
       out.forward = forward;
@@ -1303,20 +1517,24 @@ const PersonnelModule = (() => {
   // ── Dispatchable scheduler actions ─────────────────────────
 
   /**
-   * Find candidate anchor deadlines for the picker (division submission,
-   * external letters due). Thin pass-through to CalendarService.findDeadlines
-   * so the personnel UI can search without knowing the calendar's internals.
+   * Find candidate anchor deadlines for the cycle picker. A thin pass-through
+   * to CalendarService.findDeadlines so the personnel UI can search without
+   * knowing the calendar's internals.
+   *
+   * Only filters that actually carry a value are passed: an empty string is a
+   * FILTER on emptiness, not the absence of a filter, and would match nothing.
    * @param {Object} payload - { titleContains?, sourceKey?, origin?, kind?, from?, to? }
    */
   function findCalendarDeadlines(payload, user, roles) {
     _requireSuperAdmin(roles);
     const p = payload || {};
+    const filter = {};
+    ['titleContains', 'sourceKey', 'origin', 'kind', 'from', 'to'].forEach(k => {
+      const v = String(p[k] == null ? '' : p[k]).trim();
+      if (v) filter[k] = v;
+    });
     try {
-      return { deadlines: CalendarService.findDeadlines({
-        titleContains: p.titleContains || '', sourceKey: p.sourceKey || '',
-        origin: p.origin || '', kind: p.kind || 'deadline',
-        from: p.from || '', to: p.to || '',
-      }) || [] };
+      return { deadlines: CalendarService.findDeadlines(filter) || [] };
     } catch (err) {
       throw new Error('Calendar lookup failed: ' + err);
     }
@@ -1347,11 +1565,19 @@ const PersonnelModule = (() => {
     if (!sub.date) return { schedule: null, resolved: { submission: sub },
       warnings: ['The division submission deadline has no date.'] };
 
+    // Letters-due may arrive as an already-resolved DATE (the usual case —
+    // the standing Nov 1 default, or a typed override) or as a calendar
+    // DeadlineID to resolve.
     let letters = { found: false, date: '', status: 'missing' };
     if (p.isPromotion) {
-      letters = _calendarDeadline(p.lettersDueDeadlineId);
-      if (!letters.found) warnings.push('This is a promotion but no external-letters-due deadline is set — the early candidate-review window can\'t be planned.');
-      else if (letters.status === 'removed') warnings.push('The external-letters-due deadline was removed upstream — the date shown may be stale.');
+      const given = String(p.lettersDueDate || '').trim();
+      if (given) {
+        letters = { found: true, date: given, title: '', status: 'active' };
+      } else if (p.lettersDueDeadlineId) {
+        letters = _calendarDeadline(p.lettersDueDeadlineId);
+        if (letters.status === 'removed') warnings.push('The external-letters-due deadline was removed upstream — the date shown may be stale.');
+      }
+      if (!letters.found) warnings.push('This is a promotion but no external-letters-due date is set — the early candidate-review window cannot be planned.');
     }
 
     // Closure window: from a bit before the earliest plausible start to the
@@ -1363,16 +1589,26 @@ const PersonnelModule = (() => {
     const from = _schAddDays(anchorsMin, -30);
     const to   = _schAddDays(sub.date, 5);
     const closures = _calendarClosures(from, to);
+    // Instruction windows: the vote and deliberation must land inside one.
+    // Look back further than the closures window — a vote pushed out of Fall
+    // may have to land in the previous term.
+    const windows = _instructionWindows(_schAddDays(anchorsMin, -240), to);
 
     const schedule = _computeSchedule({
       isPromotion: !!p.isPromotion,
       submissionISO: sub.date,
       lettersDueISO: (p.isPromotion && letters.date) ? letters.date : '',
       actualLettersAddedISO: p.actualLettersAddedDate || '',
-    }, closures);
+    }, closures, windows);
 
     schedule.warnings = warnings.concat(schedule.warnings || []);
-    return { schedule: schedule, resolved: { submission: sub, letters: letters, closureCount: closures.length } };
+    if (!windows.length) {
+      schedule.warnings.push('No instruction dates found in the calendar — the vote and deliberation were not checked against the academic term.');
+    }
+    return { schedule: schedule,
+             resolved: { submission: sub, letters: letters,
+                         closureCount: closures.length,
+                         sessions: windows.map(w => w.term + ': ' + w.start + ' → ' + w.end) } };
   }
 
 
@@ -2176,6 +2412,156 @@ const PersonnelModule = (() => {
   }
 
 
+  // ── Cycle deadline auto-matching ───────────────────────────
+  // APO's calendar titles are structured and carry the cycle year, so the
+  // division deadlines can simply be found rather than hunted for by hand.
+  // Auto-matching APPLIES on cycle load; a hand-picked anchor is never
+  // overwritten, and the picker remains available as an override.
+
+  /**
+   * The cycle label forms a calendar title might use. "2026-27" → the label
+   * itself, plus a four-digit variant ("2026-2027").
+   *
+   * Deliberately does NOT include the bare years: "2026" also appears in
+   * "2026-27" AND would match a "2027-28" title through its first year,
+   * pulling in the wrong cycle. Only the full label is unambiguous.
+   */
+  function _cycleYearTokens(academicYear) {
+    const y = String(academicYear || '').trim();
+    const m = /^(\d{4})\s*[-\/]\s*(\d{2,4})$/.exec(y);
+    if (!m) return [y];
+    const first = m[1];
+    const shortSecond = m[2].slice(-2);
+    const longSecond = m[2].length === 2 ? first.slice(0, 2) + m[2] : m[2];
+    return [
+      first + '-' + shortSecond,   // 2026-27
+      first + '-' + longSecond,    // 2026-2027
+    ];
+  }
+
+  /** The first calendar year of a cycle: "2026-27" → "2026". */
+  function _cycleFirstYear(academicYear) {
+    const m = /^(\d{4})/.exec(String(academicYear || '').trim());
+    return m ? m[1] : '';
+  }
+
+  /**
+   * Find the calendar deadline matching a pattern for a given cycle. The
+   * pattern's phrases must all appear in the title, at least one 'anyOf'
+   * phrase must appear (when given), no 'noneOf' phrase may, and the cycle
+   * year must be in the title — which is what keeps years apart.
+   * @returns { deadlineId, title, date } | null, plus `ambiguous` when
+   *          several match (we then decline to guess).
+   */
+  function _autoMatchDeadline(academicYear, pattern) {
+    if (!pattern) return null;
+    let list;
+    try {
+      const filter = {};
+      if (pattern.sourceKey) filter.sourceKey = pattern.sourceKey;
+      list = CalendarService.findDeadlines(filter) || [];
+    } catch (err) {
+      Logger.log('_autoMatchDeadline: calendar read failed: ' + err);
+      return null;
+    }
+
+    const yearTokens = _cycleYearTokens(academicYear);
+    const has = (title, phrase) => title.indexOf(String(phrase).toLowerCase()) !== -1;
+
+    const hits = list.filter(d => {
+      const t = String(d.title || '').toLowerCase();
+      // The cycle year must appear, or we could match another year's deadline.
+      if (!yearTokens.some(y => t.indexOf(String(y).toLowerCase()) !== -1)) return false;
+      if ((pattern.allOf || []).some(p => !has(t, p))) return false;
+      if ((pattern.noneOf || []).some(p => has(t, p))) return false;
+      if (pattern.anyOf && pattern.anyOf.length &&
+          !pattern.anyOf.some(p => has(t, p))) return false;
+      return true;
+    });
+
+    if (!hits.length) return null;
+    if (hits.length > 1) {
+      return { ambiguous: true, candidates: hits.map(d => ({
+        deadlineId: d.deadlineId, title: d.title, date: d.date })) };
+    }
+    const d = hits[0];
+    return { deadlineId: d.deadlineId, title: d.title, date: d.date };
+  }
+
+  /**
+   * The letters-due date for a cycle, in resolution order:
+   *   1. an explicit typed date on the cycle;
+   *   2. a chosen calendar deadline;
+   *   3. the standing default (Nov 1 of the cycle's first year).
+   * Returns { date, source: 'typed'|'calendar'|'default', title? }.
+   */
+  function _resolveLettersDue(cycleRow, academicYear) {
+    const typed = cycleRow ? String(cycleRow.LettersDueDate || '').trim() : '';
+    if (typed) {
+      const d = _histDate(typed) || typed;
+      return { date: d, source: 'typed' };
+    }
+    const id = cycleRow ? String(cycleRow.LettersDueDeadlineID || '').trim() : '';
+    if (id) {
+      const res = _calendarDeadline(id);
+      if (res.found && res.date) {
+        return { date: res.date, source: 'calendar', title: res.title, status: res.status };
+      }
+    }
+    const def = (CONFIG.PERSONNEL && CONFIG.PERSONNEL.LETTERS_DUE_DEFAULT) || { month: 11, day: 1 };
+    const first = _cycleFirstYear(academicYear);
+    if (!first) return { date: '', source: 'none' };
+    const date = first + '-' + String(def.month).padStart(2, '0') + '-' + String(def.day).padStart(2, '0');
+    return { date: date, source: 'default' };
+  }
+
+  /**
+   * Fill in a cycle's division anchors from the calendar automatically, if
+   * they aren't already set. Never overwrites an existing choice — a hand
+   * pick (or a previous auto-match) stands. Returns what it applied.
+   */
+  function _autoFillCycleAnchors(academicYear, cycleRow) {
+    const patterns = (CONFIG.PERSONNEL && CONFIG.PERSONNEL.CYCLE_DEADLINE_PATTERNS) || {};
+    const applied = {}, notes = [];
+
+    const need = {
+      merit: !cycleRow || !String(cycleRow.MeritDeadlineID || '').trim(),
+      major: !cycleRow || !String(cycleRow.MajorDeadlineID || '').trim(),
+    };
+
+    ['merit', 'major'].forEach(which => {
+      if (!need[which]) return;
+      const hit = _autoMatchDeadline(academicYear, patterns[which]);
+      if (!hit) {
+        notes.push('No ' + which + '-files deadline could be matched automatically for ' +
+                   academicYear + ' — choose one from the calendar.');
+        return;
+      }
+      if (hit.ambiguous) {
+        notes.push('Several calendar entries could be the ' + which + '-files deadline for ' +
+                   academicYear + ' — choose the right one.');
+        return;
+      }
+      applied[which] = hit;
+    });
+
+    if (!Object.keys(applied).length) return { applied: applied, notes: notes };
+
+    const fields = { AcademicYear: academicYear, AutoMatched: 'TRUE' };
+    if (applied.merit) fields.MeritDeadlineID = applied.merit.deadlineId;
+    if (applied.major) fields.MajorDeadlineID = applied.major.deadlineId;
+
+    const existing = DataService.query(SHEET(), CYCLES_TAB(), 'AcademicYear', academicYear);
+    if (existing.length) {
+      DataService.update(SHEET(), CYCLES_TAB(), 'CycleID', existing[0].CycleID, fields);
+    } else {
+      DataService.insert(SHEET(), CYCLES_TAB(),
+        Object.assign({ CycleID: DataService.generateId('CYC') }, fields));
+    }
+    return { applied: applied, notes: notes };
+  }
+
+
   // ── Cycle anchors + settings (dispatchable) ────────────────
 
   /**
@@ -2242,20 +2628,55 @@ const PersonnelModule = (() => {
     const year = String((payload || {}).academicYear || '').trim();
     if (!year) throw new Error('academicYear is required.');
 
-    const rows = DataService.query(SHEET(), CYCLES_TAB(), 'AcademicYear', year);
-    const row = rows.length ? rows[0] : null;
-    const divId = row ? String(row.DivisionDeadlineID || '') : '';
-    const letId = row ? String(row.LettersDueDeadlineID || '') : '';
+    let rows = DataService.query(SHEET(), CYCLES_TAB(), 'AcademicYear', year);
+    let row = rows.length ? rows[0] : null;
+
+    // Fill the division anchors from the calendar automatically when they
+    // aren't set — APO's titles are structured and carry the cycle year, so
+    // there's nothing to disambiguate. A hand pick is never overwritten.
+    const auto = _autoFillCycleAnchors(year, row);
+    if (Object.keys(auto.applied).length) {
+      rows = DataService.query(SHEET(), CYCLES_TAB(), 'AcademicYear', year);
+      row = rows.length ? rows[0] : null;
+    }
+
+    const meritId = row ? String(row.MeritDeadlineID || '') : '';
+    const majorId = row ? String(row.MajorDeadlineID || '') : '';
+    const letId   = row ? String(row.LettersDueDeadlineID || '') : '';
+    const letters = _resolveLettersDue(row, year);
 
     return {
       academicYear: year,
       exists: !!row,
-      divisionDeadlineId: divId,
+      meritDeadlineId: meritId,
+      majorDeadlineId: majorId,
       lettersDueDeadlineId: letId,
-      division: divId ? _calendarDeadline(divId) : null,
-      letters:  letId ? _calendarDeadline(letId) : null,
+      merit:   meritId ? _calendarDeadline(meritId) : null,
+      major:   majorId ? _calendarDeadline(majorId) : null,
+      // Letters-due resolves from a typed date, then a calendar entry, then
+      // the standing Nov 1 default — so the promotion timeline works without
+      // anyone having to set anything.
+      lettersDue: letters,
+      autoMatched: row ? String(row.AutoMatched || '').toUpperCase() === 'TRUE' : false,
+      autoApplied: Object.keys(auto.applied),
+      autoNotes: auto.notes,
       notes: row ? (row.Notes || '') : '',
     };
+  }
+
+  /**
+   * Which division deadline anchors a given review type. The Division splits
+   * its submission dates by how heavy the review is: merit and
+   * salary-increase-only files go by the merit deadline; promotion and
+   * mid-career (the ones with external letters) go by the earlier major
+   * deadline. Returns the DeadlineID from the cycle, or ''.
+   */
+  function _divisionAnchorFor(cycle, reviewType) {
+    const map = (CONFIG.PERSONNEL && CONFIG.PERSONNEL.DIVISION_DEADLINE_BY_TYPE) || {};
+    const which = map[String(reviewType)] || 'merit';
+    return which === 'major'
+      ? (cycle.majorDeadlineId || '')
+      : (cycle.meritDeadlineId || '');
   }
 
   /** Every cycle with anchors on file, most recent year first. */
@@ -2263,7 +2684,8 @@ const PersonnelModule = (() => {
     _requireSuperAdmin(roles);
     const cycles = DataService.getAll(SHEET(), CYCLES_TAB()).map(r => ({
       academicYear: r.AcademicYear,
-      divisionDeadlineId: r.DivisionDeadlineID || '',
+      meritDeadlineId: r.MeritDeadlineID || '',
+      majorDeadlineId: r.MajorDeadlineID || '',
       lettersDueDeadlineId: r.LettersDueDeadlineID || '',
       notes: r.Notes || '',
     }));
@@ -2284,8 +2706,20 @@ const PersonnelModule = (() => {
     if (!year) throw new Error('Academic year is required.');
 
     const fields = { AcademicYear: year };
-    if (p.divisionDeadlineId   !== undefined) fields.DivisionDeadlineID   = String(p.divisionDeadlineId || '').trim();
+    // A hand pick is a deliberate override: mark the cycle as no longer
+    // auto-matched so a later auto-fill leaves it alone.
+    if (p.meritDeadlineId !== undefined) {
+      fields.MeritDeadlineID = String(p.meritDeadlineId || '').trim();
+      fields.AutoMatched = 'FALSE';
+    }
+    if (p.majorDeadlineId !== undefined) {
+      fields.MajorDeadlineID = String(p.majorDeadlineId || '').trim();
+      fields.AutoMatched = 'FALSE';
+    }
     if (p.lettersDueDeadlineId !== undefined) fields.LettersDueDeadlineID = String(p.lettersDueDeadlineId || '').trim();
+    // An explicit letters-due date overrides both the calendar entry and the
+    // standing Nov 1 default.
+    if (p.lettersDueDate !== undefined) fields.LettersDueDate = String(p.lettersDueDate || '').trim();
     if (p.notes !== undefined) fields.Notes = String(p.notes || '').trim();
 
     const existing = DataService.query(SHEET(), CYCLES_TAB(), 'AcademicYear', year);
@@ -2309,27 +2743,40 @@ const PersonnelModule = (() => {
     _requireSuperAdmin(roles);
     const p = payload || {};
     const cycle = getCycle({ academicYear: p.academicYear }, user, roles);
-    if (!cycle.divisionDeadlineId) {
-      return { academicYear: cycle.academicYear, cycle: cycle, schedules: null,
-               warnings: ['No division submission deadline is set for this cycle — pick one below.'] };
+    const warnings = [];
+
+    // The two timelines run against DIFFERENT division deadlines: merit files
+    // by the later merit deadline, promotion/mid-career by the earlier major
+    // one. Each is computed only if its anchor is set.
+    let merit = null, major = null;
+
+    if (cycle.meritDeadlineId) {
+      merit = computeCaseSchedule({
+        isPromotion: false,
+        submissionDeadlineId: cycle.meritDeadlineId,
+      }, user, roles);
+    } else {
+      warnings.push('No merit-files deadline is set — the merit and salary-increase timeline cannot be planned.');
     }
-    const base = {
-      submissionDeadlineId: cycle.divisionDeadlineId,
-      lettersDueDeadlineId: cycle.lettersDueDeadlineId,
-      actualLettersAddedDate: p.actualLettersAddedDate || '',
-    };
-    const ordinary  = computeCaseSchedule(Object.assign({ isPromotion: false }, base), user, roles);
-    const promotion = cycle.lettersDueDeadlineId
-      ? computeCaseSchedule(Object.assign({ isPromotion: true }, base), user, roles)
-      : null;
+
+    if (cycle.majorDeadlineId) {
+      const lettersDate = (cycle.lettersDue && cycle.lettersDue.date) || '';
+      major = computeCaseSchedule({
+        isPromotion: !!lettersDate,   // the early window needs a letters date
+        submissionDeadlineId: cycle.majorDeadlineId,
+        lettersDueDate: lettersDate,
+        actualLettersAddedDate: p.actualLettersAddedDate || '',
+      }, user, roles);
+    } else {
+      warnings.push('No major-files deadline (promotion / mid-career / external letters) is set — that timeline cannot be planned.');
+    }
 
     return {
       academicYear: cycle.academicYear,
       cycle: cycle,
       gaps: SCHEDULE_GAPS(),
-      schedules: { ordinary: ordinary, promotion: promotion },
-      warnings: cycle.lettersDueDeadlineId ? []
-        : ['No external-letters-due deadline is set — the promotion timeline (with its early candidate-review window) cannot be planned.'],
+      schedules: (merit || major) ? { merit: merit, major: major } : null,
+      warnings: warnings,
     };
   }
 
@@ -2352,17 +2799,28 @@ const PersonnelModule = (() => {
 
     const year = String(c.AcademicYear || '').trim();
     const cycle = getCycle({ academicYear: year }, user, roles);
-    if (!cycle.divisionDeadlineId) {
-      return { caseId: id, academicYear: year, schedule: null,
-               warnings: ['No division submission deadline is set for ' + year +
-                          ' — set the cycle anchors in Settings.'] };
+
+    // The Division's submission deadline depends on the review type: merit and
+    // salary-increase files go by the merit deadline; promotion and mid-career
+    // by the earlier major one.
+    const reviewType = String(c.ReviewType || '');
+    const anchorId = _divisionAnchorFor(cycle, reviewType);
+    if (!anchorId) {
+      const map = (CONFIG.PERSONNEL && CONFIG.PERSONNEL.DIVISION_DEADLINE_BY_TYPE) || {};
+      const which = map[reviewType] === 'major' ? 'major-files (promotion / mid-career)' : 'merit-files';
+      return { caseId: id, academicYear: year, reviewType: reviewType, schedule: null,
+               warnings: ['No ' + which + ' division deadline is set for ' + year +
+                          ' — set the cycle deadlines in Settings.'] };
     }
 
-    const isPromotion = String(c.ReviewType) === 'promotion';
+    // Only promotions carry external letters, so only they get the early
+    // candidate-review window.
+    const lettersDate = (cycle.lettersDue && cycle.lettersDue.date) || '';
+    const isPromotion = reviewType === 'promotion' && !!lettersDate;
     const res = computeCaseSchedule({
       isPromotion: isPromotion,
-      submissionDeadlineId: cycle.divisionDeadlineId,
-      lettersDueDeadlineId: cycle.lettersDueDeadlineId,
+      submissionDeadlineId: anchorId,
+      lettersDueDate: lettersDate,
       actualLettersAddedDate: p.actualLettersAddedDate || '',
     }, user, roles);
 

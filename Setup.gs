@@ -404,10 +404,32 @@ const SETUP_SCHEMA = {
     // REMOVED anchor so a vanished deadline is flagged rather than silently
     // producing a stale schedule.
     //
-    //   DivisionDeadlineID   — the hard end: files due to the Division.
+    // The Division sets TWO submission deadlines, split by how heavy the review
+    // is — so a cycle carries both, and a case's review type decides which one
+    // anchors its schedule (see CONFIG.PERSONNEL.DIVISION_DEADLINE_BY_TYPE):
+    //   MeritDeadlineID  — "Merit files due to Division". Anchors merit and
+    //                      salary-increase-only cases.
+    //   MajorDeadlineID  — "Files with external reviewer letters (Promotion and
+    //                      Initial Above Scale), Step 6, and Mid-Career files
+    //                      due to Division". Anchors promotion and mid-career
+    //                      cases — the heavier reviews, with an earlier date.
     //   LettersDueDeadlineID — external letters due (promotions); the forward
-    //                          anchor for the early candidate-review window.
-    headers: ['CycleID', 'AcademicYear', 'DivisionDeadlineID', 'LettersDueDeadlineID',
+    //                      anchor for the early candidate-review window. Often
+    //                      blank: letters are due to the department on Nov 1 by
+    //                      standing practice rather than a published calendar
+    //                      entry (see CONFIG.PERSONNEL.LETTERS_DUE_DEFAULT).
+    //   LettersDueDate   — an explicit letters-due date ('yyyy-MM-dd') that
+    //                      overrides both the calendar entry and the Nov 1
+    //                      default. Blank unless someone types one.
+    //
+    // Resolution order for letters-due: LettersDueDate (typed) →
+    // LettersDueDeadlineID (calendar) → Nov 1 of the cycle's first year.
+    //
+    // AutoMatched — 'TRUE' when the division anchors were filled in by the
+    //   automatic title match rather than chosen by hand. A hand-picked anchor
+    //   is never overwritten by a later auto-match.
+    headers: ['CycleID', 'AcademicYear', 'MeritDeadlineID', 'MajorDeadlineID',
+              'LettersDueDeadlineID', 'LettersDueDate', 'AutoMatched',
               'Notes', 'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
     seed: [],
   },

@@ -49,9 +49,11 @@ const CONFIG = {
     // creates it and logs the id to paste back here.
     INDIVIDUAL_STUDIES: '1YXEdMiRUhFILSKDSg-Y_IwETsNy7k3B3o03lgAz84Fo',
     // Academic Personnel module — its OWN spreadsheet (per-module storage
-    // tier). Tabs: PersonAttributes (person-attribute extension table) and
-    // Cases (review cases from the Call).
+    // tier). Tabs: PersonAttributes (person-attribute extension table),
+    // Cases (review cases from the Call), ReviewHistory (the APO action
+    // ledger + case completions), Cycles (scheduler anchors), Settings.
     PERSONNEL:     '1MEE2WYjHddPfEVo7SEOU7tbNp1CFbUM90sFIFkbdPh0',
+    // Platform-wide calendar with deadlines.
     CALENDAR:      '1WvFofmDCWm1QbxBjtMtUSAtLoURc-PJFUt2lg7pu_rI',
   },
 
@@ -348,10 +350,10 @@ const CONFIG = {
     //     candidate remains on the Call at their standard normative interval)
     //   · DENIALS (no advancement of any type; the candidate may re-submit at
     //     any time, and it is not an acceleration)
-    // Add the codes here once identified in the APO ledger; anything listed
-    // is skipped when finding the last clock-resetting advancement. Until
-    // populated, every review is treated as resetting (slightly over-resets
-    // for retention/denial cases).
+    // Retention and denial do not apply in this department, so this stays
+    // empty and every review resets the clock. The seam remains in case that
+    // changes: anything listed here is skipped when finding the last
+    // clock-resetting advancement.
     NON_RESETTING_CODES: [],
 
     // Case review type -> action code written to review history when a case
@@ -363,13 +365,100 @@ const CONFIG = {
       midcareer:            'MD',
     },
 
+    // ── In-session scheduling ──────────────────────────────────
+    // Committee members and faculty voters are only available while classes
+    // are in session, so those two steps are counted in IN-SESSION business
+    // days: weekends, campus closures, AND any day outside an instruction
+    // window are skipped. Every other step (drafts, the letter, the candidate
+    // review windows) runs on ordinary business days — those are either
+    // individual work or a policy-defined access period, neither of which
+    // needs faculty in a room.
+    //
+    // Instruction windows are read from the calendar's paired entries —
+    // "Instruction Begins (Fall 2026)" / "Instruction Ends (Fall 2026)" — so
+    // nobody has to maintain quarter dates by hand. The phrases below are how
+    // those entries are recognized; adjust if the Registrar rewords them.
+    INSTRUCTION_PATTERNS: {
+      begins: ['instruction begins'],
+      ends:   ['instruction ends'],
+    },
+
+    // The faculty vote is taken on a fixed weekday — the department meets to
+    // vote on Wednesdays. The computed vote date is therefore moved back to
+    // the last such weekday that also falls in session and isn't a closure.
+    // 0 = Sunday … 3 = Wednesday … 6 = Saturday. Set to null for no
+    // weekday constraint (the vote then lands on any in-session business day).
+    VOTE_WEEKDAY: 3,
+
+    // The steps whose DATES must fall while classes are in session, because
+    // they need faculty in a room. Computed normally in the backward chain,
+    // then moved EARLIER onto the nearest in-session day (we're working back
+    // from a fixed deadline, so slipping later is never an option). Every
+    // other date — drafts, the letter, the candidate review windows — may
+    // fall on any business day.
+    IN_SESSION_DATES: ['deliberateBy', 'vote'],
+
+    // ── Cycle deadline auto-matching ───────────────────────────
+    // A cycle's anchors are found in the department calendar automatically:
+    // the titles APO publishes are structured and carry the cycle year, so
+    // there's nothing for a human to disambiguate. Each entry below lists
+    // phrases that must ALL appear in the title (case-insensitive), plus the
+    // cycle year, which is what makes the match unambiguous across years.
+    //
+    // Auto-matching APPLIES the anchors on cycle load; the picker remains as
+    // a manual override, and a manual choice is never overwritten. If APO
+    // rewords a title, adjust the phrases here — no code change.
+    //
+    // Titles as of the 2026-27 Call:
+    //   "Merit files due to Division (2026-27 Call)"
+    //   "Files with external reviewer letters (Promotion and Initial Above
+    //    Scale), Step 6, and Mid-Career files due to Division (2026-27 Call)"
+    CYCLE_DEADLINE_PATTERNS: {
+      // Anchors merit + salary-increase-only cases.
+      merit: {
+        sourceKey: 'apo-call-calendar',
+        allOf: ['merit files due to division'],
+        noneOf: ['external reviewer letters'],
+      },
+      // Anchors promotion + mid-career cases (the heavier, earlier deadline).
+      major: {
+        sourceKey: 'apo-call-calendar',
+        allOf: ['due to division'],
+        anyOf: ['external reviewer letters', 'mid-career', 'midcareer', 'step 6'],
+      },
+    },
+
+    // External letters are due to the department on November 1 by standing
+    // practice rather than a published calendar entry, so a cycle falls back
+    // to this month/day (of the cycle's FIRST year — Nov 1 2026 for 2026-27)
+    // when no calendar deadline has been chosen for it. Picking a calendar
+    // entry, or typing a date, overrides it.
+    LETTERS_DUE_DEFAULT: { month: 11, day: 1 },
+
+    // The Division sets TWO submission deadlines, split by how heavy the
+    // review is:
+    //   · "Merit files due to Division"                    → the LATER date
+    //   · "Files with external reviewer letters (Promotion and Initial Above
+    //      Scale), Step 6, and Mid-Career files due to Division" → EARLIER
+    // This maps each review type to the one that anchors its schedule. Both
+    // DeadlineIDs are stored per cycle (see the Cycles tab); the review type
+    // decides which one a case's backward schedule is computed from. If the
+    // Division ever splits these differently, this is the one edit.
+    DIVISION_DEADLINE_BY_TYPE: {
+      merit:                'merit',
+      salary_increase_only: 'merit',
+      promotion:            'major',
+      midcareer:            'major',
+    },
+
     // ── Workflow scheduler gap parameters (all in BUSINESS days) ──
     // The backward chain from the division submission deadline and the
     // forward early-review window (promotions) are computed from these.
     // candidateReviewDays (10) is the mandatory candidate-review window and
     // has real policy backing; the inner-chain gaps are the department's own
-    // process spacing — tune them here once finalized (no code change). All
-    // are business-day counts, skipping weekends + calendar closures.
+    // process spacing. These are the DEFAULTS — values saved in the module's
+    // Settings tab (Personnel → Settings → Schedule spacing) override them,
+    // so the department can tune the process without a code change.
     //   candidateReviewDays   — mandatory candidate review (late window, and
     //                           the promotion early letters-review window).
     //   letterToReviewGap     — voted letter done this many biz days before
@@ -377,8 +466,8 @@ const CONFIG = {
     //   voteToLetterGap       — finalize the letter after the vote.
     //   deliberateToVoteGap   — committee deliberation before the vote.
     //   draftsToDeliberateGap — drafts done before deliberation begins.
-    //   lateLetterBufferDays  — cushion after letters-due (Nov 1) before the
-    //                           early review is PLANNED to start, absorbing
+    //   lateLetterBufferDays  — cushion after letters-due before the early
+    //                           review is PLANNED to start, absorbing
     //                           late-arriving letters.
     SCHEDULE_GAPS: {
       candidateReviewDays:   10,

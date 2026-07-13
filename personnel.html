@@ -362,11 +362,12 @@ Assistant Professor	Hernandez Garavito	Carla	5	o	6	2	17	Reappt with salary incre
     <div class="card">
       <div class="card-title"><i class="ti ti-calendar-pin"></i> Cycle deadlines</div>
       <p class="text-muted text-sm" style="margin:-8px 0 12px;">
-        The two dates a cycle's schedule is computed from, chosen once per academic year from the
-        department calendar. Everything else — drafts due, deliberation, the vote, the letter, and the
-        candidate review windows — is worked out backward from the division deadline (and, for promotions,
-        forward from the letters-due date). We store the calendar's entry, not a copy of the date, so if the
-        date moves upstream the schedule follows.
+        The dates a cycle's schedule is computed from. The two division deadlines are
+        <strong>found in the department calendar automatically</strong> — you only need to step in if the
+        match is wrong or missing. Everything else — drafts due, deliberation, the vote, the letter, and the
+        candidate review windows — is worked out backward from them (and, for promotions, forward from the
+        letters-due date). We store the calendar's entry, not a copy of the date, so if a date moves upstream
+        the schedule follows.
       </p>
 
       <div class="form-row">
@@ -383,22 +384,45 @@ Assistant Professor	Hernandez Garavito	Carla	5	o	6	2	17	Reappt with salary incre
       </div>
 
       <div id="cyc-anchors" style="display:none;">
+        <p class="text-sm text-muted" style="margin:0 0 10px;">
+          The Division sets <strong>two</strong> submission deadlines, split by how heavy the review is.
+          Merit and salary-increase files go by the first; promotion and mid-career files — the ones with
+          external letters — go by the second, which is earlier.
+        </p>
         <div class="form-row">
           <div class="form-group">
-            <label class="form-label">Division submission deadline</label>
-            <div id="cyc-division-current" class="text-sm" style="margin-bottom:6px;"></div>
-            <button class="btn btn-secondary btn-sm" onclick="PersonnelUI.pickDeadline('division')">
+            <label class="form-label">Merit files due to Division</label>
+            <div class="form-hint" style="margin:-2px 0 6px;">Anchors <strong>merit</strong> and <strong>salary-increase-only</strong> cases.</div>
+            <div id="cyc-merit-current" class="text-sm" style="margin-bottom:6px;"></div>
+            <button class="btn btn-secondary btn-sm" onclick="PersonnelUI.pickDeadline('merit')">
               <i class="ti ti-search"></i> Choose from calendar
             </button>
           </div>
           <div class="form-group">
-            <label class="form-label">External letters due</label>
-            <div id="cyc-letters-current" class="text-sm" style="margin-bottom:6px;"></div>
-            <button class="btn btn-secondary btn-sm" onclick="PersonnelUI.pickDeadline('letters')">
+            <label class="form-label">Major files due to Division</label>
+            <div class="form-hint" style="margin:-2px 0 6px;">External letters, Step 6, mid-career. Anchors <strong>promotion</strong> and <strong>mid-career</strong> cases.</div>
+            <div id="cyc-major-current" class="text-sm" style="margin-bottom:6px;"></div>
+            <button class="btn btn-secondary btn-sm" onclick="PersonnelUI.pickDeadline('major')">
               <i class="ti ti-search"></i> Choose from calendar
             </button>
           </div>
         </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">External letters due to the department</label>
+            <div class="form-hint" style="margin:-2px 0 6px;">Starts the candidate's early review of the letters, before the committee deliberates. Defaults to November 1.</div>
+            <div id="cyc-letters-current" class="text-sm" style="margin-bottom:6px;"></div>
+            <div style="display:flex;gap:8px;align-items:center;">
+              <input type="text" class="form-input" id="cyc-letters-date" placeholder="yyyy-mm-dd" style="max-width:150px;"
+                     onchange="PersonnelUI.setLettersDate(this.value)">
+              <button class="btn btn-secondary btn-sm" onclick="PersonnelUI.pickDeadline('letters')">
+                <i class="ti ti-search"></i> or pick from calendar
+              </button>
+            </div>
+          </div>
+          <div class="form-group"><!-- spacer --></div>
+        </div>
+        <div id="cyc-auto-notes" style="margin-top:8px;"></div>
         <div id="cyc-picker" style="display:none;margin-top:12px;padding:12px;border:1px solid #e3e6ea;border-radius:6px;"></div>
         <div id="cyc-schedule" style="margin-top:16px;"></div>
       </div>
@@ -789,15 +813,52 @@ window.PersonnelUI = (() => {
 
     App.call('personnel', 'getCycle', { academicYear: year }, res => {
       _cycle = res;
-      _renderAnchor('division', res.division, res.divisionDeadlineId);
-      _renderAnchor('letters',  res.letters,  res.lettersDueDeadlineId);
+      _renderAnchor('merit', res.merit, res.meritDeadlineId, res.autoMatched);
+      _renderAnchor('major', res.major, res.majorDeadlineId, res.autoMatched);
+      _renderLetters(res.lettersDue);
+      // Anything the auto-match couldn't work out.
+      const notes = res.autoNotes || [];
+      const noteBox = document.getElementById('cyc-auto-notes');
+      if (noteBox) {
+        noteBox.innerHTML = notes.length
+          ? `<div class="alert alert-warning text-sm">${notes.join('<br>')}</div>` : '';
+      }
       previewCycleSchedule();
     }, () => {
       document.getElementById('cyc-schedule').innerHTML = '<p class="text-muted">Could not load the cycle.</p>';
     });
   }
 
-  function _renderAnchor(which, resolved, id) {
+  /** Letters-due: shows where the date came from (typed / calendar / default). */
+  function _renderLetters(letters) {
+    const el = document.getElementById('cyc-letters-current');
+    const box = document.getElementById('cyc-letters-date');
+    if (!letters || !letters.date) {
+      el.innerHTML = '<span class="text-muted">Not set</span>';
+      if (box) box.value = '';
+      return;
+    }
+    const from = letters.source === 'typed'    ? '<span class="badge">set by hand</span>'
+               : letters.source === 'calendar' ? '<span class="badge badge-navy">from the calendar</span>'
+               : '<span class="badge">standing default</span>';
+    el.innerHTML = `<strong>${letters.date}</strong> ${from}` +
+      (letters.title ? ` <span class="text-muted">${letters.title}</span>` : '');
+    if (box && letters.source === 'typed') box.value = letters.date;
+  }
+
+  function setLettersDate(date) {
+    const year = document.getElementById('cyc-year').value.trim();
+    if (!year) return;
+    App.call('personnel', 'setCycleAnchors',
+      { academicYear: year, lettersDueDate: String(date || '').trim() }, res => {
+        Toast.show(date ? 'Letters-due date set.' : 'Reverted to the November 1 default.', 'success');
+        _cycle = res;
+        _renderLetters(res.lettersDue);
+        previewCycleSchedule();
+      });
+  }
+
+  function _renderAnchor(which, resolved, id, autoMatched) {
     const el = document.getElementById('cyc-' + which + '-current');
     if (!id) {
       el.innerHTML = '<span class="text-muted">Not set</span>';
@@ -810,6 +871,7 @@ window.PersonnelUI = (() => {
     const removed = resolved.status === 'removed';
     el.innerHTML =
       `<strong>${resolved.date || '—'}</strong> — ${resolved.title || '(untitled)'}` +
+      (autoMatched ? ' <span class="badge" title="Found in the calendar automatically. Pick another to override.">matched automatically</span>' : '') +
       (removed ? ' <span class="badge badge-warning" title="Removed upstream in the calendar — the date may be stale">removed upstream</span>' : '');
   }
 
@@ -817,7 +879,9 @@ window.PersonnelUI = (() => {
     _pickingFor = which;
     const box = document.getElementById('cyc-picker');
     box.style.display = 'block';
-    const label = which === 'division' ? 'division submission deadline' : 'external-letters-due date';
+    const label = which === 'merit'  ? 'merit-files deadline'
+                : which === 'major'  ? 'major-files deadline (external letters, Step 6, mid-career)'
+                : 'external-letters-due date';
     box.innerHTML = `
       <div class="text-sm" style="margin-bottom:8px;"><strong>Choose the ${label}</strong> from the department calendar.</div>
       <div class="form-row">
@@ -855,21 +919,23 @@ window.PersonnelUI = (() => {
     FormHelper.setLoading('pick-search-btn', true);
 
     App.call('personnel', 'findCalendarDeadlines',
-      { titleContains: q, from: from, to: to, kind: 'deadline' }, res => {
+      { titleContains: q, from: from, to: to }, res => {
         FormHelper.setLoading('pick-search-btn', false);
         const list = res.deadlines || [];
         if (!list.length) {
           out.innerHTML = '<p class="text-muted text-sm">No matching deadlines. Try a broader search or widen the dates.</p>';
           return;
         }
-        out.innerHTML = `<div class="table-wrap" style="max-height:260px;overflow-y:auto;"><table class="data-table">
+        out.innerHTML = `
+          <p class="text-sm text-muted" style="margin:0 0 6px;">${list.length} match${list.length === 1 ? '' : 'es'}${list.length >= 50 ? ' — narrow the search to see fewer' : ''}</p>
+          <div class="table-wrap" style="max-height:300px;overflow-y:auto;"><table class="data-table">
           <thead><tr><th>Date</th><th>Title</th><th>Source</th><th></th></tr></thead>
           <tbody>${list.map(d => `
             <tr>
-              <td class="text-sm"><strong>${d.date || '—'}</strong></td>
+              <td class="text-sm" style="white-space:nowrap;"><strong>${d.date || '—'}</strong></td>
               <td class="text-sm">${d.title || '(untitled)'}</td>
               <td class="text-sm text-muted">${d.source || d.origin || ''}</td>
-              <td><button class="btn btn-primary btn-sm" onclick="PersonnelUI.chooseDeadline('${d.deadlineId || d.id}')">Use this</button></td>
+              <td><button class="btn btn-primary btn-sm" onclick="PersonnelUI.chooseDeadline('${d.deadlineId}')">Use this</button></td>
             </tr>`).join('')}</tbody>
         </table></div>`;
       }, () => {
@@ -881,15 +947,17 @@ window.PersonnelUI = (() => {
   function chooseDeadline(deadlineId) {
     const year = document.getElementById('cyc-year').value.trim();
     const payload = { academicYear: year };
-    if (_pickingFor === 'division') payload.divisionDeadlineId = deadlineId;
-    else payload.lettersDueDeadlineId = deadlineId;
+    if (_pickingFor === 'merit')      payload.meritDeadlineId = deadlineId;
+    else if (_pickingFor === 'major') payload.majorDeadlineId = deadlineId;
+    else                              payload.lettersDueDeadlineId = deadlineId;
 
     App.call('personnel', 'setCycleAnchors', payload, res => {
       Toast.show('Cycle deadline set.', 'success');
       cancelPick();
       _cycle = res;
-      _renderAnchor('division', res.division, res.divisionDeadlineId);
-      _renderAnchor('letters',  res.letters,  res.lettersDueDeadlineId);
+      _renderAnchor('merit', res.merit, res.meritDeadlineId, res.autoMatched);
+      _renderAnchor('major', res.major, res.majorDeadlineId, res.autoMatched);
+      _renderLetters(res.lettersDue);
       previewCycleSchedule();
     });
   }
@@ -905,14 +973,14 @@ window.PersonnelUI = (() => {
         out.innerHTML = `<div class="alert alert-info text-sm">${(res.warnings || []).join(' ')}</div>`;
         return;
       }
-      const ord = res.schedules.ordinary && res.schedules.ordinary.schedule;
-      const pro = res.schedules.promotion && res.schedules.promotion.schedule;
+      const mer = res.schedules.merit && res.schedules.merit.schedule;
+      const maj = res.schedules.major && res.schedules.major.schedule;
       let html = '<div class="card-title" style="font-size:15px;margin-top:4px;"><i class="ti ti-timeline"></i> This cycle\'s schedule</div>';
       if (res.warnings && res.warnings.length) {
-        html += `<div class="alert alert-info text-sm" style="margin-bottom:10px;">${res.warnings.join(' ')}</div>`;
+        html += `<div class="alert alert-info text-sm" style="margin-bottom:10px;">${res.warnings.join('<br>')}</div>`;
       }
-      if (ord) html += _timelineHtml('Merit, salary, mid-career', ord, false);
-      if (pro) html += _timelineHtml('Promotion (with external letters)', pro, true);
+      if (mer) html += _timelineHtml('Merit &amp; salary-increase files', mer, false);
+      if (maj) html += _timelineHtml('Promotion &amp; mid-career files (external letters)', maj, !!(maj.forward));
       out.innerHTML = html;
     }, () => { out.innerHTML = '<p class="text-muted text-sm">Could not compute the schedule.</p>'; });
   }
@@ -1690,7 +1758,7 @@ window.PersonnelUI = (() => {
     detectHistory, commitHistory,
     loadAnticipated, exportSheet, exportCsv,
     loadSettings, loadGaps, saveGaps, loadCycle, pickDeadline, cancelPick,
-    searchDeadlines, chooseDeadline, previewCycleSchedule,
+    searchDeadlines, chooseDeadline, previewCycleSchedule, setLettersDate,
   };
 
 })();
