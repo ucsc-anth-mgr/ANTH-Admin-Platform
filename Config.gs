@@ -52,6 +52,7 @@ const CONFIG = {
     // tier). Tabs: PersonAttributes (person-attribute extension table) and
     // Cases (review cases from the Call).
     PERSONNEL:     '1MEE2WYjHddPfEVo7SEOU7tbNp1CFbUM90sFIFkbdPh0',
+    CALENDAR:      '1WvFofmDCWm1QbxBjtMtUSAtLoURc-PJFUt2lg7pu_rI',
   },
 
   // Optional: Drive folder where setUp() creates new spreadsheets.
