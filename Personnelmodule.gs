@@ -120,30 +120,32 @@ const PersonnelModule = (() => {
 
 
   /**
-   * Returns the full personnel roster: one entry per person who has any
+   * Returns the personnel roster: one entry per person who has any
    * personnel-namespace attribute loaded, folded to
-   *   { email, name, nameLastFirst, rank, step, series, tier,
-   *     updatedAt, updatedBy }
-   * and sorted by nameLastFirst. Names come from Auth; if a profile no
-   * longer exists for an attributed email (e.g. a user was removed), the
-   * email is used as the display name and a `noProfile` flag is set so the
-   * UI can show it. One sheet read for the whole roster — the client does
-   * all filtering/sorting/detail from this payload (no per-row calls).
+   *   { email, name, nameLastFirst, rank, step, series, tier, ...,
+   *     active, updatedAt, updatedBy }
+   * sorted by nameLastFirst.
    *
-   * Read-only; any authorized module user may view the roster.
+   * ACTIVE FILTERING: departed faculty are marked Active=FALSE in their
+   * platform profile (User Management). By default they are EXCLUDED — they
+   * should not appear in the roster, the anticipated Call, or any
+   * forward-looking view. Their attributes and review history are RETAINED
+   * (historical record), and `includeInactive` surfaces them when needed.
+   * A person whose profile no longer exists at all is flagged noProfile.
+   *
+   * @param {Object} payload - { includeInactive? }
    */
   function listRoster(payload, user, roles) {
+    const includeInactive = !!(payload && payload.includeInactive);
     const all = DataService.getAll(SHEET(), ATTR_TAB())
       .filter(r => String(r.Namespace) === NS());
 
-    // Group rows by email, folding key→value and tracking the latest update.
     const byEmail = {};
     all.forEach(r => {
       const email = _email(r.Email);
       if (!email) return;
       if (!byEmail[email]) byEmail[email] = { attrs: {}, updatedAt: null, updatedBy: '' };
       byEmail[email].attrs[String(r.Key)] = r.Value;
-      // Track the most recent UpdatedAt across this person's attribute rows.
       const ts = r.UpdatedAt || r.CreatedAt || null;
       if (ts && (!byEmail[email].updatedAt || ts > byEmail[email].updatedAt)) {
         byEmail[email].updatedAt = ts;
@@ -151,15 +153,23 @@ const PersonnelModule = (() => {
       }
     });
 
-    const roster = Object.keys(byEmail).map(email => {
+    const roster = [];
+    let inactiveCount = 0;
+    Object.keys(byEmail).forEach(email => {
       const a = byEmail[email].attrs;
       const profile = Auth.getProfile(email);
       const noProfile = !profile;
-      return {
+      // Auth returns active as a boolean (Active !== 'FALSE'). No profile at
+      // all is treated as inactive for filtering purposes.
+      const active = profile ? profile.active !== false : false;
+      if (!active) inactiveCount++;
+      if (!active && !includeInactive) return;
+      roster.push({
         email:         email,
         name:          profile ? (profile.name || (profile.firstName + ' ' + profile.lastName)) : email,
         nameLastFirst: profile ? (profile.nameLastFirst || '') : email,
         noProfile:     noProfile,
+        active:        active,
         rank:          a.rank   || '',
         step:          a.step   || '',
         series:        a.series || '',
@@ -169,13 +179,13 @@ const PersonnelModule = (() => {
         salary:        a.salary   || '',
         updatedAt:     byEmail[email].updatedAt ? _isoDate(byEmail[email].updatedAt) : '',
         updatedBy:     byEmail[email].updatedBy || '',
-      };
+      });
     });
 
     roster.sort((x, y) =>
       String(x.nameLastFirst || x.email).localeCompare(String(y.nameLastFirst || y.email)));
 
-    return { roster: roster, count: roster.length };
+    return { roster: roster, count: roster.length, inactiveCount: inactiveCount };
   }
 
 
@@ -773,7 +783,8 @@ const PersonnelModule = (() => {
    * kept whole.
    */
   function _rosterNameIndex() {
-    const roster = listRoster({}, null, ['super_admin']).roster;
+    // Active faculty only — a Call row should never match a departed person.
+    const roster = listRoster({ includeInactive: false }, null, ['super_admin']).roster;
     const byFull = {};
     const byLast = {};
     const norm = s => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
@@ -933,6 +944,7 @@ const PersonnelModule = (() => {
           isReappointment: !!it.isReappointment,
           isMandatory:     !!it.isMandatory,
           status:          it.status || 'open',
+          effectiveDate:   it.effectiveDate || '',
         }, user);
         out.caseId = res.caseId;
         (res.action === 'created' ? created : updated).push(out);
@@ -971,8 +983,11 @@ const PersonnelModule = (() => {
       Qtrs:            c.qtrs,
       IsReappointment: c.isReappointment ? 'TRUE' : 'FALSE',
       IsMandatory:     c.isMandatory ? 'TRUE' : 'FALSE',
+      IsElected:       c.isElected ? 'TRUE' : 'FALSE',
       Status:          c.status,
+      EffectiveDate:   c.effectiveDate || '',
     };
+    if (c.notes !== undefined) fields.Notes = c.notes || '';
 
     if (existing.length) {
       const id = existing[0].CaseID;
@@ -1015,7 +1030,10 @@ const PersonnelModule = (() => {
         qtrs:          r.Qtrs,
         isReappointment: String(r.IsReappointment).toUpperCase() === 'TRUE',
         isMandatory:     String(r.IsMandatory).toUpperCase() === 'TRUE',
+        isElected:       String(r.IsElected).toUpperCase() === 'TRUE',
+        notes:         r.Notes || '',
         status:        r.Status || 'open',
+        effectiveDate: _histDate(r.EffectiveDate) || String(r.EffectiveDate || ''),
         updatedAt:     r.UpdatedAt ? _isoDate(r.UpdatedAt) : '',
         updatedBy:     r.UpdatedBy || '',
       };
@@ -1056,9 +1074,1317 @@ const PersonnelModule = (() => {
       fields.IsReappointment = _isAssistantRank(p.subjectRank) ? 'TRUE' : 'FALSE';
     }
     if (p.step !== undefined) fields.Step = p.step;
+    if (p.effectiveDate !== undefined) fields.EffectiveDate = String(p.effectiveDate || '').trim();
 
     DataService.update(SHEET(), CASES_TAB(), 'CaseID', id, fields);
+
+    // When a case becomes 'completed', append it to the candidate's review
+    // history (so the ledger self-maintains). Only on the transition INTO
+    // completed, and only if it wasn't already completed, so re-saving a
+    // completed case doesn't re-fire. _appendReviewForCase is idempotent
+    // per CaseID as a second guard.
+    if (fields.Status === 'completed' && String(existing[0].Status) !== 'completed') {
+      const merged = Object.assign({}, existing[0], fields);
+      try { _appendReviewForCase(merged); }
+      catch (err) { Logger.log('Review-history append failed for case ' + id + ': ' + err); }
+    }
+
     return { caseId: id, updated: Object.keys(fields) };
+  }
+
+
+  // ============================================================
+  // Phase 3 — Workflow scheduler (deadlines from the Call cycle)
+  // ============================================================
+  // Computes a case's internal review deadlines by working BACKWARD from
+  // the division submission deadline (reserving the mandatory 10-business-
+  // day candidate review, the final voted letter, the vote, deliberation,
+  // and drafts) and — for promotions — FORWARD from the external-letters-
+  // due date (a second 10-business-day candidate review of the letters
+  // before deliberation), flagging infeasible squeezes where they meet.
+  //
+  // Dates from the Calendar module come via CalendarService (the Auth
+  // pattern — a server-side platform read, NOT dispatch). Personnel stores
+  // chosen DeadlineIDs and reads by immutable id at compute time; closures
+  // are read for the span and the business-day math (weekend-skipping) is
+  // done here. All dates are 'yyyy-MM-dd' strings.
+
+  function CYCLES_TAB()   { return CONFIG.TABS.CYCLES; }
+  function SETTINGS_TAB() { return CONFIG.TABS.PERSONNEL_SETTINGS; }
+
+  /** The gap parameter names, in the order the Settings UI presents them. */
+  const GAP_KEYS = ['candidateReviewDays', 'letterToReviewGap', 'voteToLetterGap',
+                    'deliberateToVoteGap', 'draftsToDeliberateGap', 'lateLetterBufferDays'];
+
+  /**
+   * Scheduler gap parameters: the CONFIG defaults, overlaid with any values
+   * saved in the Settings tab. A missing or unparseable saved value falls back
+   * to the default, so an empty Settings tab behaves exactly as before and a
+   * bad edit can't produce a nonsense schedule.
+   */
+  function SCHEDULE_GAPS() {
+    const defaults = (CONFIG.PERSONNEL && CONFIG.PERSONNEL.SCHEDULE_GAPS) || {
+      candidateReviewDays: 10, letterToReviewGap: 0, voteToLetterGap: 3,
+      deliberateToVoteGap: 5, draftsToDeliberateGap: 3, lateLetterBufferDays: 5,
+    };
+    const gaps = Object.assign({}, defaults);
+    try {
+      DataService.getAll(SHEET(), SETTINGS_TAB()).forEach(r => {
+        const k = String(r.Key || '').trim();
+        if (GAP_KEYS.indexOf(k) === -1) return;
+        const n = Number(r.Value);
+        if (isFinite(n) && n >= 0) gaps[k] = Math.floor(n);
+      });
+    } catch (err) {
+      Logger.log('SCHEDULE_GAPS: settings read failed, using defaults: ' + err);
+    }
+    return gaps;
+  }
+
+  // ── Date helpers (string <-> Date at UTC noon) ─────────────
+  function _schParseISO(iso) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || '').trim());
+    if (!m) return null;
+    return new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], 12, 0, 0));
+  }
+  function _schFormatISO(d) {
+    if (!(d instanceof Date) || isNaN(d.getTime())) return '';
+    return d.getUTCFullYear() + '-'
+      + String(d.getUTCMonth() + 1).padStart(2, '0') + '-'
+      + String(d.getUTCDate()).padStart(2, '0');
+  }
+  function _schAddDays(iso, n) {
+    const d = _schParseISO(iso);
+    if (!d) return '';
+    d.setUTCDate(d.getUTCDate() + n);
+    return _schFormatISO(d);
+  }
+  function _schIsWeekend(iso) {
+    const d = _schParseISO(iso);
+    if (!d) return false;
+    const w = d.getUTCDay();
+    return w === 0 || w === 6;
+  }
+  function _schClosureSet(closures) {
+    const set = {};
+    (closures || []).forEach(c => { const s = String(c || '').trim(); if (s) set[s] = true; });
+    return set;
+  }
+  function _schIsBusinessDay(iso, lookup) {
+    if (!iso) return false;
+    if (_schIsWeekend(iso)) return false;
+    if (lookup && lookup[iso]) return false;
+    return true;
+  }
+
+  /**
+   * Step n business days from a start date (start never counted; move then
+   * test). n positive; dir +1 forward / -1 backward. Skips weekends + the
+   * closure list. Returns 'yyyy-MM-dd'.
+   */
+  function _schAddBusinessDays(startISO, n, closures, dir) {
+    const step = dir < 0 ? -1 : 1;
+    const lookup = _schClosureSet(closures);
+    let count = 0, cur = startISO, guard = 0;
+    while (count < n) {
+      cur = _schAddDays(cur, step);
+      if (_schIsBusinessDay(cur, lookup)) count++;
+      if (++guard > 4000) throw new Error('addBusinessDays runaway (check dates).');
+    }
+    return cur;
+  }
+
+  /** Business days strictly between two ISO dates (exclusive both ends). */
+  function _schBusinessDaysBetween(aISO, bISO, closures) {
+    if (!aISO || !bISO) return 0;
+    let lo = aISO, hi = bISO;
+    if (_schParseISO(lo).getTime() > _schParseISO(hi).getTime()) { const t = lo; lo = hi; hi = t; }
+    const lookup = _schClosureSet(closures);
+    let count = 0, cur = _schAddDays(lo, 1), guard = 0;
+    while (_schParseISO(cur).getTime() < _schParseISO(hi).getTime()) {
+      if (_schIsBusinessDay(cur, lookup)) count++;
+      cur = _schAddDays(cur, 1);
+      if (++guard > 4000) throw new Error('businessDaysBetween runaway.');
+    }
+    return count;
+  }
+
+  // ── Calendar reads (CalendarService — the Auth pattern) ────
+  // Thin wrappers so the calendar contract is touched in exactly one place;
+  // if CalendarService's shape ever changes, only these adjust.
+
+  /**
+   * Resolve a stored anchor DeadlineID to { date, title, status, found }.
+   * status 'removed' means the anchor vanished upstream — caller flags
+   * rather than computing on a ghost. Missing/blank id -> found:false.
+   */
+  function _calendarDeadline(deadlineId) {
+    const id = String(deadlineId || '').trim();
+    if (!id) return { found: false, date: '', title: '', status: 'missing' };
+    try {
+      const d = CalendarService.getDeadlineById(id);
+      if (!d) return { found: false, date: '', title: '', status: 'missing' };
+      return { found: true, date: d.date || '', title: d.title || '', status: d.status || 'active' };
+    } catch (err) {
+      return { found: false, date: '', title: '', status: 'error', error: String(err) };
+    }
+  }
+
+  /** Closures (non-working days) in [fromISO, toISO] as 'yyyy-MM-dd' strings. */
+  function _calendarClosures(fromISO, toISO) {
+    try {
+      return CalendarService.listClosures(fromISO, toISO) || [];
+    } catch (err) {
+      return [];
+    }
+  }
+
+  // ── Schedule computation ───────────────────────────────────
+
+  function _computeBackward(submissionISO, closures, g) {
+    const lateReviewStart = _schAddBusinessDays(submissionISO, g.candidateReviewDays, closures, -1);
+    const lateReviewEnd   = _schAddBusinessDays(submissionISO, 1, closures, -1);
+    const letterFinal = g.letterToReviewGap > 0
+      ? _schAddBusinessDays(lateReviewStart, g.letterToReviewGap, closures, -1)
+      : lateReviewStart;
+    const vote         = _schAddBusinessDays(letterFinal, g.voteToLetterGap, closures, -1);
+    const deliberateBy = _schAddBusinessDays(vote, g.deliberateToVoteGap, closures, -1);
+    const draftsDue    = _schAddBusinessDays(deliberateBy, g.draftsToDeliberateGap, closures, -1);
+    return { submission: submissionISO, lateReviewStart, lateReviewEnd,
+             letterFinal, vote, deliberateBy, draftsDue };
+  }
+
+  function _computeForward(lettersDueISO, actualAddedISO, closures, g) {
+    const useActual = !!actualAddedISO;
+    const from   = useActual ? actualAddedISO : lettersDueISO;
+    const buffer = useActual ? 0 : g.lateLetterBufferDays;
+    const reviewStart = buffer > 0
+      ? _schAddBusinessDays(from, buffer, closures, +1)
+      : _schAddBusinessDays(from, 1, closures, +1);
+    const reviewEnd = _schAddBusinessDays(reviewStart, g.candidateReviewDays, closures, +1);
+    const earliestDeliberate = _schAddBusinessDays(reviewEnd, 1, closures, +1);
+    return { basis: useActual ? 'actual' : 'planned', lettersDue: lettersDueISO,
+             lettersAdded: actualAddedISO || '',
+             earlyReviewStart: reviewStart, earlyReviewEnd: reviewEnd,
+             earliestDeliberate };
+  }
+
+  /**
+   * Compute a case's full schedule from resolved anchor dates.
+   * @param {Object} c - { isPromotion, submissionISO, lettersDueISO?,
+   *                        actualLettersAddedISO? }
+   * @param {string[]} closures
+   * @returns { backward, forward|null, feasible, warnings[] }
+   */
+  function _computeSchedule(c, closures) {
+    const g = SCHEDULE_GAPS();
+    const backward = _computeBackward(c.submissionISO, closures, g);
+    const out = { backward: backward, forward: null, feasible: true, warnings: [] };
+    if (c.isPromotion && c.lettersDueISO) {
+      const forward = _computeForward(c.lettersDueISO, c.actualLettersAddedISO, closures, g);
+      out.forward = forward;
+      const earliest = _schParseISO(forward.earliestDeliberate).getTime();
+      const mustBy   = _schParseISO(backward.deliberateBy).getTime();
+      if (earliest > mustBy) {
+        out.feasible = false;
+        const short = _schBusinessDaysBetween(backward.deliberateBy, forward.earliestDeliberate, closures);
+        out.warnings.push('Infeasible: the early candidate review of external letters can\'t '
+          + 'finish in time. Earliest deliberation start (' + forward.earliestDeliberate + ') is '
+          + 'after the latest it must be underway (' + backward.deliberateBy + ') to meet the '
+          + 'division deadline — short by about ' + short + ' business day(s). '
+          + (forward.basis === 'planned'
+              ? 'Assumes letters arrive on time with the configured buffer; late letters worsen it.'
+              : 'Based on the recorded letter-arrival date.'));
+      }
+    }
+    return out;
+  }
+
+  // ── Dispatchable scheduler actions ─────────────────────────
+
+  /**
+   * Find candidate anchor deadlines for the picker (division submission,
+   * external letters due). Thin pass-through to CalendarService.findDeadlines
+   * so the personnel UI can search without knowing the calendar's internals.
+   * @param {Object} payload - { titleContains?, sourceKey?, origin?, kind?, from?, to? }
+   */
+  function findCalendarDeadlines(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const p = payload || {};
+    try {
+      return { deadlines: CalendarService.findDeadlines({
+        titleContains: p.titleContains || '', sourceKey: p.sourceKey || '',
+        origin: p.origin || '', kind: p.kind || 'deadline',
+        from: p.from || '', to: p.to || '',
+      }) || [] };
+    } catch (err) {
+      throw new Error('Calendar lookup failed: ' + err);
+    }
+  }
+
+  /**
+   * Compute a schedule from supplied anchor DeadlineIDs. (Per-cycle storage
+   * of these IDs is the next slice; for now they're passed in so the whole
+   * computation is testable end-to-end.) Resolves anchors via CalendarService,
+   * reads closures over the spanning window, computes, and reports any
+   * vanished-anchor or infeasibility warnings.
+   *
+   * @param {Object} payload - {
+   *     isPromotion, submissionDeadlineId, lettersDueDeadlineId?,
+   *     actualLettersAddedDate?   ('yyyy-MM-dd')
+   *   }
+   * @returns { resolved:{...}, schedule:{...}|null, warnings[] }
+   */
+  function computeCaseSchedule(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const p = payload || {};
+    const warnings = [];
+
+    const sub = _calendarDeadline(p.submissionDeadlineId);
+    if (!sub.found) return { schedule: null, resolved: { submission: sub },
+      warnings: ['No division submission deadline is set (or it could not be read).'] };
+    if (sub.status === 'removed') warnings.push('The division submission deadline was removed upstream in the calendar — the date shown may be stale.');
+    if (!sub.date) return { schedule: null, resolved: { submission: sub },
+      warnings: ['The division submission deadline has no date.'] };
+
+    let letters = { found: false, date: '', status: 'missing' };
+    if (p.isPromotion) {
+      letters = _calendarDeadline(p.lettersDueDeadlineId);
+      if (!letters.found) warnings.push('This is a promotion but no external-letters-due deadline is set — the early candidate-review window can\'t be planned.');
+      else if (letters.status === 'removed') warnings.push('The external-letters-due deadline was removed upstream — the date shown may be stale.');
+    }
+
+    // Closure window: from a bit before the earliest plausible start to the
+    // submission deadline. Letters-due (promotions) can precede submission by
+    // months, so span from min(anchors) minus a pad, to submission plus a pad.
+    const anchorsMin = (p.isPromotion && letters.date)
+      ? (_schParseISO(letters.date) < _schParseISO(sub.date) ? letters.date : sub.date)
+      : sub.date;
+    const from = _schAddDays(anchorsMin, -30);
+    const to   = _schAddDays(sub.date, 5);
+    const closures = _calendarClosures(from, to);
+
+    const schedule = _computeSchedule({
+      isPromotion: !!p.isPromotion,
+      submissionISO: sub.date,
+      lettersDueISO: (p.isPromotion && letters.date) ? letters.date : '',
+      actualLettersAddedISO: p.actualLettersAddedDate || '',
+    }, closures);
+
+    schedule.warnings = warnings.concat(schedule.warnings || []);
+    return { schedule: schedule, resolved: { submission: sub, letters: letters, closureCount: closures.length } };
+  }
+
+
+  // ============================================================
+  // Phase 4 — Review history (the APO action-ledger backfill)
+  // ============================================================
+  // A per-person ledger of completed reviews. Seeded once from the APO
+  // action-history report (review-coded rows, matched to the roster by
+  // CruzID) and appended to when a case is marked Completed. The
+  // mandatory-review 5-year clock and the anticipation view read the most
+  // recent entry. Rows without a CruzID or not matching a loaded profile
+  // are ignored (they aren't current faculty).
+
+  function HISTORY_TAB() { return CONFIG.TABS.REVIEW_HISTORY; }
+  function REVIEW_CODES() {
+    return (CONFIG.PERSONNEL && CONFIG.PERSONNEL.REVIEW_ACTION_CODES)
+      || ['IAP', 'MI', 'PR', 'SI', 'REMI', 'RESI', 'MD', 'MA'];
+  }
+  function TYPE_TO_CODE() {
+    return (CONFIG.PERSONNEL && CONFIG.PERSONNEL.REVIEW_TYPE_TO_CODE)
+      || { merit: 'MI', salary_increase_only: 'SI', promotion: 'PR', midcareer: 'MD' };
+  }
+
+  /** Normalize a date cell to 'yyyy-MM-dd', or '' if unparseable/blank. */
+  function _histDate(v) {
+    if (!v) return '';
+    if (v instanceof Date && !isNaN(v.getTime())) {
+      return Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+    }
+    const s = String(v).trim();
+    let m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+    if (m) return m[1] + '-' + m[2] + '-' + m[3];
+    m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(s);   // M/D/YYYY
+    if (m) return m[3] + '-' + String(m[1]).padStart(2, '0') + '-' + String(m[2]).padStart(2, '0');
+    return '';
+  }
+
+  /**
+   * Detect columns in the APO action-ledger report and auto-map them.
+   * Columns: First Name, Last Name, Cruzid, Academic Year, Appointment
+   * Title, Step, Yrs Rank, Yrs Step, Salary, Amount Off Scale, Effective
+   * Date, Action Code.
+   * @param {Object} p - { csv }
+   */
+  function detectHistoryColumns(p, user, roles) {
+    _requireSuperAdmin(roles);
+    const parsed = _parseCsv((p && p.csv) || '');
+    if (!parsed.rows.length) throw new Error('No data rows found in the file.');
+    const hints = {
+      cruzid: ['cruzid', 'cruz id', 'email'],
+      first:  ['first name', 'firstname', 'first'],
+      last:   ['last name', 'lastname', 'last'],
+      date:   ['effective date', 'date', 'effective'],
+      code:   ['action code', 'action', 'code'],
+      title:  ['appointment title', 'working title', 'title'],
+      step:   ['step'],
+      year:   ['academic year', 'year'],
+    };
+    const mapping = {};
+    Object.keys(hints).forEach(f => { mapping[f] = _guessHeader(parsed.headers, hints[f]); });
+    return { headers: parsed.headers, mapping: mapping, rowCount: parsed.rows.length };
+  }
+
+  /**
+   * Preview the review-history import: parse the ledger, keep review-coded
+   * rows with a date and a roster-matched CruzID, group by person, and
+   * report what would be written. Writes nothing.
+   * @param {Object} payload - { csv, mapping }
+   */
+  function previewHistoryImport(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const p = payload || {};
+    const rows = _parseCsv(p.csv || '').rows;
+    const mapping = p.mapping || {};
+    const codes = REVIEW_CODES();
+    const cell = (row, h) => {
+      if (!h) return '';
+      const k = String(h).trim().toLowerCase();
+      return row.hasOwnProperty(k) ? String(row[k] || '').trim() : '';
+    };
+
+    let totalRows = 0, reviewRows = 0, noCode = 0, noDate = 0, noCruzid = 0, noProfile = 0;
+    const byPerson = {};   // email -> [{date, code, title, step, year}]
+    rows.forEach(row => {
+      totalRows++;
+      const code = cell(row, mapping.code).toUpperCase();
+      if (codes.indexOf(code) === -1) { noCode++; return; }
+      reviewRows++;
+      const date = _histDate(cell(row, mapping.date));
+      if (!date) { noDate++; return; }
+      const cruzidRaw = cell(row, mapping.cruzid);
+      if (!cruzidRaw) { noCruzid++; return; }
+      const email = _cruzidToEmail(cruzidRaw);
+      const profile = Auth.getProfile(email);
+      if (!profile) { noProfile++; return; }
+      (byPerson[email] = byPerson[email] || []).push({
+        date: date, code: code,
+        title: cell(row, mapping.title), step: cell(row, mapping.step),
+        year: cell(row, mapping.year),
+      });
+    });
+
+    const people = Object.keys(byPerson).map(email => {
+      const recs = byPerson[email].sort((a, b) => a.date.localeCompare(b.date));
+      const profile = Auth.getProfile(email);
+      const latest = recs[recs.length - 1];
+      return {
+        email: email,
+        name: profile ? (profile.nameLastFirst || profile.name) : email,
+        reviewCount: recs.length,
+        mostRecent: latest ? (latest.date + ' ' + latest.code) : '',
+      };
+    }).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+
+    return {
+      summary: {
+        totalRows: totalRows, reviewRows: reviewRows,
+        skippedNoDate: noDate, skippedNoCruzid: noCruzid, skippedNoProfile: noProfile,
+        matchedPeople: people.length,
+      },
+      people: people,
+    };
+  }
+
+  /**
+   * Commit the review-history import. Replaces each matched person's
+   * IMPORTED history (Source='imported') with the ledger's review rows —
+   * so re-running is idempotent (a re-import refreshes, never duplicates).
+   * Case-sourced entries (Source='case') are left untouched. super_admin only.
+   * @param {Object} payload - { csv, mapping }
+   */
+  function commitHistoryImport(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const p = payload || {};
+    const rows = _parseCsv(p.csv || '').rows;
+    const mapping = p.mapping || {};
+    const codes = REVIEW_CODES();
+    const cell = (row, h) => {
+      if (!h) return '';
+      const k = String(h).trim().toLowerCase();
+      return row.hasOwnProperty(k) ? String(row[k] || '').trim() : '';
+    };
+
+    // Gather review rows per matched person.
+    const byPerson = {};
+    rows.forEach(row => {
+      const code = cell(row, mapping.code).toUpperCase();
+      if (codes.indexOf(code) === -1) return;
+      const date = _histDate(cell(row, mapping.date));
+      if (!date) return;
+      const cruzidRaw = cell(row, mapping.cruzid);
+      if (!cruzidRaw) return;
+      const email = _cruzidToEmail(cruzidRaw);
+      if (!Auth.getProfile(email)) return;
+      (byPerson[email] = byPerson[email] || []).push({
+        date: date, code: code,
+        title: cell(row, mapping.title), step: cell(row, mapping.step),
+        year: cell(row, mapping.year),
+      });
+    });
+
+    // Remove existing imported rows for these people (idempotent refresh),
+    // keeping case-sourced entries.
+    const existing = DataService.getAll(SHEET(), HISTORY_TAB());
+    existing.forEach(r => {
+      const email = _email(r.PersonEmail);
+      if (byPerson[email] && String(r.Source) === 'imported') {
+        DataService.remove(SHEET(), HISTORY_TAB(), 'ReviewID', r.ReviewID);
+      }
+    });
+
+    let written = 0;
+    Object.keys(byPerson).forEach(email => {
+      byPerson[email].forEach(rec => {
+        DataService.insert(SHEET(), HISTORY_TAB(), {
+          ReviewID:     DataService.generateId('REV'),
+          PersonEmail:  email,
+          ReviewDate:   rec.date,
+          ReviewCode:   rec.code,
+          TitleAtTime:  rec.title,
+          StepAtTime:   rec.step,
+          AcademicYear: rec.year,
+          Source:       'imported',
+          CaseID:       '',
+        });
+        written++;
+      });
+    });
+
+    return { summary: { people: Object.keys(byPerson).length, rowsWritten: written } };
+  }
+
+  /**
+   * A person's review history, most-recent first, with the derived
+   * most-recent-review date (drives the mandatory-review clock).
+   * @param {Object} payload - { email }
+   */
+  function getReviewHistory(payload, user, roles) {
+    const email = _email((payload || {}).email);
+    if (!email) throw new Error('email is required.');
+    const rows = DataService.query(SHEET(), HISTORY_TAB(), 'PersonEmail', email)
+      .map(r => ({
+        reviewId: r.ReviewID, date: _histDate(r.ReviewDate) || String(r.ReviewDate || ''),
+        code: r.ReviewCode, title: r.TitleAtTime, step: r.StepAtTime,
+        year: r.AcademicYear, source: r.Source, caseId: r.CaseID || '',
+      }))
+      .sort((a, b) => String(b.date).localeCompare(String(a.date)));
+    return {
+      email: email,
+      history: rows,
+      mostRecentDate: rows.length ? rows[0].date : '',
+      mostRecentCode: rows.length ? rows[0].code : '',
+    };
+  }
+
+  /**
+   * Append a review-history entry for a completed case. Called when a case
+   * moves to 'completed'. Idempotent per case: an existing case-sourced
+   * entry for this CaseID is updated rather than duplicated.
+   */
+  function _appendReviewForCase(caseRow) {
+    const email = _email(caseRow.CandidateEmail);
+    if (!email) return;
+    const code = TYPE_TO_CODE()[String(caseRow.ReviewType)] || '';
+    // Effective date: use today as the completion date (no separate
+    // effective-date field on the case yet; can be refined later).
+    const date = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+    const existing = DataService.query(SHEET(), HISTORY_TAB(), 'CaseID', caseRow.CaseID)
+      .filter(r => String(r.Source) === 'case');
+    const fields = {
+      PersonEmail: email, ReviewDate: date, ReviewCode: code,
+      TitleAtTime: caseRow.SubjectRank || '', StepAtTime: caseRow.Step || '',
+      AcademicYear: caseRow.AcademicYear || '', Source: 'case', CaseID: caseRow.CaseID,
+    };
+    if (existing.length) {
+      DataService.update(SHEET(), HISTORY_TAB(), 'ReviewID', existing[0].ReviewID, fields);
+    } else {
+      DataService.insert(SHEET(), HISTORY_TAB(), Object.assign({ ReviewID: DataService.generateId('REV') }, fields));
+    }
+  }
+
+
+  // ============================================================
+  // Phase 5 — Anticipated-Call view (pre-Call eligibility)
+  // ============================================================
+  // Reads the roster (rank/step/years) + each person's most-recent review
+  // (for the mandatory 5-year clock) and computes what each ladder-rank
+  // faculty member is anticipated for on the upcoming Call: merit,
+  // promotion (highlighted — the external-letter cases), indefinite-step
+  // (Prof 5+), and mandatory review. Pure read; used before the Call
+  // arrives to line up external-letter writers.
+
+  // Normative time at step, by rank family. The standard qualifying service
+  // required before a faculty member is listed on the Call. Gates BOTH merit
+  // and promotion — a barrier step alone is not sufficient.
+  //   Assistant / Assistant Teaching: 2 yrs at Steps 1-5
+  //   Associate / Associate Teaching: 2 yrs at Steps 1-3; 3 yrs at Step 4
+  //   Professor / Teaching Professor: 3 yrs at Steps 1-8; 4 yrs at Step 9/AS
+  const NORMATIVE_TIME = {
+    assistant: { 1: 2, 2: 2, 3: 2, 4: 2, 5: 2 },
+    associate: { 1: 2, 2: 2, 3: 2, 4: 3 },
+    professor: { 1: 3, 2: 3, 3: 3, 4: 3, 5: 3, 6: 3, 7: 3, 8: 3, 9: 4 },
+  };
+
+  // Codes constituting a POSITIVE ADVANCEMENT — these RESET the eligibility
+  // clock (any salary increase counts, even if rank/step advancement was
+  // denied). NON_RESETTING_CODES are reviews that do NOT reset the clock:
+  // retention actions and denials. Populate the latter once those codes are
+  // known; until then every review is treated as resetting, which slightly
+  // over-resets for retention/denial cases.
+  function ADVANCEMENT_CODES() {
+    return (CONFIG.PERSONNEL && CONFIG.PERSONNEL.ADVANCEMENT_CODES)
+      || ['IAP', 'MI', 'PR', 'SI', 'REMI', 'RESI', 'MD', 'MA'];
+  }
+  function NON_RESETTING_CODES() {
+    return (CONFIG.PERSONNEL && CONFIG.PERSONNEL.NON_RESETTING_CODES) || [];
+  }
+
+  function _num(v) { const n = Number(v); return isFinite(n) ? n : null; }
+
+  /** Map a working title to a rank family for the normative table. */
+  function _rankFamily(rank) {
+    const r = String(rank || '').trim().toLowerCase();
+    if (/^assistant (professor|teaching professor)$/.test(r)) return 'assistant';
+    if (/^associate (professor|teaching professor)$/.test(r)) return 'associate';
+    if (/^(professor|teaching professor)$/.test(r)) return 'professor';
+    return null;   // lecturer & everything else: not on this ladder
+  }
+
+  function _normativeYears(family, step) {
+    const t = NORMATIVE_TIME[family];
+    if (!t || step == null) return null;
+    const n = t[step];
+    return n == null ? null : n;
+  }
+
+  /** Indefinite steps: Professor Step 5 and above (incl. Above-Scale). */
+  function _isIndefiniteStep(family, step) {
+    return family === 'professor' && step != null && step >= 5;
+  }
+
+  function _parseISO(s) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(s || '').trim());
+    return m ? Date.UTC(+m[1], +m[2] - 1, +m[3]) : null;
+  }
+  function _yearsBetween(a, b) {
+    const x = _parseISO(a), y = _parseISO(b);
+    if (x == null || y == null) return null;
+    return (y - x) / (365.25 * 24 * 3600 * 1000);
+  }
+
+  /**
+   * The last CLOCK-RESETTING advancement in a person's review history.
+   * Retention actions and denials (NON_RESETTING_CODES) are skipped —
+   * they do not reset the eligibility clock.
+   * @param {Array} history - [{ date:'yyyy-MM-dd', code }]
+   */
+  function _lastAdvancement(history) {
+    const adv = ADVANCEMENT_CODES(), non = NON_RESETTING_CODES();
+    const eligible = (history || []).filter(h =>
+      h.date &&
+      adv.indexOf(String(h.code || '').toUpperCase()) !== -1 &&
+      non.indexOf(String(h.code || '').toUpperCase()) === -1);
+    if (!eligible.length) return null;
+    return eligible.reduce((a, b) => (a.date >= b.date ? a : b));
+  }
+
+  /**
+   * Service at step, in years, measured from the last advancement's
+   * EFFECTIVE DATE to the PROSPECTIVE advancement's effective date.
+   *
+   * This is the rule: the service cutoff is the year the next advancement
+   * would take effect. E.g. last advancement effective 7/1/25, next
+   * effective 7/1/27 → 2 years of service by then. Computed from the review
+   * history, NOT from the roster's years-at-step snapshot (which is stale
+   * relative to the prospective cycle).
+   */
+  function _serviceAtStep(history, prospectiveISO) {
+    const last = _lastAdvancement(history);
+    if (!last) return { years: null, from: '', code: '' };
+    const y = _yearsBetween(last.date, prospectiveISO);
+    return { years: y == null ? null : Math.round(y), from: last.date, code: last.code };
+  }
+
+  /**
+   * Compute anticipated review eligibility for one person.
+   *
+   * NORMATIVE TIME gates BOTH merit and promotion — a barrier step alone is
+   * not enough; the interval must be served. Service is computed from the
+   * review history to the prospective effective date. At INDEFINITE steps
+   * (Prof 5+) a served interval means the faculty member MAY ELECT review;
+   * they are only automatically called at the 5-year mandatory. MANDATORY
+   * review fires at 5 years without any review and cannot be deferred.
+   *
+   * IN-PROGRESS ACTIONS: a case with status 'in_progress' represents an action
+   * that is not yet final (often: the department has finished its part and the
+   * file has gone forward) but that carries an anticipated EFFECTIVE DATE. That
+   * date is a PENDING clock reset. We compute AS IF the action completes —
+   * using its effective date as the last advancement — and FLAG the person, so
+   * an in-flight action cannot silently distort next cycle's planning. If the
+   * action ultimately fails, the person's eligibility reverts to the completed
+   * history, which the flag warns about.
+   *
+   * APPROXIMATE (pending data): the Assistant tenure trigger is really 19
+   * QUARTERS of service (mid-career at 10; cap 24) — not modeled.
+   *
+   * @param {Object} p - { rank, step, history:[{date,code}],
+   *                       pendingAction?: { effectiveDate, reviewType, caseId } }
+   * @param {string} prospectiveISO - effective date of the next advancement
+   */
+  function _computeEligibility(p, prospectiveISO) {
+    const rank = String(p.rank || '').trim();
+    const step = _num(p.step);
+    const family = _rankFamily(rank);
+
+    const out = { rank: rank, step: step, family: family,
+      merit: false, mayElect: false, promotion: false, mandatory: false,
+      indefiniteStep: false, normativeYears: null, serviceYears: null,
+      normativeMet: false, anticipated: false, lastAdvancement: '',
+      pendingAction: null, approximate: [], reasons: [] };
+    if (!family) return out;
+
+    out.indefiniteStep = _isIndefiniteStep(family, step);
+    const need = _normativeYears(family, step);
+    out.normativeYears = need;
+
+    // An in-progress action's effective date is a PENDING clock reset: treat
+    // it as the last advancement (computing as if it completes) and flag it.
+    const pending = p.pendingAction || null;
+    let svc;
+    if (pending && pending.effectiveDate) {
+      const y = _yearsBetween(pending.effectiveDate, prospectiveISO);
+      svc = { years: y == null ? null : Math.round(y),
+              from: pending.effectiveDate, code: 'in progress' };
+      out.pendingAction = {
+        effectiveDate: pending.effectiveDate,
+        reviewType: pending.reviewType || '',
+        caseId: pending.caseId || '',
+      };
+      out.reasons.push('Action IN PROGRESS, effective ' + pending.effectiveDate +
+        (pending.reviewType ? ' (' + pending.reviewType + ')' : '') +
+        ' — computed as if it completes; eligibility changes if it does not.');
+    } else {
+      svc = _serviceAtStep(p.history, prospectiveISO);
+    }
+
+    out.serviceYears = svc.years;
+    out.lastAdvancement = svc.from ? (svc.from + ' (' + svc.code + ')') : '';
+
+    if (svc.years == null) {
+      out.approximate.push('No advancement on record — service at step cannot be computed.');
+      return out;
+    }
+
+    // ── Normative time: gates BOTH merit and promotion ──
+    if (need != null) {
+      out.normativeMet = svc.years >= need;
+      if (!out.normativeMet) {
+        out.reasons.push(rank + ' Step ' + step + ': ' + svc.years + '/' + need +
+          ' yrs of service by ' + prospectiveISO + ' — normative time not yet met');
+      }
+    }
+
+    if (out.normativeMet) {
+      if (out.indefiniteStep) {
+        out.mayElect = true;
+        out.reasons.push(rank + ' Step ' + step + ': ' + svc.years + ' yrs served (normative ' +
+          need + ') — may elect review; auto-called only at the 5-yr mandatory');
+      } else {
+        out.merit = true;
+        out.reasons.push(rank + ' Step ' + step + ': ' + svc.years + ' yrs served (normative ' +
+          need + ') → on Call for merit');
+      }
+
+      // ── Promotion: barrier/threshold step AND normative time served ──
+      if (family === 'assistant') {
+        if (step === 5) {
+          out.promotion = true;
+          out.reasons.push('Assistant Step 5 (barrier) with normative time served → promotion-eligible');
+        } else if (step === 4) {
+          out.promotion = true;
+          out.reasons.push('Assistant Step 4 with normative time served → promotion-eligible');
+        }
+      } else if (family === 'associate') {
+        if (step === 4) {
+          out.promotion = true;
+          out.reasons.push('Associate Step 4 (barrier) with normative time served → promotion-eligible');
+        } else if (step === 3) {
+          out.promotion = true;
+          out.reasons.push('Associate Step 3 with normative time served → promotion-eligible');
+        }
+      }
+    }
+
+    // ── Mandatory review (5 yrs without ANY review) ──
+    const anyReview = (p.history || []).filter(h => h.date)
+      .reduce((a, b) => (!a || b.date > a.date ? b : a), null);
+    if (anyReview) {
+      const ys = _yearsBetween(anyReview.date, prospectiveISO);
+      if (ys != null && ys >= 5) {
+        out.mandatory = true;
+        out.reasons.push('~' + ys.toFixed(1) + ' yrs since last review → MANDATORY review (cannot be deferred)');
+      }
+    }
+
+    // A person with a pending action is always LISTED (flagged), even if the
+    // pending reset means they are not otherwise anticipated — you need to see
+    // that an in-flight action is the reason they're absent from the Call.
+    out.anticipated = out.merit || out.promotion || out.mandatory || out.mayElect
+      || !!out.pendingAction;
+    return out;
+  }
+
+  /**
+   * The anticipated-Call list: every ladder-rank ACTIVE faculty member with
+   * what they are anticipated for on the upcoming Call, promotion-eligible
+   * ones flagged (the external-letter cases). Service is computed from each
+   * person's review history to the PROSPECTIVE advancement effective date.
+   * @param {Object} payload - { prospectiveDate? ('yyyy-MM-dd') }
+   */
+  function listAnticipatedCandidates(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const p = payload || {};
+    const prospective = String(p.prospectiveDate || '').trim() || _upcomingJuly1();
+
+    // Full review history per person, one pass over the history tab.
+    const histByEmail = {};
+    DataService.getAll(SHEET(), HISTORY_TAB()).forEach(r => {
+      const email = _email(r.PersonEmail);
+      const d = _histDate(r.ReviewDate) || String(r.ReviewDate || '');
+      if (!email || !d) return;
+      (histByEmail[email] = histByEmail[email] || []).push({ date: d, code: String(r.ReviewCode || '').toUpperCase() });
+    });
+
+    // IN-PROGRESS cases: an action not yet final but carrying an anticipated
+    // effective date — a PENDING clock reset. Keyed by candidate; if somehow
+    // more than one, the latest effective date wins.
+    const pendingByEmail = {};
+    DataService.getAll(SHEET(), CASES_TAB()).forEach(r => {
+      if (String(r.Status) !== 'in_progress') return;
+      const email = _email(r.CandidateEmail);
+      const eff = _histDate(r.EffectiveDate) || String(r.EffectiveDate || '');
+      if (!email || !eff) return;
+      const cur = pendingByEmail[email];
+      if (!cur || eff > cur.effectiveDate) {
+        pendingByEmail[email] = { effectiveDate: eff, reviewType: r.ReviewType || '', caseId: r.CaseID };
+      }
+    });
+
+    // Active faculty only — departed people are never anticipated candidates.
+    const roster = listRoster({ includeInactive: false }, user, roles).roster;
+    const candidates = [];
+    roster.forEach(person => {
+      const history = histByEmail[person.email] || [];
+      const elig = _computeEligibility({
+        rank: person.rank, step: person.step, history: history,
+        pendingAction: pendingByEmail[person.email] || null,
+      }, prospective);
+      if (!elig.anticipated) return;
+      const types = [];
+      if (elig.promotion) types.push('promotion');
+      if (elig.merit) types.push('merit');
+      if (elig.mayElect) types.push('may elect');
+      if (elig.mandatory) types.push('mandatory');
+      candidates.push({
+        email: person.email, name: person.nameLastFirst || person.name,
+        rank: person.rank, step: person.step,
+        serviceYears: elig.serviceYears,
+        normativeYears: elig.normativeYears,
+        normativeMet: elig.normativeMet,
+        lastAdvancement: elig.lastAdvancement,
+        promotion: elig.promotion, merit: elig.merit,
+        mayElect: elig.mayElect, mandatory: elig.mandatory,
+        indefiniteStep: elig.indefiniteStep,
+        pendingAction: elig.pendingAction,
+        anticipatedFor: types.join(', ') || (elig.pendingAction ? 'pending action' : ''),
+        reasons: elig.reasons,
+        approximate: elig.approximate,
+      });
+    });
+
+    candidates.sort((a, b) => {
+      if (a.promotion !== b.promotion) return a.promotion ? -1 : 1;
+      return String(a.name).localeCompare(String(b.name));
+    });
+
+    return {
+      prospectiveDate: prospective,
+      candidates: candidates,
+      summary: {
+        total: candidates.length,
+        promotion: candidates.filter(c => c.promotion).length,
+        merit: candidates.filter(c => c.merit).length,
+        mayElect: candidates.filter(c => c.mayElect).length,
+        mandatory: candidates.filter(c => c.mandatory).length,
+        pending: candidates.filter(c => c.pendingAction).length,
+      },
+    };
+  }
+
+  // ============================================================
+  // Anticipated Call — exports
+  // ============================================================
+
+  /** The rows an export renders, shared by both formats. */
+  function _anticipatedExportRows(res) {
+    const header = ['Faculty', 'Rank', 'Step', 'Service (yrs)', 'Normative (yrs)',
+                    'Normative met', 'Anticipated for', 'Promotion-eligible',
+                    'Last advancement', 'Notes'];
+    const rows = (res.candidates || []).map(c => [
+      c.name || '',
+      c.rank || '',
+      c.step || '',
+      c.serviceYears == null ? '' : c.serviceYears,
+      c.normativeYears == null ? '' : c.normativeYears,
+      c.normativeMet ? 'yes' : 'no',
+      c.anticipatedFor || '',
+      c.promotion ? 'YES' : '',
+      c.lastAdvancement || '',
+      (c.reasons || []).join('; '),
+    ]);
+    return { header: header, rows: rows };
+  }
+
+  /**
+   * Export the Anticipated Call to a new Google Sheet: bold frozen header,
+   * promotion-eligible rows highlighted, columns auto-sized. Created in
+   * CONFIG.PERSONNEL.EXPORT_FOLDER_ID when set, else the Drive root.
+   * @param {Object} payload - { prospectiveDate? }
+   * @returns { url, id, name, rowCount }
+   */
+  function exportAnticipatedToSheet(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const res = listAnticipatedCandidates(payload || {}, user, roles);
+    const data = _anticipatedExportRows(res);
+    if (!data.rows.length) throw new Error('No anticipated candidates to export.');
+
+    const stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+    const name = 'Anticipated Call ' + res.prospectiveDate + ' (exported ' + stamp + ')';
+
+    const ss = SpreadsheetApp.create(name);
+    const sheet = ss.getSheets()[0];
+    sheet.setName('Anticipated Call');
+
+    // Title + context rows, then the table.
+    const s = res.summary || {};
+    sheet.getRange(1, 1).setValue('Anticipated Call — next advancement effective ' + res.prospectiveDate);
+    sheet.getRange(1, 1).setFontWeight('bold').setFontSize(13);
+    sheet.getRange(2, 1).setValue(
+      s.total + ' anticipated · ' + s.promotion + ' promotion (external letters) · ' +
+      s.merit + ' merit · ' + (s.mayElect || 0) + ' may elect · ' + s.mandatory + ' mandatory');
+    sheet.getRange(2, 1).setFontColor('#666666');
+    sheet.getRange(3, 1).setValue(
+      'Service is counted from the last advancement\'s effective date to ' + res.prospectiveDate +
+      '. Normative time gates both merit and promotion.');
+    sheet.getRange(3, 1).setFontColor('#666666').setFontStyle('italic');
+
+    const headerRow = 5;
+    sheet.getRange(headerRow, 1, 1, data.header.length).setValues([data.header])
+      .setFontWeight('bold').setBackground('#003C6C').setFontColor('#FFFFFF');
+    sheet.getRange(headerRow + 1, 1, data.rows.length, data.header.length).setValues(data.rows);
+
+    // Highlight promotion-eligible rows (column 8 = 'Promotion-eligible').
+    (res.candidates || []).forEach((c, i) => {
+      if (c.promotion) {
+        sheet.getRange(headerRow + 1 + i, 1, 1, data.header.length)
+          .setBackground('#FFF4CC');   // soft gold
+      }
+    });
+
+    sheet.setFrozenRows(headerRow);
+    for (let c = 1; c <= data.header.length; c++) sheet.autoResizeColumn(c);
+
+    // Move to the configured export folder when one is set.
+    const folderId = (CONFIG.PERSONNEL && CONFIG.PERSONNEL.EXPORT_FOLDER_ID) || '';
+    if (folderId) {
+      try {
+        const file = DriveApp.getFileById(ss.getId());
+        DriveApp.getFolderById(folderId).addFile(file);
+        DriveApp.getRootFolder().removeFile(file);
+      } catch (err) {
+        Logger.log('Export folder move failed (left in Drive root): ' + err);
+      }
+    }
+
+    return { url: ss.getUrl(), id: ss.getId(), name: name, rowCount: data.rows.length };
+  }
+
+  /**
+   * Export the Anticipated Call as CSV text (opens in Excel or anything
+   * else). Returned as a string; the client turns it into a download.
+   * @param {Object} payload - { prospectiveDate? }
+   * @returns { csv, filename, rowCount }
+   */
+  function exportAnticipatedToCsv(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const res = listAnticipatedCandidates(payload || {}, user, roles);
+    const data = _anticipatedExportRows(res);
+    if (!data.rows.length) throw new Error('No anticipated candidates to export.');
+
+    const esc = v => {
+      const s = String(v == null ? '' : v);
+      return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    };
+    const lines = [data.header.map(esc).join(',')]
+      .concat(data.rows.map(r => r.map(esc).join(',')));
+    const stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+    return {
+      csv: lines.join('\n'),
+      filename: 'anticipated-call-' + res.prospectiveDate + '-' + stamp + '.csv',
+      rowCount: data.rows.length,
+    };
+  }
+
+
+  /**
+   * Check a prospective case against the eligibility rules — powers the
+   * add-case form's live guidance. Tells you whether the normative interval
+   * is served, and therefore whether this review would be an ACCELERATION
+   * (sought before the interval is complete), which is a distinct category.
+   * Read-only.
+   * @param {Object} payload - { email, prospectiveDate? }
+   * @returns { rank, step, serviceYears, normativeYears, normativeMet,
+   *            indefiniteStep, isAcceleration, lastAdvancement, summary }
+   */
+  function checkCaseEligibility(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const p = payload || {};
+    const email = _email(p.email);
+    if (!email) throw new Error('email is required.');
+    const prospective = String(p.prospectiveDate || '').trim() || _upcomingJuly1();
+
+    const person = listRoster({ includeInactive: true }, user, roles).roster
+      .find(r => r.email === email);
+    if (!person) throw new Error('No roster entry for ' + email + '.');
+
+    const history = DataService.query(SHEET(), HISTORY_TAB(), 'PersonEmail', email)
+      .map(r => ({ date: _histDate(r.ReviewDate) || String(r.ReviewDate || ''),
+                   code: String(r.ReviewCode || '').toUpperCase() }))
+      .filter(h => h.date);
+
+    const elig = _computeEligibility({
+      rank: person.rank, step: person.step, history: history,
+    }, prospective);
+
+    // An acceleration: a review sought BEFORE the normative interval is
+    // complete. Not an error — just a distinct classification the person
+    // adding the case should know they're creating.
+    const isAcceleration = elig.serviceYears != null
+      && elig.normativeYears != null
+      && !elig.normativeMet;
+
+    let summary;
+    if (elig.serviceYears == null) {
+      summary = 'No advancement on record — service at step cannot be computed.';
+    } else if (isAcceleration) {
+      summary = 'ACCELERATION: ' + elig.serviceYears + ' of ' + elig.normativeYears +
+        ' years served at ' + person.rank + ' Step ' + person.step +
+        '. A review sought before the normative interval is complete is classified as an acceleration in time.';
+    } else if (elig.indefiniteStep) {
+      summary = 'Normative time served (' + elig.serviceYears + '/' + elig.normativeYears +
+        ') at an indefinite step — this faculty member may elect a review; they are only ' +
+        'automatically called at the five-year mandatory.';
+    } else {
+      summary = 'Normative time served (' + elig.serviceYears + '/' + elig.normativeYears +
+        ') — eligible for a normal review.';
+    }
+
+    return {
+      email: email,
+      name: person.nameLastFirst || person.name,
+      rank: person.rank, step: person.step,
+      serviceYears: elig.serviceYears,
+      normativeYears: elig.normativeYears,
+      normativeMet: elig.normativeMet,
+      indefiniteStep: elig.indefiniteStep,
+      isAcceleration: isAcceleration,
+      lastAdvancement: elig.lastAdvancement,
+      prospectiveDate: prospective,
+      summary: summary,
+    };
+  }
+
+  /**
+   * Create a single case by hand — for reviews that don't come from the Call:
+   * a faculty member at an indefinite step (Professor 5+) ELECTING a review,
+   * an acceleration, or a correction to a missed Call entry. Identity comes
+   * from the roster (no name-matching needed). CallActionRaw stays empty,
+   * and IsElected marks it as elected rather than called.
+   *
+   * Upserts on (CandidateEmail, AcademicYear, ReviewType) like the Call
+   * import, so adding the same case twice updates rather than duplicates.
+   *
+   * @param {Object} payload - { candidateEmail, academicYear, reviewType,
+   *     subjectRank?, step?, status?, effectiveDate?, isElected?, notes? }
+   */
+  function createCase(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const p = payload || {};
+    const email = _email(p.candidateEmail);
+    if (!email) throw new Error('A candidate is required.');
+    const year = String(p.academicYear || '').trim();
+    if (!year) throw new Error('Academic year is required.');
+    const type = String(p.reviewType || '').trim();
+    if (!REVIEW_TYPES()[type]) throw new Error('Unknown review type: ' + type);
+
+    const profile = Auth.getProfile(email);
+    if (!profile) throw new Error('No profile for ' + email + '.');
+
+    // Default rank/step from the roster when not supplied.
+    const person = listRoster({ includeInactive: true }, user, roles).roster
+      .find(r => r.email === email);
+    const rank = String(p.subjectRank || (person ? person.rank : '') || '').trim();
+    const step = String(p.step != null && p.step !== '' ? p.step
+                       : (person ? person.step : '') || '').trim();
+
+    const status = String(p.status || 'open').trim();
+    if (STATUSES().indexOf(status) === -1) throw new Error('Unknown status: ' + status);
+
+    const res = _upsertCase({
+      candidateEmail: email,
+      academicYear:   year,
+      reviewType:     type,
+      subjectRank:    rank,
+      step:           step,
+      callActionRaw:  '',                       // not from the Call
+      oaFlag:         '',
+      yrsRank:        person ? person.yrsRank : '',
+      yrsStep:        person ? person.yrsStep : '',
+      qtrs:           '',
+      isReappointment: _isAssistantRank(rank),
+      isMandatory:     false,
+      isElected:       p.isElected !== false,   // manual cases are elected by default
+      status:          status,
+      effectiveDate:   String(p.effectiveDate || '').trim(),
+      notes:           String(p.notes || '').trim(),
+    }, user);
+
+    return { caseId: res.caseId, action: res.action, candidateEmail: email,
+             academicYear: year, reviewType: type };
+  }
+
+
+  // ── Cycle anchors + settings (dispatchable) ────────────────
+
+  /**
+   * The scheduler settings the UI edits: the gap parameters (with their
+   * current values, defaults, and descriptions) so Settings can render a form
+   * without hardcoding the vocabulary.
+   */
+  function getSchedulerSettings(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const gaps = SCHEDULE_GAPS();
+    const defaults = (CONFIG.PERSONNEL && CONFIG.PERSONNEL.SCHEDULE_GAPS) || {};
+    const describe = {
+      candidateReviewDays:   'Candidate review window (the mandatory review of the file; also the early review of external letters on promotions).',
+      letterToReviewGap:     'Business days the final voted letter must be complete BEFORE the candidate review opens. 0 = the review opens on the letter.',
+      voteToLetterGap:       'Business days to finalize the letter after the faculty vote.',
+      deliberateToVoteGap:   'Business days of committee deliberation before the vote.',
+      draftsToDeliberateGap: 'Business days drafts must be complete before deliberation begins.',
+      lateLetterBufferDays:  'Cushion after external letters are due before the early review is PLANNED to start — absorbs late-arriving letters.',
+    };
+    return {
+      gaps: GAP_KEYS.map(k => ({
+        key: k, value: gaps[k],
+        default: defaults[k],
+        description: describe[k] || '',
+      })),
+    };
+  }
+
+  /**
+   * Save scheduler gap parameters to the Settings tab. Only known keys are
+   * accepted, and only non-negative integers; anything else is rejected rather
+   * than silently producing a broken schedule.
+   * @param {Object} payload - { gaps: { key: value, ... } }
+   */
+  function saveSchedulerSettings(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const incoming = (payload && payload.gaps) || {};
+    const existing = DataService.getAll(SHEET(), SETTINGS_TAB());
+    const saved = [];
+
+    Object.keys(incoming).forEach(k => {
+      if (GAP_KEYS.indexOf(k) === -1) return;               // unknown key
+      const n = Number(incoming[k]);
+      if (!isFinite(n) || n < 0) throw new Error('"' + k + '" must be a non-negative whole number.');
+      const v = String(Math.floor(n));
+      const row = existing.find(r => String(r.Key || '').trim() === k);
+      if (row) {
+        DataService.update(SHEET(), SETTINGS_TAB(), 'Key', k, { Value: v });
+      } else {
+        DataService.insert(SHEET(), SETTINGS_TAB(), { Key: k, Value: v });
+      }
+      saved.push(k);
+    });
+    return { saved: saved, gaps: SCHEDULE_GAPS() };
+  }
+
+  /**
+   * The stored anchors for a cycle, each resolved against the calendar so the
+   * UI can show the live date and detect a REMOVED anchor.
+   * @param {Object} payload - { academicYear }
+   */
+  function getCycle(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const year = String((payload || {}).academicYear || '').trim();
+    if (!year) throw new Error('academicYear is required.');
+
+    const rows = DataService.query(SHEET(), CYCLES_TAB(), 'AcademicYear', year);
+    const row = rows.length ? rows[0] : null;
+    const divId = row ? String(row.DivisionDeadlineID || '') : '';
+    const letId = row ? String(row.LettersDueDeadlineID || '') : '';
+
+    return {
+      academicYear: year,
+      exists: !!row,
+      divisionDeadlineId: divId,
+      lettersDueDeadlineId: letId,
+      division: divId ? _calendarDeadline(divId) : null,
+      letters:  letId ? _calendarDeadline(letId) : null,
+      notes: row ? (row.Notes || '') : '',
+    };
+  }
+
+  /** Every cycle with anchors on file, most recent year first. */
+  function listCycles(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const cycles = DataService.getAll(SHEET(), CYCLES_TAB()).map(r => ({
+      academicYear: r.AcademicYear,
+      divisionDeadlineId: r.DivisionDeadlineID || '',
+      lettersDueDeadlineId: r.LettersDueDeadlineID || '',
+      notes: r.Notes || '',
+    }));
+    cycles.sort((a, b) => String(b.academicYear).localeCompare(String(a.academicYear)));
+    return { cycles: cycles };
+  }
+
+  /**
+   * Set a cycle's anchors. Stores calendar DeadlineIDs (never titles or
+   * dates). Upserts on AcademicYear.
+   * @param {Object} payload - { academicYear, divisionDeadlineId?,
+   *                             lettersDueDeadlineId?, notes? }
+   */
+  function setCycleAnchors(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const p = payload || {};
+    const year = String(p.academicYear || '').trim();
+    if (!year) throw new Error('Academic year is required.');
+
+    const fields = { AcademicYear: year };
+    if (p.divisionDeadlineId   !== undefined) fields.DivisionDeadlineID   = String(p.divisionDeadlineId || '').trim();
+    if (p.lettersDueDeadlineId !== undefined) fields.LettersDueDeadlineID = String(p.lettersDueDeadlineId || '').trim();
+    if (p.notes !== undefined) fields.Notes = String(p.notes || '').trim();
+
+    const existing = DataService.query(SHEET(), CYCLES_TAB(), 'AcademicYear', year);
+    if (existing.length) {
+      DataService.update(SHEET(), CYCLES_TAB(), 'CycleID', existing[0].CycleID, fields);
+    } else {
+      DataService.insert(SHEET(), CYCLES_TAB(),
+        Object.assign({ CycleID: DataService.generateId('CYC') }, fields));
+    }
+    return getCycle({ academicYear: year }, user, roles);
+  }
+
+  /**
+   * Compute a cycle's schedule from its stored anchors — the PLANNING view,
+   * usable before any cases exist. Returns both timelines (the promotion
+   * variant, with its early letters-review window, and the ordinary one), so
+   * you can see the shape of the cycle and whether it fits.
+   * @param {Object} payload - { academicYear, actualLettersAddedDate? }
+   */
+  function computeCycleSchedule(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const p = payload || {};
+    const cycle = getCycle({ academicYear: p.academicYear }, user, roles);
+    if (!cycle.divisionDeadlineId) {
+      return { academicYear: cycle.academicYear, cycle: cycle, schedules: null,
+               warnings: ['No division submission deadline is set for this cycle — pick one below.'] };
+    }
+    const base = {
+      submissionDeadlineId: cycle.divisionDeadlineId,
+      lettersDueDeadlineId: cycle.lettersDueDeadlineId,
+      actualLettersAddedDate: p.actualLettersAddedDate || '',
+    };
+    const ordinary  = computeCaseSchedule(Object.assign({ isPromotion: false }, base), user, roles);
+    const promotion = cycle.lettersDueDeadlineId
+      ? computeCaseSchedule(Object.assign({ isPromotion: true }, base), user, roles)
+      : null;
+
+    return {
+      academicYear: cycle.academicYear,
+      cycle: cycle,
+      gaps: SCHEDULE_GAPS(),
+      schedules: { ordinary: ordinary, promotion: promotion },
+      warnings: cycle.lettersDueDeadlineId ? []
+        : ['No external-letters-due deadline is set — the promotion timeline (with its early candidate-review window) cannot be planned.'],
+    };
+  }
+
+  /**
+   * Compute the schedule for a specific CASE. Reads the case's academic year
+   * to find the cycle's anchors, and its review type to decide whether the
+   * promotion timeline (with the early external-letters review) applies. So a
+   * case's schedule needs nothing but the case.
+   * @param {Object} payload - { caseId, actualLettersAddedDate? }
+   */
+  function computeScheduleForCase(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const p = payload || {};
+    const id = String(p.caseId || '').trim();
+    if (!id) throw new Error('caseId is required.');
+
+    const found = DataService.query(SHEET(), CASES_TAB(), 'CaseID', id);
+    if (!found.length) throw new Error('Case not found: ' + id);
+    const c = found[0];
+
+    const year = String(c.AcademicYear || '').trim();
+    const cycle = getCycle({ academicYear: year }, user, roles);
+    if (!cycle.divisionDeadlineId) {
+      return { caseId: id, academicYear: year, schedule: null,
+               warnings: ['No division submission deadline is set for ' + year +
+                          ' — set the cycle anchors in Settings.'] };
+    }
+
+    const isPromotion = String(c.ReviewType) === 'promotion';
+    const res = computeCaseSchedule({
+      isPromotion: isPromotion,
+      submissionDeadlineId: cycle.divisionDeadlineId,
+      lettersDueDeadlineId: cycle.lettersDueDeadlineId,
+      actualLettersAddedDate: p.actualLettersAddedDate || '',
+    }, user, roles);
+
+    const profile = Auth.getProfile(_email(c.CandidateEmail));
+    return {
+      caseId: id,
+      candidate: profile ? (profile.nameLastFirst || profile.name) : c.CandidateEmail,
+      academicYear: year,
+      reviewType: c.ReviewType,
+      isPromotion: isPromotion,
+      schedule: res.schedule,
+      resolved: res.resolved,
+      warnings: (res.schedule && res.schedule.warnings) || [],
+    };
+  }
+
+
+  /** The upcoming July 1 (the typical cycle effective date) as 'yyyy-MM-dd'. */
+  function _upcomingJuly1() {
+    const now = new Date();
+    const y = now.getMonth() >= 6 ? now.getFullYear() + 1 : now.getFullYear();
+    return y + '-07-01';
   }
 
 
@@ -1080,6 +2406,27 @@ const PersonnelModule = (() => {
     commitCallImport,
     listCases,
     updateCase,
+    createCase,
+    checkCaseEligibility,
+    // Scheduler
+    findCalendarDeadlines,
+    computeCaseSchedule,
+    getSchedulerSettings,
+    saveSchedulerSettings,
+    getCycle,
+    listCycles,
+    setCycleAnchors,
+    computeCycleSchedule,
+    computeScheduleForCase,
+    // Review history
+    detectHistoryColumns,
+    previewHistoryImport,
+    commitHistoryImport,
+    getReviewHistory,
+    // Anticipated Call
+    listAnticipatedCandidates,
+    exportAnticipatedToSheet,
+    exportAnticipatedToCsv,
   };
 
 })();

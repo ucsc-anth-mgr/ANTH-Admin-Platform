@@ -16,6 +16,14 @@
       style="border:none;background:none;padding:8px 14px;border-bottom:2px solid transparent;cursor:pointer;font-weight:600;">
       <i class="ti ti-clipboard-list"></i> Cases
     </button>
+    <button class="btn btn-tab" id="tab-anticipated" onclick="PersonnelUI.showTab('anticipated')"
+      style="border:none;background:none;padding:8px 14px;border-bottom:2px solid transparent;cursor:pointer;font-weight:600;">
+      <i class="ti ti-crystal-ball"></i> Anticipated Call
+    </button>
+    <button class="btn btn-tab" id="tab-settings" onclick="PersonnelUI.showTab('settings')"
+      style="border:none;background:none;padding:8px 14px;border-bottom:2px solid transparent;cursor:pointer;font-weight:600;">
+      <i class="ti ti-settings"></i> Settings
+    </button>
   </div>
 
   <!-- ============================ ROSTER TAB ============================ -->
@@ -45,6 +53,12 @@
               <option value="lecturer">Lecturer</option>
             </select>
           </div>
+        </div>
+        <div class="form-group" style="margin-top:-4px;">
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;">
+            <input type="checkbox" id="ros-inactive" onchange="PersonnelUI.loadRoster()">
+            Show departed faculty (Active = FALSE)
+          </label>
         </div>
 
         <div id="roster-table-wrap">
@@ -136,6 +150,25 @@
 
       <div id="pers-preview" style="margin-top:18px;"></div>
     </div>
+
+    <div class="card">
+      <div class="card-title"><i class="ti ti-history"></i> Import review history (one-time backfill)</div>
+      <p class="text-muted text-sm" style="margin:-8px 0 12px;">
+        Upload the APO action-history report (the full action ledger). Review-coded
+        actions (initial appointment, merit, promotion, salary increase, reappointments,
+        mid-career) are matched to loaded faculty by CruzID and become each person's review
+        history. Rows without a CruzID or not matching a loaded profile are ignored. Going
+        forward, completing a case adds to history automatically — this import is the
+        one-time backfill of the past.
+      </p>
+      <div class="form-group">
+        <input type="file" id="hist-file" accept=".csv,text/csv" class="form-input" style="padding:7px;">
+      </div>
+      <div class="form-actions" style="margin-top:4px;">
+        <button class="btn btn-secondary" id="hist-detect-btn" onclick="PersonnelUI.detectHistory()"><i class="ti ti-list-search"></i> Read report &amp; preview</button>
+      </div>
+      <div id="hist-preview" style="margin-top:18px;"></div>
+    </div>
   </div>
 
   <!-- ============================ CASES TAB ============================ -->
@@ -146,7 +179,10 @@
       <div class="card">
         <div style="display:flex;justify-content:space-between;align-items:center;">
           <div class="card-title" style="margin:0;"><i class="ti ti-clipboard-list"></i> Review cases</div>
-          <button class="btn btn-secondary" onclick="PersonnelUI.showCallImport()"><i class="ti ti-file-upload"></i> Import from Call</button>
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-secondary" onclick="PersonnelUI.showAddCase()"><i class="ti ti-plus"></i> Add case</button>
+            <button class="btn btn-secondary" onclick="PersonnelUI.showCallImport()"><i class="ti ti-file-upload"></i> Import from Call</button>
+          </div>
         </div>
         <div class="form-row" style="margin-top:12px;">
           <div class="form-group">
@@ -162,6 +198,85 @@
         </div>
         <div id="cases-table-wrap">
           <div class="module-loading"><div class="spinner"></div><span>Loading cases…</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Add case (manual, for elected reviews) -->
+    <div id="cases-add" style="display:none;">
+      <div class="card">
+        <button class="btn btn-secondary" onclick="PersonnelUI.backToCases()" style="margin-bottom:14px;">
+          <i class="ti ti-arrow-left"></i> Back to cases
+        </button>
+        <div class="card-title"><i class="ti ti-plus"></i> Add a case</div>
+        <p class="text-muted text-sm" style="margin:-8px 0 12px;">
+          For reviews that don't come from the Call — a faculty member at an indefinite step
+          (Professor 5 and above) <strong>electing</strong> a review, an acceleration, or a
+          correction to a missed Call entry. Pick the candidate and their current rank and step
+          fill in automatically.
+        </p>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Candidate <span class="required">*</span></label>
+            <select class="form-select" id="add-candidate" onchange="PersonnelUI.onAddCandidate()">
+              <option value="">— choose faculty —</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Academic year <span class="required">*</span></label>
+            <input type="text" class="form-input" id="add-year" placeholder="e.g. 2026-27">
+          </div>
+        </div>
+
+        <div id="add-eligibility" style="margin:-4px 0 14px;"></div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Review type <span class="required">*</span></label>
+            <select class="form-select" id="add-type"></select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Status</label>
+            <select class="form-select" id="add-status"></select>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Subject rank</label>
+            <input type="text" class="form-input" id="add-rank" placeholder="(from roster)">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Step</label>
+            <input type="text" class="form-input" id="add-step" placeholder="(from roster)">
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Effective date</label>
+            <input type="text" class="form-input" id="add-effective" placeholder="yyyy-mm-dd (optional)">
+            <div class="form-hint">When the action takes effect — the eligibility clock reset.</div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">&nbsp;</label>
+            <label style="display:flex;align-items:center;gap:8px;padding-top:8px;cursor:pointer;">
+              <input type="checkbox" id="add-elected" checked>
+              <span><strong>Elected</strong> (not on the Call)</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Notes</label>
+          <textarea class="form-input" id="add-notes" rows="2"
+            placeholder="e.g. elected review at indefinite step"></textarea>
+        </div>
+
+        <div class="form-actions">
+          <button class="btn btn-primary" id="add-save-btn" onclick="PersonnelUI.saveNewCase()"><i class="ti ti-check"></i> Create case</button>
+          <button class="btn btn-secondary" onclick="PersonnelUI.backToCases()">Cancel</button>
         </div>
       </div>
     </div>
@@ -213,6 +328,97 @@ Assistant Professor	Hernandez Garavito	Carla	5	o	6	2	17	Reappt with salary incre
 
   </div>
 
+  <!-- ============================ ANTICIPATED CALL TAB ============================ -->
+  <div id="view-anticipated" style="display:none;">
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">
+        <div class="card-title" style="margin:0;"><i class="ti ti-crystal-ball"></i> Anticipated Call</div>
+        <div style="display:flex;gap:8px;flex-shrink:0;">
+          <button class="btn btn-secondary" id="exp-sheet-btn" onclick="PersonnelUI.exportSheet()" title="Create a formatted Google Sheet">
+            <i class="ti ti-table"></i> Google Sheets
+          </button>
+          <button class="btn btn-secondary" id="exp-csv-btn" onclick="PersonnelUI.exportCsv()" title="Download a CSV (opens in Excel)">
+            <i class="ti ti-file-spreadsheet"></i> Excel (CSV)
+          </button>
+        </div>
+      </div>
+      <p class="text-muted text-sm" style="margin:8px 0 12px;">
+        Faculty anticipated to be on the upcoming Call, computed from each person's service since
+        their last advancement and the normative interval for their rank and step. <strong>Promotion-eligible
+        candidates are highlighted</strong> — these are the cases that need external letters,
+        so start those conversations before the Call arrives. This is a planning estimate; the official Call governs.
+      </p>
+      <div id="anticipated-body">
+        <div class="module-loading"><div class="spinner"></div><span>Computing…</span></div>
+      </div>
+      <div id="export-result" style="margin-top:12px;"></div>
+    </div>
+  </div>
+
+  <!-- ============================ SETTINGS TAB ============================ -->
+  <div id="view-settings" style="display:none;">
+
+    <!-- Cycle anchors -->
+    <div class="card">
+      <div class="card-title"><i class="ti ti-calendar-pin"></i> Cycle deadlines</div>
+      <p class="text-muted text-sm" style="margin:-8px 0 12px;">
+        The two dates a cycle's schedule is computed from, chosen once per academic year from the
+        department calendar. Everything else — drafts due, deliberation, the vote, the letter, and the
+        candidate review windows — is worked out backward from the division deadline (and, for promotions,
+        forward from the letters-due date). We store the calendar's entry, not a copy of the date, so if the
+        date moves upstream the schedule follows.
+      </p>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Academic year <span class="required">*</span></label>
+          <input type="text" class="form-input" id="cyc-year" placeholder="e.g. 2026-27" onchange="PersonnelUI.loadCycle()">
+        </div>
+        <div class="form-group">
+          <label class="form-label">&nbsp;</label>
+          <button class="btn btn-secondary" onclick="PersonnelUI.loadCycle()" style="width:100%;">
+            <i class="ti ti-refresh"></i> Load this cycle
+          </button>
+        </div>
+      </div>
+
+      <div id="cyc-anchors" style="display:none;">
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Division submission deadline</label>
+            <div id="cyc-division-current" class="text-sm" style="margin-bottom:6px;"></div>
+            <button class="btn btn-secondary btn-sm" onclick="PersonnelUI.pickDeadline('division')">
+              <i class="ti ti-search"></i> Choose from calendar
+            </button>
+          </div>
+          <div class="form-group">
+            <label class="form-label">External letters due</label>
+            <div id="cyc-letters-current" class="text-sm" style="margin-bottom:6px;"></div>
+            <button class="btn btn-secondary btn-sm" onclick="PersonnelUI.pickDeadline('letters')">
+              <i class="ti ti-search"></i> Choose from calendar
+            </button>
+          </div>
+        </div>
+        <div id="cyc-picker" style="display:none;margin-top:12px;padding:12px;border:1px solid #e3e6ea;border-radius:6px;"></div>
+        <div id="cyc-schedule" style="margin-top:16px;"></div>
+      </div>
+    </div>
+
+    <!-- Gap parameters -->
+    <div class="card">
+      <div class="card-title"><i class="ti ti-adjustments"></i> Schedule spacing</div>
+      <p class="text-muted text-sm" style="margin:-8px 0 12px;">
+        How much time each step of the review needs, in <strong>business days</strong> (weekends and campus
+        closures are skipped automatically). The candidate review window has a policy basis; the rest is the
+        department's own process — tune it here and every schedule recomputes.
+      </p>
+      <div id="gap-form">
+        <div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>
+      </div>
+    </div>
+
+  </div>
+
 </div>
 
 <script>
@@ -230,8 +436,10 @@ window.PersonnelUI = (() => {
 
   // ── Tabs ───────────────────────────────────────────────────
   function showTab(which) {
-    const views = { roster: 'view-roster', import: 'view-import', cases: 'view-cases' };
-    const tabs  = { roster: 'tab-roster', import: 'tab-import', cases: 'tab-cases' };
+    const views = { roster: 'view-roster', import: 'view-import', cases: 'view-cases',
+                    anticipated: 'view-anticipated', settings: 'view-settings' };
+    const tabs  = { roster: 'tab-roster', import: 'tab-import', cases: 'tab-cases',
+                    anticipated: 'tab-anticipated', settings: 'tab-settings' };
     const on  = '2px solid var(--ucsc-navy, #003C6C)';
     const off = '2px solid transparent';
     Object.keys(views).forEach(k => {
@@ -240,17 +448,24 @@ window.PersonnelUI = (() => {
     });
     if (which === 'roster') backToRoster();
     if (which === 'cases') { backToCases(); loadCases(); }
+    if (which === 'anticipated') loadAnticipated();
+    if (which === 'settings') loadSettings();
   }
 
   // ── Roster load / render ───────────────────────────────────
   function loadRoster() {
     const wrap = document.getElementById('roster-table-wrap');
     wrap.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading roster…</span></div>';
-    App.call('personnel', 'listRoster', {}, res => {
+    const inc = document.getElementById('ros-inactive');
+    const includeInactive = inc ? inc.checked : false;
+    App.call('personnel', 'listRoster', { includeInactive: includeInactive }, res => {
       _roster = res.roster || [];
+      _inactiveCount = res.inactiveCount || 0;
       applyFilter();
     }, () => { wrap.innerHTML = '<p class="text-muted">Could not load the roster.</p>'; });
   }
+
+  let _inactiveCount = 0;
 
   function applyFilter() {
     const q = (document.getElementById('ros-search').value || '').trim().toLowerCase();
@@ -296,16 +511,20 @@ window.PersonnelUI = (() => {
     : '<span class="badge">\u2014</span>';
 
     const body = rows.map(r =>
-      `<tr style="cursor:pointer;" onclick="PersonnelUI.openDetail('${String(r.email).replace(/'/g,"\\'")}')">
-        <td>${r.nameLastFirst || r.name || r.email}${r.noProfile ? ' <span class="badge badge-danger" title="No profile">no profile</span>' : ''}</td>
+      `<tr style="cursor:pointer;${r.active === false ? 'opacity:0.6;' : ''}" onclick="PersonnelUI.openDetail('${String(r.email).replace(/'/g,"\\'")}')">
+        <td>${r.nameLastFirst || r.name || r.email}${r.noProfile ? ' <span class="badge badge-danger" title="No profile">no profile</span>' : ''}${r.active === false && !r.noProfile ? ' <span class="badge badge-warning" title="Active = FALSE">departed</span>' : ''}</td>
         <td>${r.rank || '\u2014'}</td>
         <td>${r.step || '\u2014'}</td>
         <td>${seriesBadge(r.series)}</td>
         <td>${r.tier || '\u2014'}</td>
       </tr>`).join('');
 
+    const inactiveNote = _inactiveCount
+      ? ` \u00B7 <span class="text-muted">${_inactiveCount} departed ${document.getElementById('ros-inactive') && document.getElementById('ros-inactive').checked ? 'shown' : 'hidden'}</span>`
+      : '';
+
     wrap.innerHTML = `
-      <p class="text-sm text-muted" style="margin:4px 0 8px;">${rows.length} of ${_roster.length} shown</p>
+      <p class="text-sm text-muted" style="margin:4px 0 8px;">${rows.length} of ${_roster.length} shown${inactiveNote}</p>
       <div class="table-wrap"><table class="data-table">
         <thead><tr>
           <th style="cursor:pointer;" onclick="PersonnelUI.sortBy('nameLastFirst')">Name${_arrow('nameLastFirst')}</th>
@@ -347,7 +566,7 @@ window.PersonnelUI = (() => {
     document.getElementById('detail-body').innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:flex-start;">
         <div>
-          <div class="card-title">${r.name || r.email}${r.noProfile ? ' <span class="badge badge-danger">no profile</span>' : ''}</div>
+          <div class="card-title">${r.name || r.email}${r.noProfile ? ' <span class="badge badge-danger">no profile</span>' : ''}${r.active === false && !r.noProfile ? ' <span class="badge badge-warning">departed</span>' : ''}</div>
           <p class="text-muted text-sm" style="margin:-6px 0 14px;">${r.email}</p>
         </div>
         <button class="btn btn-secondary" onclick="PersonnelUI.editDetail()"><i class="ti ti-edit"></i> Edit</button>
@@ -362,7 +581,41 @@ window.PersonnelUI = (() => {
         ${row('Salary', _money(r.salary))}
         ${row('Last updated', r.updatedAt)}
         ${row('Updated by', r.updatedBy)}
-      </tbody></table></div>`;
+      </tbody></table></div>
+      <div id="detail-history" style="margin-top:18px;">
+        <div class="module-loading"><div class="spinner"></div><span>Loading review history\u2026</span></div>
+      </div>`;
+    _loadDetailHistory(r.email);
+  }
+
+  function _loadDetailHistory(email) {
+    App.call('personnel', 'getReviewHistory', { email: email }, res => {
+      const el = document.getElementById('detail-history');
+      if (!el) return;
+      const h = res.history || [];
+      if (!h.length) {
+        el.innerHTML = '<div class="card-title" style="font-size:15px;"><i class="ti ti-history"></i> Review history</div>'
+          + '<p class="text-muted text-sm">No review history on record.</p>';
+        return;
+      }
+      const codeLabel = { IAP:'Initial appt', MI:'Merit', PR:'Promotion', SI:'Salary increase',
+        REMI:'Reappt + merit', RESI:'Reappt + salary', MD:'Mid-career', MA:'Mandatory' };
+      const rows = h.map(e =>
+        `<tr><td>${e.date || '\u2014'}</td><td>${(codeLabel[e.code] || e.code)}</td>` +
+        `<td class="text-sm text-muted">${e.title || ''}${e.step ? ' \u00B7 step ' + e.step : ''}</td>` +
+        `<td>${e.source === 'case' ? '<span class="badge badge-navy">this module</span>' : '<span class="badge">imported</span>'}</td></tr>`
+      ).join('');
+      el.innerHTML = `
+        <div class="card-title" style="font-size:15px;"><i class="ti ti-history"></i> Review history</div>
+        <p class="text-sm text-muted" style="margin:-6px 0 8px;">Most recent: ${res.mostRecentDate || '\u2014'} (${res.mostRecentCode || '\u2014'})</p>
+        <div class="table-wrap"><table class="data-table">
+          <thead><tr><th>Date</th><th>Review</th><th>At the time</th><th>Source</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table></div>`;
+    }, () => {
+      const el = document.getElementById('detail-history');
+      if (el) el.innerHTML = '<p class="text-muted text-sm">Could not load review history.</p>';
+    });
   }
 
   function editDetail() {
@@ -468,6 +721,361 @@ window.PersonnelUI = (() => {
     document.getElementById('roster-list').style.display = 'block';
   }
 
+  // ── Settings: cycle anchors + schedule spacing ─────────────
+  let _cycle = null;
+  let _pickingFor = null;   // 'division' | 'letters'
+
+  function loadSettings() {
+    loadGaps();
+    // Default the year box to the current cycle if it's empty.
+    const y = document.getElementById('cyc-year');
+    if (y && !y.value) {
+      const now = new Date();
+      const start = now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
+      y.value = start + '-' + String((start + 1) % 100).padStart(2, '0');
+    }
+    loadCycle();
+  }
+
+  function loadGaps() {
+    App.call('personnel', 'getSchedulerSettings', {}, res => {
+      const rows = (res.gaps || []).map(g => `
+        <div class="form-row" style="align-items:flex-start;">
+          <div class="form-group" style="flex:0 0 150px;">
+            <input type="number" min="0" class="form-input" id="gap-${g.key}" value="${g.value}">
+          </div>
+          <div class="form-group" style="flex:1;">
+            <div class="text-sm" style="padding-top:8px;">
+              ${g.description}
+              ${g.value !== g.default ? `<span class="text-muted"> (default ${g.default})</span>` : ''}
+            </div>
+          </div>
+        </div>`).join('');
+      document.getElementById('gap-form').innerHTML = rows + `
+        <div class="form-actions">
+          <button class="btn btn-primary" id="gap-save-btn" onclick="PersonnelUI.saveGaps()"><i class="ti ti-check"></i> Save spacing</button>
+        </div>`;
+      _gapKeys = (res.gaps || []).map(g => g.key);
+    }, () => {
+      document.getElementById('gap-form').innerHTML = '<p class="text-muted">Could not load settings.</p>';
+    });
+  }
+
+  let _gapKeys = [];
+
+  function saveGaps() {
+    const gaps = {};
+    _gapKeys.forEach(k => {
+      const el = document.getElementById('gap-' + k);
+      if (el) gaps[k] = el.value;
+    });
+    FormHelper.setLoading('gap-save-btn', true);
+    App.call('personnel', 'saveSchedulerSettings', { gaps: gaps }, () => {
+      FormHelper.setLoading('gap-save-btn', false);
+      Toast.show('Schedule spacing saved.', 'success');
+      loadGaps();
+      loadCycle();   // recompute the preview with the new spacing
+    }, () => FormHelper.setLoading('gap-save-btn', false));
+  }
+
+  function loadCycle() {
+    const year = document.getElementById('cyc-year').value.trim();
+    const box = document.getElementById('cyc-anchors');
+    if (!year) { box.style.display = 'none'; return; }
+    box.style.display = 'block';
+    document.getElementById('cyc-picker').style.display = 'none';
+    document.getElementById('cyc-schedule').innerHTML =
+      '<div class="module-loading"><div class="spinner"></div><span>Loading cycle…</span></div>';
+
+    App.call('personnel', 'getCycle', { academicYear: year }, res => {
+      _cycle = res;
+      _renderAnchor('division', res.division, res.divisionDeadlineId);
+      _renderAnchor('letters',  res.letters,  res.lettersDueDeadlineId);
+      previewCycleSchedule();
+    }, () => {
+      document.getElementById('cyc-schedule').innerHTML = '<p class="text-muted">Could not load the cycle.</p>';
+    });
+  }
+
+  function _renderAnchor(which, resolved, id) {
+    const el = document.getElementById('cyc-' + which + '-current');
+    if (!id) {
+      el.innerHTML = '<span class="text-muted">Not set</span>';
+      return;
+    }
+    if (!resolved || !resolved.found) {
+      el.innerHTML = `<span class="badge badge-danger">missing</span> <span class="text-muted">This calendar entry can no longer be found.</span>`;
+      return;
+    }
+    const removed = resolved.status === 'removed';
+    el.innerHTML =
+      `<strong>${resolved.date || '—'}</strong> — ${resolved.title || '(untitled)'}` +
+      (removed ? ' <span class="badge badge-warning" title="Removed upstream in the calendar — the date may be stale">removed upstream</span>' : '');
+  }
+
+  function pickDeadline(which) {
+    _pickingFor = which;
+    const box = document.getElementById('cyc-picker');
+    box.style.display = 'block';
+    const label = which === 'division' ? 'division submission deadline' : 'external-letters-due date';
+    box.innerHTML = `
+      <div class="text-sm" style="margin-bottom:8px;"><strong>Choose the ${label}</strong> from the department calendar.</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Search titles</label>
+          <input type="text" class="form-input" id="pick-q" placeholder="e.g. senate, letters, file due">
+        </div>
+        <div class="form-group">
+          <label class="form-label">From</label>
+          <input type="text" class="form-input" id="pick-from" placeholder="yyyy-mm-dd">
+        </div>
+        <div class="form-group">
+          <label class="form-label">To</label>
+          <input type="text" class="form-input" id="pick-to" placeholder="yyyy-mm-dd">
+        </div>
+      </div>
+      <div class="form-actions" style="margin-top:0;">
+        <button class="btn btn-secondary" id="pick-search-btn" onclick="PersonnelUI.searchDeadlines()"><i class="ti ti-search"></i> Search calendar</button>
+        <button class="btn btn-secondary" onclick="PersonnelUI.cancelPick()">Cancel</button>
+      </div>
+      <div id="pick-results" style="margin-top:10px;"></div>`;
+  }
+
+  function cancelPick() {
+    document.getElementById('cyc-picker').style.display = 'none';
+    _pickingFor = null;
+  }
+
+  function searchDeadlines() {
+    const q = document.getElementById('pick-q').value.trim();
+    const from = document.getElementById('pick-from').value.trim();
+    const to = document.getElementById('pick-to').value.trim();
+    const out = document.getElementById('pick-results');
+    out.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Searching…</span></div>';
+    FormHelper.setLoading('pick-search-btn', true);
+
+    App.call('personnel', 'findCalendarDeadlines',
+      { titleContains: q, from: from, to: to, kind: 'deadline' }, res => {
+        FormHelper.setLoading('pick-search-btn', false);
+        const list = res.deadlines || [];
+        if (!list.length) {
+          out.innerHTML = '<p class="text-muted text-sm">No matching deadlines. Try a broader search or widen the dates.</p>';
+          return;
+        }
+        out.innerHTML = `<div class="table-wrap" style="max-height:260px;overflow-y:auto;"><table class="data-table">
+          <thead><tr><th>Date</th><th>Title</th><th>Source</th><th></th></tr></thead>
+          <tbody>${list.map(d => `
+            <tr>
+              <td class="text-sm"><strong>${d.date || '—'}</strong></td>
+              <td class="text-sm">${d.title || '(untitled)'}</td>
+              <td class="text-sm text-muted">${d.source || d.origin || ''}</td>
+              <td><button class="btn btn-primary btn-sm" onclick="PersonnelUI.chooseDeadline('${d.deadlineId || d.id}')">Use this</button></td>
+            </tr>`).join('')}</tbody>
+        </table></div>`;
+      }, () => {
+        FormHelper.setLoading('pick-search-btn', false);
+        out.innerHTML = '<p class="text-muted text-sm">Calendar search failed.</p>';
+      });
+  }
+
+  function chooseDeadline(deadlineId) {
+    const year = document.getElementById('cyc-year').value.trim();
+    const payload = { academicYear: year };
+    if (_pickingFor === 'division') payload.divisionDeadlineId = deadlineId;
+    else payload.lettersDueDeadlineId = deadlineId;
+
+    App.call('personnel', 'setCycleAnchors', payload, res => {
+      Toast.show('Cycle deadline set.', 'success');
+      cancelPick();
+      _cycle = res;
+      _renderAnchor('division', res.division, res.divisionDeadlineId);
+      _renderAnchor('letters',  res.letters,  res.lettersDueDeadlineId);
+      previewCycleSchedule();
+    });
+  }
+
+  function previewCycleSchedule() {
+    const year = document.getElementById('cyc-year').value.trim();
+    const out = document.getElementById('cyc-schedule');
+    if (!year) { out.innerHTML = ''; return; }
+    out.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Working out the schedule…</span></div>';
+
+    App.call('personnel', 'computeCycleSchedule', { academicYear: year }, res => {
+      if (!res.schedules) {
+        out.innerHTML = `<div class="alert alert-info text-sm">${(res.warnings || []).join(' ')}</div>`;
+        return;
+      }
+      const ord = res.schedules.ordinary && res.schedules.ordinary.schedule;
+      const pro = res.schedules.promotion && res.schedules.promotion.schedule;
+      let html = '<div class="card-title" style="font-size:15px;margin-top:4px;"><i class="ti ti-timeline"></i> This cycle\'s schedule</div>';
+      if (res.warnings && res.warnings.length) {
+        html += `<div class="alert alert-info text-sm" style="margin-bottom:10px;">${res.warnings.join(' ')}</div>`;
+      }
+      if (ord) html += _timelineHtml('Merit, salary, mid-career', ord, false);
+      if (pro) html += _timelineHtml('Promotion (with external letters)', pro, true);
+      out.innerHTML = html;
+    }, () => { out.innerHTML = '<p class="text-muted text-sm">Could not compute the schedule.</p>'; });
+  }
+
+  /** Render one timeline: the backward chain, plus the forward window on promotions. */
+  function _timelineHtml(label, sch, isPromotion) {
+    const b = sch.backward || {};
+    const f = sch.forward || null;
+    const step = (when, what, note) => `
+      <tr>
+        <td class="text-sm" style="white-space:nowrap;"><strong>${when || '—'}</strong></td>
+        <td class="text-sm">${what}</td>
+        <td class="text-sm text-muted">${note || ''}</td>
+      </tr>`;
+
+    let rows = '';
+    if (isPromotion && f) {
+      rows += step(f.lettersDue, 'External letters due', f.basis === 'actual'
+        ? 'Letters actually arrived ' + f.lettersAdded
+        : 'Planned; a buffer absorbs late letters');
+      rows += step(f.earlyReviewStart, 'Candidate reviews the letters (opens)', '10 business days');
+      rows += step(f.earlyReviewEnd, 'Candidate review of letters closes', '');
+      rows += step(f.earliestDeliberate, 'Committee may begin deliberating', 'Earliest possible');
+    }
+    rows += step(b.draftsDue, 'Drafts complete', 'Assessments written');
+    rows += step(b.deliberateBy, 'Deliberation underway by', '');
+    rows += step(b.vote, 'Faculty vote', '');
+    rows += step(b.letterFinal, 'Final letter complete, votes recorded', '');
+    rows += step(b.lateReviewStart, 'Candidate reviews the file (opens)', '10 business days');
+    rows += step(b.lateReviewEnd, 'Candidate review closes', '');
+    rows += step(b.submission, 'File due to the Division', 'The fixed deadline');
+
+    const infeasible = sch.feasible === false;
+    const warn = (sch.warnings || []).length
+      ? `<div class="alert ${infeasible ? 'alert-danger' : 'alert-warning'} text-sm" style="margin:8px 0;">
+           <i class="ti ti-alert-triangle"></i> ${sch.warnings.join(' ')}
+         </div>` : '';
+
+    return `
+      <div style="margin-bottom:18px;">
+        <div class="text-sm" style="font-weight:600;margin-bottom:6px;">
+          ${label}
+          ${infeasible ? '<span class="badge badge-danger" style="margin-left:6px;">does not fit</span>'
+                       : '<span class="badge badge-success" style="margin-left:6px;">fits</span>'}
+        </div>
+        ${warn}
+        <div class="table-wrap"><table class="data-table"><tbody>${rows}</tbody></table></div>
+      </div>`;
+  }
+
+  // ── Anticipated Call: exports ──────────────────────────────
+  function exportSheet() {
+    const out = document.getElementById('export-result');
+    FormHelper.setLoading('exp-sheet-btn', true);
+    out.innerHTML = '';
+    App.call('personnel', 'exportAnticipatedToSheet', {}, res => {
+      FormHelper.setLoading('exp-sheet-btn', false);
+      out.innerHTML = `<div class="alert alert-success" style="display:flex;align-items:center;gap:10px;">
+        <i class="ti ti-circle-check"></i>
+        <span>Exported ${res.rowCount} candidate(s) to Google Sheets \u2014
+        <a href="${res.url}" target="_blank" rel="noopener"><strong>open “${res.name}”</strong></a></span>
+      </div>`;
+      Toast.show('Google Sheet created.', 'success');
+    }, () => FormHelper.setLoading('exp-sheet-btn', false));
+  }
+
+  function exportCsv() {
+    FormHelper.setLoading('exp-csv-btn', true);
+    App.call('personnel', 'exportAnticipatedToCsv', {}, res => {
+      FormHelper.setLoading('exp-csv-btn', false);
+      // Trigger a browser download of the CSV text.
+      const blob = new Blob([res.csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = res.filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      Toast.show(`Downloaded ${res.filename} (${res.rowCount} rows).`, 'success');
+    }, () => FormHelper.setLoading('exp-csv-btn', false));
+  }
+
+  // ── Anticipated Call ───────────────────────────────────────
+  function loadAnticipated() {
+    const el = document.getElementById('anticipated-body');
+    el.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Computing…</span></div>';
+    const ex = document.getElementById('export-result');
+    if (ex) ex.innerHTML = '';
+    App.call('personnel', 'listAnticipatedCandidates', {}, res => {
+      _renderAnticipated(res);
+    }, () => { el.innerHTML = '<p class="text-muted">Could not compute the anticipated Call.</p>'; });
+  }
+
+  function _renderAnticipated(res) {
+    const c = res.candidates || [];
+    const s = res.summary || {};
+    if (!c.length) {
+      document.getElementById('anticipated-body').innerHTML =
+        '<p class="text-muted text-sm">No anticipated candidates found. (Load rank/step and review history first.)</p>';
+      return;
+    }
+    const badge = (on, cls, label, title) => on
+      ? `<span class="badge ${cls}" style="margin-right:4px;" ${title?`title="${title}"`:''}>${label}</span>` : '';
+    const rows = c.map(p => {
+      const hl = p.promotion ? ' style="background:var(--color-highlight,#fff8e1);"' : '';
+      const tags =
+        badge(p.promotion, 'badge-gold', 'promotion') +
+        badge(p.merit, 'badge-navy', 'merit') +
+        badge(p.mayElect, 'badge', 'may elect', 'Normative time met — may elect review; auto-called only at the 5-yr mandatory') +
+        badge(p.mandatory, 'badge-danger', 'MANDATORY', 'Cannot be deferred or declined') +
+        badge(!!p.pendingAction, 'badge-warning', 'in progress',
+          p.pendingAction ? ('Action in progress, effective ' + p.pendingAction.effectiveDate +
+            ' — shown as if it completes. If it does not, eligibility reverts.') : '');
+      const norm = (p.normativeYears != null && p.serviceYears != null)
+        ? `${p.serviceYears} / ${p.normativeYears}` + (p.normativeMet ? ' <i class="ti ti-check" style="color:var(--color-success,#2e7d32);"></i>' : '')
+        : '\u2014';
+      const approx = (p.approximate && p.approximate.length)
+        ? ` <i class="ti ti-alert-triangle" style="color:var(--color-warning,#b8860b);" title="${p.approximate.join(' ')}"></i>` : '';
+      return `<tr${hl}>
+        <td>${p.promotion ? '<i class="ti ti-star-filled" style="color:var(--ucsc-gold,#b8860b);"></i> ' : ''}${p.name}${approx}</td>
+        <td class="text-sm">${p.rank || '\u2014'}${p.step ? ' \u00B7 step ' + p.step : ''}${p.indefiniteStep ? ' <span class="text-muted">(indefinite)</span>' : ''}</td>
+        <td class="text-sm">${norm}</td>
+        <td>${tags || '\u2014'}</td>
+        <td class="text-sm text-muted">${p.lastAdvancement || 'none on record'}</td>
+      </tr>`;
+    }).join('');
+    document.getElementById('anticipated-body').innerHTML = `
+      <div style="margin-bottom:12px;">
+        <span class="badge badge-gold" style="margin-right:6px;">${s.promotion} promotion</span>
+        <span class="badge badge-navy" style="margin-right:6px;">${s.merit} merit</span>
+        <span class="badge" style="margin-right:6px;">${s.mayElect || 0} may elect</span>
+        <span class="badge badge-danger" style="margin-right:6px;">${s.mandatory} mandatory</span>
+        ${s.pending ? `<span class="badge badge-warning" style="margin-right:6px;">${s.pending} in progress</span>` : ''}
+        <span class="text-muted text-sm">${s.total} listed \u00B7 next advancement effective ${res.prospectiveDate}</span>
+      </div>
+      <div class="table-wrap"><table class="data-table">
+        <thead><tr><th>Faculty</th><th>Rank / step</th><th title="Years served at this step (from the last advancement's effective date to the prospective advancement date) over the normative interval required. A check means the interval has been served.">Service / normative</th><th>Anticipated for</th><th>Last advancement</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>
+      <p class="text-sm text-muted" style="margin-top:8px;line-height:1.7;">
+        <strong>Service / normative</strong> — years of service at the current step, counted from the last advancement's
+        effective date to ${res.prospectiveDate} (when the next advancement would take effect), over the normative interval
+        required at that rank and step. A <i class="ti ti-check" style="color:var(--color-success,#2e7d32);"></i>
+        means the normative interval has been <strong>served</strong> — the requirement that gates both merit and promotion.
+        (So <em>3 / 3</em> <i class="ti ti-check" style="color:var(--color-success,#2e7d32);"></i> is eligible; <em>2 / 3</em> is not yet.)
+        <br>
+        <i class="ti ti-star-filled" style="color:var(--ucsc-gold,#b8860b);"></i> <strong>Promotion-eligible</strong> —
+        at a promotion step with the normative interval served. These are the cases that need external letters.
+        <br>
+        <strong>may elect</strong> — at an indefinite step (Professor 5 and above) with normative time served: may request
+        a review, but is only automatically called at the five-year mandatory.
+        <br>
+        <strong>MANDATORY</strong> — five years without a review; cannot be deferred or declined.
+        <br>
+        <strong>in progress</strong> — this person has an action that isn't final yet (often: the department has
+        finished and the file has gone forward). Its effective date is treated as a <em>pending clock reset</em>, so
+        eligibility is computed <em>as if it completes</em>. They're listed either way so an in-flight action can't
+        quietly distort planning — but if the action doesn't land, their eligibility reverts.
+      </p>`;
+  }
+
   // ── Cases: list ────────────────────────────────────────────
   let _cases = [];
   let _reviewTypes = [];   // [{key,label,...}]
@@ -537,6 +1145,7 @@ window.PersonnelUI = (() => {
       const f = [];
       if (c.isReappointment) f.push('<span class="badge badge-navy" title="Reappointment">reappt</span>');
       if (c.isMandatory)     f.push('<span class="badge" title="Mandatory review">mandatory</span>');
+      if (c.isElected)       f.push('<span class="badge badge-gold" title="Elected — not listed on the Call">elected</span>');
       return f.join(' ');
     };
     const body = rows.map(c =>
@@ -550,15 +1159,28 @@ window.PersonnelUI = (() => {
         </td>
         <td class="text-sm">${c.subjectRank || '—'}${c.step ? ' · step ' + c.step : ''} ${flags(c)}</td>
         <td>
-          <select class="form-select" style="min-width:110px;" onchange="PersonnelUI.changeCaseStatus('${c.caseId}', this.value)">
+          <select class="form-select" style="min-width:120px;" onchange="PersonnelUI.changeCaseStatus('${c.caseId}', this.value)">
             ${_statusOptions(c.status)}
           </select>
         </td>
+        <td>
+          <input type="text" class="form-input" style="min-width:120px;font-size:12px;"
+                 value="${c.effectiveDate || ''}" placeholder="yyyy-mm-dd"
+                 title="Effective date — the clock reset. Set this for in-progress and completed cases."
+                 onchange="PersonnelUI.changeCaseEffective('${c.caseId}', this.value)">
+        </td>
+        <td>
+          <button class="btn btn-secondary btn-sm" title="Work out this case's deadlines"
+                  onclick="PersonnelUI.showCaseSchedule('${c.caseId}')">
+            <i class="ti ti-timeline"></i>
+          </button>
+        </td>
       </tr>`).join('');
     wrap.innerHTML = `
+      <div id="case-schedule-panel" style="margin-bottom:14px;"></div>
       <p class="text-sm text-muted" style="margin:4px 0 8px;">${rows.length} of ${_cases.length} case(s)</p>
       <div class="table-wrap"><table class="data-table">
-        <thead><tr><th>Candidate</th><th>Year</th><th>Review type</th><th>Rank / step</th><th>Status</th></tr></thead>
+        <thead><tr><th>Candidate</th><th>Year</th><th>Review type</th><th>Rank / step</th><th>Status</th><th>Effective date</th><th>Schedule</th></tr></thead>
         <tbody>${body}</tbody>
       </table></div>`;
   }
@@ -570,6 +1192,14 @@ window.PersonnelUI = (() => {
       if (c) { c.reviewType = reviewType; const t = _reviewTypes.find(x => x.key === reviewType); if (t) c.reviewLabel = t.label; }
     });
   }
+  function changeCaseEffective(caseId, date) {
+    App.call('personnel', 'updateCase', { caseId: caseId, effectiveDate: date }, () => {
+      Toast.show('Effective date updated.', 'success');
+      const c = _cases.find(x => x.caseId === caseId);
+      if (c) c.effectiveDate = String(date || '').trim();
+    });
+  }
+
   function changeCaseStatus(caseId, status) {
     App.call('personnel', 'updateCase', { caseId: caseId, status: status }, () => {
       Toast.show('Status updated.', 'success');
@@ -579,14 +1209,137 @@ window.PersonnelUI = (() => {
     });
   }
 
+  /** Work out and show one case's deadlines, computed from its cycle's anchors. */
+  function showCaseSchedule(caseId) {
+    const panel = document.getElementById('case-schedule-panel');
+    if (!panel) return;
+    panel.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Working out the deadlines…</span></div>';
+    panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+    App.call('personnel', 'computeScheduleForCase', { caseId: caseId }, res => {
+      if (!res.schedule) {
+        panel.innerHTML = `<div class="alert alert-info" style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
+          <span class="text-sm">${(res.warnings || []).join(' ')}</span>
+          <button class="btn btn-secondary btn-sm" onclick="PersonnelUI.closeCaseSchedule()">Close</button>
+        </div>`;
+        return;
+      }
+      const label = res.candidate + ' — ' + (res.reviewType || '') + ' (' + res.academicYear + ')';
+      panel.innerHTML = `
+        <div class="card" style="border:1px solid #e3e6ea;">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <div class="card-title" style="margin:0;font-size:15px;"><i class="ti ti-timeline"></i> ${label}</div>
+            <button class="btn btn-secondary btn-sm" onclick="PersonnelUI.closeCaseSchedule()">Close</button>
+          </div>
+          <div style="margin-top:10px;">
+            ${_timelineHtml(res.isPromotion ? 'Promotion (with external letters)' : 'Review timeline',
+                            res.schedule, res.isPromotion)}
+          </div>
+        </div>`;
+    }, () => { panel.innerHTML = '<p class="text-muted text-sm">Could not work out the schedule.</p>'; });
+  }
+
+  function closeCaseSchedule() {
+    const panel = document.getElementById('case-schedule-panel');
+    if (panel) panel.innerHTML = '';
+  }
+
+  // ── Cases: add a case by hand (elected reviews) ────────────
+  function showAddCase() {
+    document.getElementById('cases-list').style.display = 'none';
+    document.getElementById('cases-import').style.display = 'none';
+    document.getElementById('cases-add').style.display = 'block';
+    document.getElementById('add-eligibility').innerHTML = '';
+
+    // Populate the review-type and status dropdowns from the vocabulary.
+    document.getElementById('add-type').innerHTML =
+      _reviewTypes.map(t => `<option value="${t.key}">${t.label}</option>`).join('');
+    document.getElementById('add-status').innerHTML =
+      _statuses.map(s => `<option value="${s}" ${s === 'open' ? 'selected' : ''}>${s}</option>`).join('');
+
+    // Candidate picker from the roster (loading it if needed).
+    const fill = () => {
+      const sel = document.getElementById('add-candidate');
+      sel.innerHTML = '<option value="">— choose faculty —</option>' +
+        _roster.slice()
+          .sort((a, b) => String(a.nameLastFirst || a.name).localeCompare(String(b.nameLastFirst || b.name)))
+          .map(r => `<option value="${r.email}">${r.nameLastFirst || r.name}${r.rank ? ' — ' + r.rank + (r.step ? ' step ' + r.step : '') : ''}</option>`)
+          .join('');
+    };
+    if (!_roster.length) {
+      App.call('personnel', 'listRoster', {}, res => { _roster = res.roster || []; fill(); });
+    } else { fill(); }
+  }
+
+  /** Pre-fill rank/step from the roster and show live eligibility guidance. */
+  function onAddCandidate() {
+    const email = document.getElementById('add-candidate').value;
+    const box = document.getElementById('add-eligibility');
+    if (!email) { box.innerHTML = ''; return; }
+
+    const r = _roster.find(x => x.email === email);
+    if (r) {
+      document.getElementById('add-rank').value = r.rank || '';
+      document.getElementById('add-step').value = r.step || '';
+    }
+
+    box.innerHTML = '<span class="text-muted text-sm">Checking eligibility…</span>';
+    App.call('personnel', 'checkCaseEligibility', { email: email }, res => {
+      const cls = res.isAcceleration ? 'alert-warning'
+                : res.indefiniteStep ? 'alert-info' : 'alert-success';
+      const icon = res.isAcceleration ? 'ti-alert-triangle'
+                 : res.indefiniteStep ? 'ti-info-circle' : 'ti-circle-check';
+      box.innerHTML = `<div class="alert ${cls}" style="display:flex;gap:10px;align-items:flex-start;">
+        <i class="ti ${icon}" style="margin-top:2px;"></i>
+        <div class="text-sm">
+          ${res.summary}
+          ${res.lastAdvancement ? `<br><span class="text-muted">Last advancement: ${res.lastAdvancement} · service measured to ${res.prospectiveDate}</span>` : ''}
+        </div>
+      </div>`;
+    }, () => { box.innerHTML = ''; });
+  }
+
+  function saveNewCase() {
+    const payload = {
+      candidateEmail: document.getElementById('add-candidate').value,
+      academicYear:   document.getElementById('add-year').value.trim(),
+      reviewType:     document.getElementById('add-type').value,
+      status:         document.getElementById('add-status').value,
+      subjectRank:    document.getElementById('add-rank').value.trim(),
+      step:           document.getElementById('add-step').value.trim(),
+      effectiveDate:  document.getElementById('add-effective').value.trim(),
+      isElected:      document.getElementById('add-elected').checked,
+      notes:          document.getElementById('add-notes').value.trim(),
+    };
+    if (!payload.candidateEmail) { Toast.show('Choose a candidate.', 'error'); return; }
+    if (!payload.academicYear)   { Toast.show('Enter the academic year.', 'error'); return; }
+
+    FormHelper.setLoading('add-save-btn', true);
+    App.call('personnel', 'createCase', payload, res => {
+      Toast.show(res.action === 'created' ? 'Case created.' : 'Existing case updated.', 'success');
+      // reset the form fields
+      ['add-year','add-rank','add-step','add-effective','add-notes'].forEach(id => {
+        const el = document.getElementById(id); if (el) el.value = '';
+      });
+      document.getElementById('add-candidate').value = '';
+      document.getElementById('add-eligibility').innerHTML = '';
+      backToCases();
+      loadCases();
+    }, () => FormHelper.setLoading('add-save-btn', false));
+  }
+
   // ── Cases: Call import ─────────────────────────────────────
   function showCallImport() {
     document.getElementById('cases-list').style.display = 'none';
+    const add = document.getElementById('cases-add');
+    if (add) add.style.display = 'none';
     document.getElementById('cases-import').style.display = 'block';
     document.getElementById('call-preview').innerHTML = '';
   }
   function backToCases() {
     document.getElementById('cases-import').style.display = 'none';
+    const add = document.getElementById('cases-add');
+    if (add) add.style.display = 'none';
     document.getElementById('cases-list').style.display = 'block';
   }
 
@@ -661,15 +1414,23 @@ window.PersonnelUI = (() => {
           <div class="text-sm text-muted" style="margin-top:2px;">Call: ${r.callActionRaw || '—'}</div>
         </td>
         <td>
-          <select class="form-select" style="min-width:110px;" onchange="PersonnelUI.setRowStatus(${i}, this.value)">
+          <select class="form-select" style="min-width:130px;" onchange="PersonnelUI.setRowStatus(${i}, this.value)">
+            <option value="__skip__" selected>\u2014 skip this row \u2014</option>
             ${_statuses.map(st=>`<option value="${st}">${st}</option>`).join('')}
           </select>
+          <input type="text" class="form-input" style="margin-top:4px;min-width:130px;font-size:12px;"
+                 placeholder="effective yyyy-mm-dd" onchange="PersonnelUI.setRowEffective(${i}, this.value)">
         </td>
       </tr>`;
     };
 
     // seed per-row working state
-    _callRows.forEach(r => { r._type = r.suggestedType; r._status = 'open'; r._email = r.matchedEmail; });
+    _callRows.forEach(r => {
+      r._type = r.suggestedType;
+      r._status = '__skip__';       // default: skip — you opt rows IN
+      r._effective = '';
+      r._email = r.matchedEmail;
+    });
 
     document.getElementById('call-preview').innerHTML = `
       <div style="margin-bottom:10px;">
@@ -686,13 +1447,19 @@ window.PersonnelUI = (() => {
         <button class="btn btn-primary" id="call-commit-btn" onclick="PersonnelUI.commitCall()"><i class="ti ti-check"></i> Create confirmed cases</button>
         <button class="btn btn-secondary" onclick="PersonnelUI.backToCases()">Cancel</button>
       </div>
-      <p class="text-sm text-muted" style="margin-top:6px;">Rows without a confirmed candidate or review type are skipped.</p>`;
+      <p class="text-sm text-muted" style="margin-top:6px;">
+        Rows default to <strong>skip</strong> — set a status on just the rows you want to import.
+        (Importing a past Call? Import only the actions still <strong>in progress</strong>; the completed
+        ones are already in the review-history backfill, and re-importing them would double-count.)
+        Give an in-progress case its <strong>effective date</strong> (e.g. 2026-07-01) — that's the pending clock reset.
+      </p>`;
   }
 
   function setMatch(i, email)  { _callRows[i]._email = email; }
   function unmatch(i)          { _callRows[i].matchStatus = 'none'; _callRows[i]._email = ''; _rerenderCallRow(); }
   function setRowType(i, t)    { _callRows[i]._type = t; }
   function setRowStatus(i, st) { _callRows[i]._status = st; }
+  function setRowEffective(i, d)  { _callRows[i]._effective = String(d || '').trim(); }
   function _rerenderCallRow()  { /* simple: re-render whole preview from current state */
     // Rebuild using current _callRows state by faking a plan.
     const s = { matched: 0, ambiguous: 0, none: 0, total: _callRows.length,
@@ -703,18 +1470,22 @@ window.PersonnelUI = (() => {
 
   function commitCall() {
     const year = document.getElementById('call-year').value.trim();
-    const cases = _callRows.map(r => ({
-      candidateEmail: r._email || r.matchedEmail || '',
-      reviewType:     r._type || '',
-      status:         r._status || 'open',
-      displayName:    r.displayName,
-      subjectRank:    r.rank, step: r.step,
-      callActionRaw:  r.callActionRaw, oa: r.oa,
-      yrsRank: r.yrsRank, yrsStep: r.yrsStep, qtrs: r.qtrs,
-      isReappointment: r.isReappointment, isMandatory: r.isMandatory,
-    })).filter(c => c.candidateEmail && c.reviewType);
+    const cases = _callRows
+      .filter(r => r._status && r._status !== '__skip__')   // opt-in only
+      .map(r => ({
+        candidateEmail: r._email || r.matchedEmail || '',
+        reviewType:     r._type || '',
+        status:         r._status,
+        effectiveDate:  r._effective || '',
+        displayName:    r.displayName,
+        subjectRank:    r.rank, step: r.step,
+        callActionRaw:  r.callActionRaw, oa: r.oa,
+        yrsRank: r.yrsRank, yrsStep: r.yrsStep, qtrs: r.qtrs,
+        isReappointment: r.isReappointment, isMandatory: r.isMandatory,
+      }))
+      .filter(c => c.candidateEmail && c.reviewType);
 
-    if (!cases.length) { Toast.show('No rows have both a candidate and a review type.', 'error'); return; }
+    if (!cases.length) { Toast.show('No rows selected — set a status on the rows you want to import.', 'error'); return; }
     FormHelper.setLoading('call-commit-btn', true);
     App.call('personnel', 'commitCallImport', { academicYear: year, cases: cases }, res => {
       const s = res.summary;
@@ -722,6 +1493,63 @@ window.PersonnelUI = (() => {
       backToCases();
       loadCases();
     }, () => FormHelper.setLoading('call-commit-btn', false));
+  }
+
+  // ── Review-history import (one-time backfill) ──────────────
+  let _histCsv = null;
+
+  function detectHistory() {
+    const file = document.getElementById('hist-file').files[0];
+    if (!file) { Toast.show('Choose the action-history CSV first.', 'error'); return; }
+    const reader = new FileReader();
+    reader.onload = e => {
+      _histCsv = e.target.result;
+      FormHelper.setLoading('hist-detect-btn', true);
+      App.call('personnel', 'detectHistoryColumns', { csv: _histCsv }, det => {
+        App.call('personnel', 'previewHistoryImport', { csv: _histCsv, mapping: det.mapping }, plan => {
+          FormHelper.setLoading('hist-detect-btn', false);
+          _histMapping = det.mapping;
+          _renderHistPreview(plan);
+        }, () => FormHelper.setLoading('hist-detect-btn', false));
+      }, () => FormHelper.setLoading('hist-detect-btn', false));
+    };
+    reader.onerror = () => Toast.show('Could not read the file.', 'error');
+    reader.readAsText(file);
+  }
+
+  let _histMapping = null;
+
+  function _renderHistPreview(plan) {
+    const s = plan.summary;
+    const people = plan.people || [];
+    const rows = people.map(p =>
+      `<tr><td>${p.name}</td><td>${p.reviewCount}</td><td class="text-sm">${p.mostRecent || '\u2014'}</td></tr>`
+    ).join('');
+    document.getElementById('hist-preview').innerHTML = `
+      <div style="margin-bottom:10px;">
+        <span class="badge badge-success" style="margin-right:6px;">${s.matchedPeople} faculty matched</span>
+        <span class="text-muted text-sm">${s.reviewRows} review rows found · ${s.skippedNoProfile} not in roster · ${s.skippedNoDate} undated · ${s.skippedNoCruzid} no CruzID</span>
+      </div>
+      <div class="table-wrap" style="max-height:340px;overflow-y:auto;"><table class="data-table">
+        <thead><tr><th>Faculty</th><th>Reviews</th><th>Most recent</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>
+      <div class="form-actions">
+        <button class="btn btn-primary" id="hist-commit-btn" onclick="PersonnelUI.commitHistory()" ${people.length?'':'disabled'}><i class="ti ti-check"></i> Import history for ${people.length} faculty</button>
+      </div>
+      <p class="text-sm text-muted" style="margin-top:6px;">Re-running replaces imported history (never duplicates); entries added by completing cases are preserved.</p>`;
+  }
+
+  function commitHistory() {
+    if (!_histCsv || !_histMapping) { Toast.show('Read the report first.', 'error'); return; }
+    FormHelper.setLoading('hist-commit-btn', true);
+    App.call('personnel', 'commitHistoryImport', { csv: _histCsv, mapping: _histMapping }, res => {
+      const s = res.summary;
+      Toast.show(`Review history imported: ${s.rowsWritten} entries for ${s.people} faculty.`, 'success', 6000);
+      _histCsv = null; _histMapping = null;
+      document.getElementById('hist-file').value = '';
+      document.getElementById('hist-preview').innerHTML = '';
+    }, () => FormHelper.setLoading('hist-commit-btn', false));
   }
 
   // ── Import (existing flow) ─────────────────────────────────
@@ -854,9 +1682,15 @@ window.PersonnelUI = (() => {
     loadRoster, applyFilter, sortBy, openDetail, backToRoster,
     editDetail, onRankChange, saveEdit, cancelEdit,
     detect, preview, commit, cancel,
-    loadCases, applyCaseFilter, changeCaseType, changeCaseStatus,
+    loadCases, applyCaseFilter, changeCaseType, changeCaseStatus, changeCaseEffective,
     showCallImport, backToCases, detectCall, commitCall,
-    setMatch, unmatch, setRowType, setRowStatus,
+    showAddCase, onAddCandidate, saveNewCase,
+    showCaseSchedule, closeCaseSchedule,
+    setMatch, unmatch, setRowType, setRowStatus, setRowEffective,
+    detectHistory, commitHistory,
+    loadAnticipated, exportSheet, exportCsv,
+    loadSettings, loadGaps, saveGaps, loadCycle, pickDeadline, cancelPick,
+    searchDeadlines, chooseDeadline, previewCycleSchedule,
   };
 
 })();

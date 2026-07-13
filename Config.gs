@@ -52,14 +52,6 @@ const CONFIG = {
     // tier). Tabs: PersonAttributes (person-attribute extension table) and
     // Cases (review cases from the Call).
     PERSONNEL:     '1MEE2WYjHddPfEVo7SEOU7tbNp1CFbUM90sFIFkbdPh0',
-    // Department Service module — its OWN spreadsheet (per-module storage
-    // tier). Tabs: ServiceCatalog, ServiceAssignments, ServiceCorrections,
-    // ServiceNominations, ServiceSettings.
-    SERVICE:       '18VWph7a3gVZwWve0pq_Lhm8olQuf2yI_yZQHWkot3lU',
-    // Calendar service (CalendarService.gs) — its OWN spreadsheet.
-    // Tabs: CalendarEvents, CalendarDeadlines, CalendarSources.
-    // Blank until setUp() creates it and logs the id to paste back here.
-    CALENDAR:      '1WvFofmDCWm1QbxBjtMtUSAtLoURc-PJFUt2lg7pu_rI',
   },
 
   // Optional: Drive folder where setUp() creates new spreadsheets.
@@ -110,24 +102,12 @@ const CONFIG = {
     INDIVIDUAL_STUDIES:     'Petitions',
     // Sponsor-owned petition templates (same spreadsheet as Petitions)
     INDIVIDUAL_STUDIES_TEMPLATES: 'Templates',
-    // UI-managed operational settings for the Individual Studies module
-    // (key/value; student-notification templates). Same spreadsheet as
-    // Petitions, mirroring TranscriptSettings.
-    INDIVIDUAL_STUDIES_SETTINGS: 'PetitionSettings',
     // Academic Personnel module tabs (live in SHEETS.PERSONNEL)
     PERSON_ATTRIBUTES: 'PersonAttributes',
     CASES:             'Cases',
-    // Department Service module tabs (live in SHEETS.SERVICE)
-    SERVICE_CATALOG:     'ServiceCatalog',
-    SERVICE_ASSIGNMENTS: 'ServiceAssignments',
-    SERVICE_CORRECTIONS: 'ServiceCorrections',
-    SERVICE_NOMINATIONS: 'ServiceNominations',
-    SERVICE_SETTINGS:    'ServiceSettings',
-    // Calendar service tabs (live in SHEETS.CALENDAR)
-    CALENDAR_EVENTS:    'CalendarEvents',
-    CALENDAR_DEADLINES: 'CalendarDeadlines',
-    CALENDAR_SOURCES:   'CalendarSources',
-    CALENDAR_PENDING:   'CalendarPending',
+    REVIEW_HISTORY:    'ReviewHistory',
+    CYCLES:            'Cycles',
+    PERSONNEL_SETTINGS:'Settings',
   },
 
   // ── Storage convention (three tiers) ───────────────────────
@@ -243,25 +223,6 @@ const CONFIG = {
     DRIVE_FOLDER_ID: '1goPXXH3b0v4k4Pn_qyonPJHZW67jOfLn',
   },
 
-  // ── Calendar module (Phase 2 import layer) ─────────────────
-  // Set-once operational constants for the nightly source refresh.
-  // The SOURCES themselves (which calendars/pages to import) are data,
-  // UI-managed in the CalendarSources tab — never constants here.
-  CALENDAR: {
-    // A changed/new imported deadline landing within this many days of
-    // today additionally triggers a Notify email to the task pool (the
-    // dashboard Task is always created regardless). Middle-path rule:
-    // near-term changes are urgent; far-future ones wait for the queue.
-    NEAR_TERM_DAYS: 30,
-    // Google Calendar fetch window: now through this many months ahead.
-    // Covers the current academic year plus early postings for the next.
-    FETCH_MONTHS_AHEAD: 18,
-    // Role pool that refresh-review Tasks are assigned to. Deliberately
-    // the staff pool (who work review queues), independent of the
-    // UI-configurable deadlineManagerRoles setting.
-    REFRESH_TASK_ROLE: 'staff',
-  },
-
   // ── Academic Personnel module ──────────────────────────────
   // raw rank title (as it appears in the rank/step report) -> { series, tier }.
   // series drives component templates (later phase); tier drives Bylaw 55
@@ -336,8 +297,96 @@ const CONFIG = {
     //              listed on the Call in error, withdrawn, or otherwise
     //              resolved without a review. Terminal, like deferred, but a
     //              distinct outcome (not a postponement).
-    // Workflow states (forwarded, complete, …) are added in a later phase.
-    STATUSES: ['open', 'deferred', 'closed'],
+    //   completed — the action is FINAL (approved upstream, effective date
+    //              known). Resets the eligibility clock: moving a case to
+    //              completed appends an entry to the candidate's review
+    //              history, keeping the ledger current going forward.
+    //   in_progress — the review is underway, or the department has finished
+    //              its part and the file has gone forward, but the action is
+    //              NOT yet final. An effective date is anticipated. Does NOT
+    //              reset the clock (nothing is final), but IS visible to the
+    //              eligibility engine as a PENDING reset: the anticipated-Call
+    //              view computes as if the action completes and flags the
+    //              person, so an in-flight action can't silently distort next
+    //              cycle's planning.
+    STATUSES: ['open', 'in_progress', 'deferred', 'closed', 'completed'],
+
+    // ── Review history: action codes that count as "a review" ──
+    // The action-history report (APO ledger) lists every personnel action;
+    // these codes are the ones that constitute a REVIEW (resetting the
+    // mandatory-review 5-year clock and forming the candidate's review
+    // history). Everything else (title changes, range adjustments,
+    // appointments) is ignored. Configurable — adjust as APO's coding
+    // evolves. MA (mandatory review) is kept as a slot though it is not in
+    // the current data (mandatory reviews are coded by their primary type,
+    // e.g. MI/MD); harmless if it never appears.
+    //   IAP  — initial appointment (establishes the review clock)
+    //   MI   — merit increase
+    //   PR   — promotion
+    //   SI   — salary increase
+    //   REMI — reappointment with merit increase
+    //   RESI — reappointment with salary increase
+    //   MD   — mid-career appraisal
+    //   MA   — mandatory review (reserved; not in current data)
+    REVIEW_ACTION_CODES: ['IAP', 'MI', 'PR', 'SI', 'REMI', 'RESI', 'MD', 'MA'],
+
+    // Drive folder id for exports (Anticipated Call → Google Sheets). Leave
+    // blank to create exports in the user's Drive root. Set this to a folder
+    // id to keep exports organized in one place.
+    EXPORT_FOLDER_ID: '',
+
+    // ── Eligibility clock ──────────────────────────────────────
+    // ADVANCEMENT_CODES: actions constituting a POSITIVE ADVANCEMENT, which
+    // RESET the eligibility clock — the faculty member is not called again
+    // until another full normative interval is served. Any salary increase
+    // counts, even if advancement in rank/step was denied.
+    ADVANCEMENT_CODES: ['IAP', 'MI', 'PR', 'SI', 'REMI', 'RESI', 'MD', 'MA'],
+
+    // NON_RESETTING_CODES: reviews that do NOT reset the clock —
+    //   · RETENTION actions (an abridged review for retention purposes; the
+    //     candidate remains on the Call at their standard normative interval)
+    //   · DENIALS (no advancement of any type; the candidate may re-submit at
+    //     any time, and it is not an acceleration)
+    // Add the codes here once identified in the APO ledger; anything listed
+    // is skipped when finding the last clock-resetting advancement. Until
+    // populated, every review is treated as resetting (slightly over-resets
+    // for retention/denial cases).
+    NON_RESETTING_CODES: [],
+
+    // Case review type -> action code written to review history when a case
+    // is marked Completed (so the ledger self-maintains going forward).
+    REVIEW_TYPE_TO_CODE: {
+      merit:                'MI',
+      salary_increase_only: 'SI',
+      promotion:            'PR',
+      midcareer:            'MD',
+    },
+
+    // ── Workflow scheduler gap parameters (all in BUSINESS days) ──
+    // The backward chain from the division submission deadline and the
+    // forward early-review window (promotions) are computed from these.
+    // candidateReviewDays (10) is the mandatory candidate-review window and
+    // has real policy backing; the inner-chain gaps are the department's own
+    // process spacing — tune them here once finalized (no code change). All
+    // are business-day counts, skipping weekends + calendar closures.
+    //   candidateReviewDays   — mandatory candidate review (late window, and
+    //                           the promotion early letters-review window).
+    //   letterToReviewGap     — voted letter done this many biz days before
+    //                           the late review opens (0 = opens on letter).
+    //   voteToLetterGap       — finalize the letter after the vote.
+    //   deliberateToVoteGap   — committee deliberation before the vote.
+    //   draftsToDeliberateGap — drafts done before deliberation begins.
+    //   lateLetterBufferDays  — cushion after letters-due (Nov 1) before the
+    //                           early review is PLANNED to start, absorbing
+    //                           late-arriving letters.
+    SCHEDULE_GAPS: {
+      candidateReviewDays:   10,
+      letterToReviewGap:      0,
+      voteToLetterGap:        3,
+      deliberateToVoteGap:    5,
+      draftsToDeliberateGap:  3,
+      lateLetterBufferDays:   5,
+    },
 
     RANK_MAP: {
       // Ladder (Professor) series

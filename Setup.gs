@@ -331,24 +331,6 @@ const SETUP_SCHEMA = {
     seed: [],
   },
 
-  INDIVIDUAL_STUDIES_SETTINGS: {
-    tab: 'PetitionSettings',
-    // UI-managed operational settings (key/value), mirroring
-    // TranscriptSettings. Edited in the module's Settings tab; the sheet
-    // overrides these seeded defaults once saved. The two NOTIFY_* values
-    // are the student-email MESSAGE templates (tokens {FirstName} and
-    // {Course} filled at send time). The structural, load-bearing lines are
-    // appended in code, never stored here: the class number + enrollment
-    // instructions, the advisor's note, and the PDF link (completion); the
-    // sponsor's return note and the resubmission link (returned). Lives in
-    // the same spreadsheet as Petitions.
-    headers: ['Key', 'Value'],
-    seed: [
-      ['NOTIFY_COMPLETE', 'Your {Course} individual-studies petition is complete.'],
-      ['NOTIFY_RETURNED', 'Your {Course} petition was returned for revision.'],
-    ],
-  },
-
   PERSON_ATTRIBUTES: {
     tab: 'PersonAttributes',
     // Academic Personnel module — tall, namespaced person-attribute table.
@@ -387,170 +369,79 @@ const SETUP_SCHEMA = {
     //   YrsRank/YrsStep/Qtrs — time-in-grade context from the Call.
     //   IsReappointment— derived: true when SubjectRank is Assistant-level.
     //   IsMandatory    — timing flag parsed from the Call string.
-    //   Status         — 'open' or 'deferred' (candidate postponed).
+    //   Status         — open / in_progress / deferred / closed / completed.
+    //   IsElected      — TRUE when the candidate ELECTED this review rather
+    //                    than being listed on the Call. Covers faculty at
+    //                    indefinite steps (Professor 5+), who are only
+    //                    automatically called at the five-year mandatory but
+    //                    may elect a review once normative time is served; and
+    //                    accelerations (a review sought before the normative
+    //                    interval is complete). Manually-added cases; the
+    //                    CallActionRaw is empty for these.
+    //   EffectiveDate  — the date the action takes (or took) effect,
+    //                    'yyyy-MM-dd', typically a July 1. Set for in-progress
+    //                    cases (the anticipated reset) and completed ones (the
+    //                    actual reset). The eligibility clock keys on this,
+    //                    not on when the paperwork concluded.
     //   Cycle key note — AcademicYear like "2026-27".
     headers: ['CaseID', 'CandidateEmail', 'AcademicYear', 'ReviewType',
               'SubjectRank', 'Step', 'CallActionRaw', 'OAFlag',
               'YrsRank', 'YrsStep', 'Qtrs',
-              'IsReappointment', 'IsMandatory', 'Status', 'Notes',
+              'IsReappointment', 'IsMandatory', 'IsElected',
+              'Status', 'EffectiveDate', 'Notes',
               'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
     seed: [],
   },
-  SERVICE_CATALOG: {
-    tab: 'ServiceCatalog',
-    // Department Service — the catalog of service positions/committees.
-    // Replaces the legacy app's Settings sheet AND its hardcoded category
-    // lists: display behavior is driven by attributes (IsQuarterly,
-    // DefaultRole, IsLeadership, SortWeight; NominationEligible is used by
-    // the Phase 2 self-nomination cycle). Key is a permanent slug —
-    // assignment rows reference it — while Label stays editable. Categories
-    // in use are deactivated, never deleted. No seed: the legacy import
-    // auto-creates entries, and staff add/tune them via the module UI.
-    headers: ['Key', 'Label', 'Active', 'IsQuarterly', 'DefaultRole',
-              'IsLeadership', 'SortWeight', 'NominationEligible', 'AutoAssigns',
-              'Notes',
-              'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+  CYCLES: {
+    tab: 'Cycles',
+    // Academic Personnel — one row per review cycle (academic year), holding
+    // the SCHEDULER ANCHORS: the calendar DeadlineIDs this cycle's schedule is
+    // computed from. Anchors are cycle-wide (all cases in the year share them).
+    //
+    // We store the calendar's immutable DeadlineID, never a title or a date —
+    // titles are upstream's words and dates move. At compute time the id is
+    // resolved via CalendarService.getDeadlineById(), which also reports a
+    // REMOVED anchor so a vanished deadline is flagged rather than silently
+    // producing a stale schedule.
+    //
+    //   DivisionDeadlineID   — the hard end: files due to the Division.
+    //   LettersDueDeadlineID — external letters due (promotions); the forward
+    //                          anchor for the early candidate-review window.
+    headers: ['CycleID', 'AcademicYear', 'DivisionDeadlineID', 'LettersDueDeadlineID',
+              'Notes', 'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
     seed: [],
   },
-  SERVICE_ASSIGNMENTS: {
-    tab: 'ServiceAssignments',
-    // Department Service — one row per service assignment (person ×
-    // category × role × academic year × quarter). Identity is NOT copied:
-    // PersonEmail is the routing key and names are read from Auth at
-    // display time. RawName is kept ONLY for historical people with no
-    // portal profile (21 years of legacy data includes retired/departed
-    // faculty); matching a record to a profile clears it — never both.
-    // Year is "YYYY-YY"; Quarter is blank, 'AY', or slash-joined quarters
-    // (e.g. "Fall/Winter"). Odd legacy Quarter values are shunted into
-    // Notes at import. Meta columns filled by DataService.
-    headers: ['AssignmentID', 'PersonEmail', 'RawName', 'CategoryKey',
-              'Role', 'Year', 'Quarter', 'Notes',
-              'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+  PERSONNEL_SETTINGS: {
+    tab: 'Settings',
+    // Academic Personnel — module settings as key/value rows. Currently the
+    // scheduler's gap parameters (business-day spacing between the internal
+    // deadlines), editable in the Settings tab so the department can tune its
+    // process without a code change. A missing key falls back to the CONFIG
+    // default, so an empty tab behaves exactly as before.
+    headers: ['Key', 'Value', 'Notes', 'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
     seed: [],
   },
-  SERVICE_CORRECTIONS: {
-    tab: 'ServiceCorrections',
-    // Department Service — correction requests against the service record.
-    // This row is the AUTHORITATIVE record; the staff-pool Task created
-    // alongside it is a pointer (Tasks stores routing, never business
-    // data). Replaces the legacy write-only Corrections sheet: requests
-    // now surface on staff dashboards and are resolved explicitly.
-    // CategoryLabel is the requester's free text; CategoryKey is filled
-    // only when it resolves to a catalog entry. Resolving a request is
-    // separate from making the actual record fix (a deliberate
-    // add/edit/delete of an assignment). Meta columns via DataService.
-    headers: ['CorrectionID', 'PersonEmail', 'Year', 'CategoryKey',
-              'CategoryLabel', 'Role', 'Quarter', 'Note', 'Status',
-              'ResolvedBy', 'ResolvedAt', 'ResolutionNote',
-              'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
-    seed: [],
-  },
-  SERVICE_NOMINATIONS: {
-    tab: 'ServiceNominations',
-    // Department Service — ranked self-nomination preferences for a target
-    // academic year. All-authenticated (PersonEmail only; no RawName path).
-    // Priority is the person's own ranking (1 = first choice) among their
-    // OPEN nominations for that year; it informs the super admin's
-    // assignment decisions but is NOT a guarantee. Status: OPEN →
-    // WITHDRAWN (by the nominator while the window is open) or ACCEPTED /
-    // DECLINED (super admin; accepting creates the proposed next-year
-    // assignment). DecisionNote is internal — never shown to the
-    // nominator. Meta columns filled by DataService.
-    headers: ['NominationID', 'PersonEmail', 'Year', 'CategoryKey', 'Role',
-              'Quarter', 'Priority', 'Note', 'Status',
-              'DecidedBy', 'DecidedAt', 'DecisionNote',
-              'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
-    seed: [],
-  },
-  SERVICE_SETTINGS: {
-    tab: 'ServiceSettings',
-    // Department Service — UI-managed operational settings (key/value),
-    // mirroring ThesisSettings / TranscriptSettings. NOMINATIONS_OPEN is
-    // the staff-facing window toggle (super_admin-controlled in this
-    // module); NOMINATION_YEAR is the target academic year locked in when
-    // the window is opened, so a window that straddles July 1 keeps
-    // targeting the year it was opened for.
-    headers: ['Key', 'Value'],
-    seed: [
-      ['NOMINATIONS_OPEN', 'FALSE'],
-    ],
-  },
-  CALENDAR_EVENTS: {
-    tab: 'CalendarEvents',
-    // Calendar service (CalendarService.gs) — timed department events.
-    // Phase 1 renders these read-only; creation arrives with the Events
-    // module. LocationKey stays blank until a Facilities module exists
-    // (free-text LocationLabel carries the venue until then); Attendees
-    // is reserved for future person-collision checking. Restricted TRUE
-    // hides the event from viewers whose roles don't intersect
-    // AudienceRoles (super_admin always sees). Meta via DataService.
-    headers: ['EventID', 'Title', 'Description', 'Start', 'End',
-              'LocationKey', 'LocationLabel', 'AudienceRoles',
-              'Restricted', 'Attendees', 'Status',
-              'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
-    seed: [],
-  },
-  CALENDAR_DEADLINES: {
-    tab: 'CalendarDeadlines',
-    // Calendar service — externally set deadlines the department tracks
-    // centrally. Origin: manual | harvested | imported. SourceKey /
-    // ExternalUID / LastSeenAt are Phase 2 import provenance. Pinned
-    // marks a human-edited imported row that a refresh must never
-    // overwrite (it reports divergence instead). Perennial marks a
-    // same-date-every-year deadline. AudienceRoles filters display
-    // ("aimed at me"), never visibility. Meta via DataService.
-    // Kind (Phase 3.5): 'deadline' (default) | 'closure'. Closures are
-    // non-working days (holidays, campus closures) — rendered as a
-    // day-state wash on the calendar, excluded from deadline queries,
-    // and served to the Personnel scheduler via listClosures(). The
-    // Registrar feed's holiday entries are committed AS closures.
-    // Color (Phase 3.5): optional per-entry palette key ('' = kind
-    // default). Reviewer metadata — never pins an imported row.
-    headers: ['DeadlineID', 'Title', 'Description', 'Date',
-              'AudienceRoles', 'Source', 'Link', 'Origin',
-              'SourceKey', 'ExternalUID', 'Perennial', 'Pinned',
-              'Status', 'LastSeenAt', 'Kind', 'Color',
-              'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
-    seed: [],
-  },
-  CALENDAR_SOURCES: {
-    tab: 'CalendarSources',
-    // Calendar service — Phase 2 import-source registry (created now so
-    // setUp runs once). Type: gcal | gsheet | html. ParserKey maps a
-    // source to its extractor function, mirroring how the Modules sheet's
-    // Handler column maps to code. LastFetchedAt vs LastSuccessAt lets a
-    // broken scraper surface as stale instead of silently serving old
-    // data. Meta via DataService.
-    // FailStreak (Phase 3.3): consecutive nightly-refresh failures.
-    // The fail-loud email fires at streak 3 (and every 3rd after), so
-    // one night of campus transport roulette doesn't cry wolf at 6 AM;
-    // the stale marking in the UI remains immediate. Reset on success.
-    headers: ['SourceKey', 'Label', 'Type', 'URL', 'CalendarID',
-              'ParserKey', 'Enabled', 'LastFetchedAt',
-              'LastSuccessAt', 'LastResult', 'FailStreak',
-              'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
-    seed: [],
-  },
-  CALENDAR_PENDING: {
-    tab: 'CalendarPending',
-    // Calendar service — the nightly refresh's REVIEW QUEUE. One row per
-    // proposed change from an import source, awaiting a human's
-    // commit/dismiss in the module's Imports tab. The refresh wholesale-
-    // replaces a source's OPEN rows each run (idempotent); committed/
-    // dismissed rows are kept as the review audit trail.
-    //   Kind: new | changed | vanished | pinned_diverged
-    //   DeadlineID: the existing imported deadline a changed/vanished/
-    //     pinned_diverged row targets (blank for new).
-    //   Old*/New* pairs let the UI show a side-by-side diff.
-    //   Status: open | committed | dismissed.
-    // SuggestedAudience (Phase 3): per-item audience roles proposed by a
-    // dedicated extractor (e.g. senate rows -> senate_faculty). Applied
-    // on commit unless the reviewer overrides via the shared picker.
-    headers: ['PendingID', 'SourceKey', 'Kind', 'ExternalUID', 'DeadlineID',
-              'Title', 'Date', 'OldTitle', 'OldDate', 'Detail', 'Link',
-              'SuggestedAudience',
-              'Status', 'DecidedBy', 'DecidedAt',
-              'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+  REVIEW_HISTORY: {
+    tab: 'ReviewHistory',
+    // Academic Personnel — one row per completed review in a person's
+    // history. Seeded by a one-time import of the APO action ledger
+    // (review-coded rows only, matched to the roster by CruzID) and
+    // APPENDED to going forward when a case is marked Completed, so the
+    // ledger self-maintains. Read by the eligibility logic (the
+    // mandatory-review 5-year clock resets at the most recent entry) and
+    // shown as a per-person timeline.
+    //   PersonEmail   — routing key (name read from Auth at display time).
+    //   ReviewDate    — effective date of the action ('yyyy-MM-dd').
+    //   ReviewCode    — action code (IAP/MI/PR/SI/REMI/RESI/MD/MA).
+    //   TitleAtTime   — appointment title on the action row (context).
+    //   StepAtTime    — step on the action row (context).
+    //   AcademicYear  — the report's academic-year label, if present.
+    //   Source        — 'imported' (ledger backfill) or 'case' (completed
+    //                    case appended it); CaseID set when Source='case'.
+    //   CaseID        — the case that produced this entry (Source='case').
+    headers: ['ReviewID', 'PersonEmail', 'ReviewDate', 'ReviewCode',
+              'TitleAtTime', 'StepAtTime', 'AcademicYear', 'Source', 'CaseID',
+              'Notes', 'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
     seed: [],
   },
 };
@@ -572,8 +463,6 @@ function setUp() {
   const classScheduleSS = _resolveSpreadsheet(CONFIG.SHEETS.CLASS_SCHEDULE, 'Portal Class Schedule',         'CLASS_SCHEDULE');
   const indStudiesSS = _resolveSpreadsheet(CONFIG.SHEETS.INDIVIDUAL_STUDIES, 'Portal Individual Studies',     'INDIVIDUAL_STUDIES');
   const personnelSS = _resolveSpreadsheet(CONFIG.SHEETS.PERSONNEL,  'Portal Academic Personnel',             'PERSONNEL');
-  const serviceSS = _resolveSpreadsheet(CONFIG.SHEETS.SERVICE,      'Portal Department Service',             'SERVICE');
-  const calendarSS = _resolveSpreadsheet(CONFIG.SHEETS.CALENDAR,    'Portal Calendar',                       'CALENDAR');
 
   // Config spreadsheet gets Users, Roles, Modules, Requests tabs
   _setupTab(usersSS, SETUP_SCHEMA.USERS);
@@ -613,29 +502,15 @@ function setUp() {
   // Individual Studies module spreadsheet gets the Petitions tab
   _setupTab(indStudiesSS, SETUP_SCHEMA.INDIVIDUAL_STUDIES);
   _setupTab(indStudiesSS, SETUP_SCHEMA.INDIVIDUAL_STUDIES_TEMPLATES);
-  _setupTab(indStudiesSS, SETUP_SCHEMA.INDIVIDUAL_STUDIES_SETTINGS);
   _tidyDefaultSheet(indStudiesSS);
 
   // Academic Personnel module spreadsheet gets the PersonAttributes + Cases tabs
   _setupTab(personnelSS, SETUP_SCHEMA.PERSON_ATTRIBUTES);
   _setupTab(personnelSS, SETUP_SCHEMA.CASES);
+  _setupTab(personnelSS, SETUP_SCHEMA.REVIEW_HISTORY);
+  _setupTab(personnelSS, SETUP_SCHEMA.CYCLES);
+  _setupTab(personnelSS, SETUP_SCHEMA.PERSONNEL_SETTINGS);
   _tidyDefaultSheet(personnelSS);
-
-  // Department Service module spreadsheet gets its three tabs
-  _setupTab(serviceSS, SETUP_SCHEMA.SERVICE_CATALOG);
-  _setupTab(serviceSS, SETUP_SCHEMA.SERVICE_ASSIGNMENTS);
-  _setupTab(serviceSS, SETUP_SCHEMA.SERVICE_CORRECTIONS);
-  _setupTab(serviceSS, SETUP_SCHEMA.SERVICE_NOMINATIONS);
-  _setupTab(serviceSS, SETUP_SCHEMA.SERVICE_SETTINGS);
-  _tidyDefaultSheet(serviceSS);
-
-  // Calendar service spreadsheet gets its three tabs (CalendarSources is
-  // Phase 2 machinery, created now so setUp runs once)
-  _setupTab(calendarSS, SETUP_SCHEMA.CALENDAR_EVENTS);
-  _setupTab(calendarSS, SETUP_SCHEMA.CALENDAR_DEADLINES);
-  _setupTab(calendarSS, SETUP_SCHEMA.CALENDAR_SOURCES);
-  _setupTab(calendarSS, SETUP_SCHEMA.CALENDAR_PENDING);
-  _tidyDefaultSheet(calendarSS);
 
   // Submissions spreadsheet: tabs are created per form type on demand,
   // so we just ensure the spreadsheet exists and remove the default
@@ -804,10 +679,8 @@ function checkSetup() {
     ['THESIS',       CONFIG.SHEETS.THESIS,       [SETUP_SCHEMA.THESIS.tab]],
     ['TRANSCRIPT',   CONFIG.SHEETS.TRANSCRIPT,   [SETUP_SCHEMA.ARTICULATIONS.tab, SETUP_SCHEMA.ARTICULATION_REVIEW.tab, SETUP_SCHEMA.TRANSCRIPTS.tab, SETUP_SCHEMA.TRANSCRIPT_SETTINGS.tab]],
     ['CLASS_SCHEDULE', CONFIG.SHEETS.CLASS_SCHEDULE, [SETUP_SCHEMA.CLASS_SCHEDULE.tab, SETUP_SCHEMA.CLASS_SCHEDULE_IMPORTS.tab]],
-    ['INDIVIDUAL_STUDIES', CONFIG.SHEETS.INDIVIDUAL_STUDIES, [SETUP_SCHEMA.INDIVIDUAL_STUDIES.tab, SETUP_SCHEMA.INDIVIDUAL_STUDIES_TEMPLATES.tab, SETUP_SCHEMA.INDIVIDUAL_STUDIES_SETTINGS.tab]],
-    ['PERSONNEL',    CONFIG.SHEETS.PERSONNEL,    [SETUP_SCHEMA.PERSON_ATTRIBUTES.tab, SETUP_SCHEMA.CASES.tab]],
-    ['SERVICE',      CONFIG.SHEETS.SERVICE,      [SETUP_SCHEMA.SERVICE_CATALOG.tab, SETUP_SCHEMA.SERVICE_ASSIGNMENTS.tab, SETUP_SCHEMA.SERVICE_CORRECTIONS.tab, SETUP_SCHEMA.SERVICE_NOMINATIONS.tab, SETUP_SCHEMA.SERVICE_SETTINGS.tab]],
-    ['CALENDAR',     CONFIG.SHEETS.CALENDAR,     [SETUP_SCHEMA.CALENDAR_EVENTS.tab, SETUP_SCHEMA.CALENDAR_DEADLINES.tab, SETUP_SCHEMA.CALENDAR_SOURCES.tab, SETUP_SCHEMA.CALENDAR_PENDING.tab]],
+    ['INDIVIDUAL_STUDIES', CONFIG.SHEETS.INDIVIDUAL_STUDIES, [SETUP_SCHEMA.INDIVIDUAL_STUDIES.tab, SETUP_SCHEMA.INDIVIDUAL_STUDIES_TEMPLATES.tab]],
+    ['PERSONNEL',    CONFIG.SHEETS.PERSONNEL,    [SETUP_SCHEMA.PERSON_ATTRIBUTES.tab, SETUP_SCHEMA.CASES.tab, SETUP_SCHEMA.REVIEW_HISTORY.tab, SETUP_SCHEMA.CYCLES.tab, SETUP_SCHEMA.PERSONNEL_SETTINGS.tab]],
   ];
   Logger.log('=== Config check ===');
   checks.forEach(([key, id, tabs]) => {
@@ -853,18 +726,11 @@ function _schemaPlacement() {
     { sheetKey: 'CLASS_SCHEDULE', def: SETUP_SCHEMA.CLASS_SCHEDULE_IMPORTS },
     { sheetKey: 'INDIVIDUAL_STUDIES', def: SETUP_SCHEMA.INDIVIDUAL_STUDIES },
     { sheetKey: 'INDIVIDUAL_STUDIES', def: SETUP_SCHEMA.INDIVIDUAL_STUDIES_TEMPLATES },
-    { sheetKey: 'INDIVIDUAL_STUDIES', def: SETUP_SCHEMA.INDIVIDUAL_STUDIES_SETTINGS },
     { sheetKey: 'PERSONNEL',    def: SETUP_SCHEMA.PERSON_ATTRIBUTES },
     { sheetKey: 'PERSONNEL',    def: SETUP_SCHEMA.CASES },
-    { sheetKey: 'SERVICE',      def: SETUP_SCHEMA.SERVICE_CATALOG },
-    { sheetKey: 'SERVICE',      def: SETUP_SCHEMA.SERVICE_ASSIGNMENTS },
-    { sheetKey: 'SERVICE',      def: SETUP_SCHEMA.SERVICE_CORRECTIONS },
-    { sheetKey: 'SERVICE',      def: SETUP_SCHEMA.SERVICE_NOMINATIONS },
-    { sheetKey: 'SERVICE',      def: SETUP_SCHEMA.SERVICE_SETTINGS },
-    { sheetKey: 'CALENDAR',     def: SETUP_SCHEMA.CALENDAR_EVENTS },
-    { sheetKey: 'CALENDAR',     def: SETUP_SCHEMA.CALENDAR_DEADLINES },
-    { sheetKey: 'CALENDAR',     def: SETUP_SCHEMA.CALENDAR_SOURCES },
-    { sheetKey: 'CALENDAR',     def: SETUP_SCHEMA.CALENDAR_PENDING },
+    { sheetKey: 'PERSONNEL',    def: SETUP_SCHEMA.REVIEW_HISTORY },
+    { sheetKey: 'PERSONNEL',    def: SETUP_SCHEMA.CYCLES },
+    { sheetKey: 'PERSONNEL',    def: SETUP_SCHEMA.PERSONNEL_SETTINGS },
   ];
 }
 
