@@ -3,55 +3,24 @@
 
 <div id="service-module">
 
-  <!-- Tab bar (role-aware, flattened — manage panes are top-level tabs like
-       Admin/User Management). Keep the role lists below in sync with the
-       _canManage/_canSeeAll constants in the controller script, and with
-       _isManager/_canSeeAll in ServiceModule.gs. -->
+  <!-- Tab bar — server-resolved (TabRegistry). Which tabs render for this
+       user is decided in getModuleHTML via TabRegistry.visibleTabs(): the
+       module's code-declared TABS manifest (ServiceModule.gs) merged with
+       the Admin → Modules → Tabs overrides. No role logic in this file. -->
+  <? var svcTabs = JSON.parse(visibleTabs); ?>
+  <? var svcHas = {}; svcTabs.forEach(function(t) { svcHas[t.key] = true; }); ?>
   <div class="module-tabs" role="tablist" aria-label="Department Service sections">
-    <? var svcRoles = JSON.parse(userRoles); ?>
-    <? var svcCanManage = svcRoles.includes('super_admin'); ?>
-    <? var svcCanSeeAll = svcCanManage || svcRoles.includes('service_history'); ?>
-    <? var svcCanProposed = svcCanManage || svcRoles.includes('department_chair'); ?>
-    <button class="module-tab active" role="tab" aria-selected="true" data-tab="directory" onclick="ServiceUI.switchTab('directory')">
-      <i class="ti ti-users-group"></i> Current Assignments
+    <? svcTabs.forEach(function(t, i) { ?>
+    <button class="module-tab<?= i === 0 ? ' active' : '' ?>" role="tab"
+            aria-selected="<?= i === 0 ? 'true' : 'false' ?>" data-tab="<?= t.key ?>"
+            onclick="ServiceUI.switchTab('<?= t.key ?>')">
+      <i class="ti <?= t.icon ?>"></i> <?= t.label ?>
     </button>
-    <? if (svcCanProposed) { ?>
-    <button class="module-tab" role="tab" aria-selected="false" data-tab="proposed" onclick="ServiceUI.switchTab('proposed')">
-      <i class="ti ti-calendar"></i> Proposed
-    </button>
-    <? } ?>
-    <button class="module-tab" role="tab" aria-selected="false" data-tab="mine" onclick="ServiceUI.switchTab('mine')">
-      <i class="ti ti-history"></i> My History
-    </button>
-    <button class="module-tab" role="tab" aria-selected="false" data-tab="nominate" onclick="ServiceUI.switchTab('nominate')">
-      <i class="ti ti-star"></i> Nominate
-    </button>
-    <? if (svcCanSeeAll) { ?>
-    <button class="module-tab" role="tab" aria-selected="false" data-tab="full" onclick="ServiceUI.switchTab('full')">
-      <i class="ti ti-archive"></i> Full History
-    </button>
-    <? } ?>
-    <? if (svcCanManage) { ?>
-    <button class="module-tab" role="tab" aria-selected="false" data-tab="assignments" onclick="ServiceUI.switchTab('assignments')">
-      <i class="ti ti-clipboard-list"></i> Assignments
-    </button>
-    <button class="module-tab" role="tab" aria-selected="false" data-tab="categories" onclick="ServiceUI.switchTab('categories')">
-      <i class="ti ti-category"></i> Categories
-    </button>
-    <button class="module-tab" role="tab" aria-selected="false" data-tab="corrections" onclick="ServiceUI.switchTab('corrections')">
-      <i class="ti ti-inbox"></i> Corrections
-    </button>
-    <button class="module-tab" role="tab" aria-selected="false" data-tab="nominations" onclick="ServiceUI.switchTab('nominations')">
-      <i class="ti ti-list-numbers"></i> Nominations
-    </button>
-    <button class="module-tab" role="tab" aria-selected="false" data-tab="import" onclick="ServiceUI.switchTab('import')">
-      <i class="ti ti-file-upload"></i> Import
-    </button>
-    <? } ?>
+    <? }); ?>
   </div>
 
   <!-- ── Tab: Current Assignments (directory) ───────────── -->
-  <div id="svc-tab-directory" class="tab-panel" role="tabpanel">
+  <div id="svc-tab-directory" class="tab-panel" role="tabpanel" style="display:none;">
     <div class="card" style="margin-top:20px;">
       <div class="card-title between">
         <span><i class="ti ti-users-group"></i> <span id="svc-directory-title">Current Assignments</span></span>
@@ -61,8 +30,9 @@
     </div>
   </div>
 
-  <!-- ── Tab: Proposed (nomination slate — chair + super_admin) ── -->
-  <? if (svcCanProposed) { ?>
+  <!-- ── Tab: Proposed (nomination slate) — rendered only when the tab
+       is visible to this user (server-resolved above) ── -->
+  <? if (svcHas.proposed) { ?>
   <div id="svc-tab-proposed" class="tab-panel" role="tabpanel" style="display:none;">
     <div class="card" style="margin-top:20px;">
       <div class="card-title between">
@@ -486,12 +456,13 @@ window.ServiceUI = (() => {
 
   const QUARTER_OPTIONS = ['', 'AY', 'Fall', 'Winter', 'Spring', 'Fall/Winter', 'Winter/Spring', 'Fall/Spring', 'Fall/Winter/Spring'];
 
-  // Keep in sync with the role lists in the tab-bar template scriptlets,
-  // and with _isManager/_canSeeAll in ServiceModule.gs.
-  const _roles = <?!= userRoles ?>;
-  const _canManage = _roles.indexOf('super_admin') !== -1;
-  const _canSeeAll = _canManage || _roles.indexOf('service_history') !== -1;
-  const _canSeeProposed = _canManage || _roles.indexOf('department_chair') !== -1;
+  // Server-resolved tab list (TabRegistry, injected by getModuleHTML):
+  // the tabs THIS user can see, in display order. Tab presence — not
+  // client-side role checks — drives all tab logic here; real
+  // permissions are enforced per action in ServiceModule.gs regardless.
+  const _tabs = <?!= visibleTabs ?>;
+  const _hasTab = {};
+  _tabs.forEach(function(t) { _hasTab[t.key] = true; });
 
   let S = {
     boot: null, catByKey: {},
@@ -673,6 +644,9 @@ window.ServiceUI = (() => {
   // ── Init / bootstrap ──────────────────────────────────────
   function init() {
     _wireCollapsibles();
+    // Activate the first visible tab — the server-resolved list decides
+    // which that is ('directory' may be hidden for this user).
+    if (_tabs.length) switchTab(_tabs[0].key);
     const f = window.__focus;
     if (f && f.sourceType === 'service_correction' && f.sourceId) S.focusCorrectionId = f.sourceId;
 
@@ -694,7 +668,7 @@ window.ServiceUI = (() => {
       renderDirectory(boot.currentAssignments || [], 'svc-directory-body');
 
       // Deep link from a correction task → open the corrections queue.
-      if (S.focusCorrectionId && _canManage) switchTab('corrections');
+      if (S.focusCorrectionId && _hasTab.corrections) switchTab('corrections');
     });
   }
 
@@ -715,6 +689,7 @@ window.ServiceUI = (() => {
 
   // ── Tab switching (house pattern) ─────────────────────────
   function switchTab(tab) {
+    if (!_hasTab[tab]) return;   // tab not visible to this user
     document.querySelectorAll('#service-module .module-tab').forEach(b => {
       const on = b.dataset.tab === tab;
       b.classList.toggle('active', on);
@@ -723,7 +698,7 @@ window.ServiceUI = (() => {
     document.querySelectorAll('#service-module .tab-panel').forEach(p => {
       p.style.display = (p.id === 'svc-tab-' + tab) ? '' : 'none';
     });
-    if (tab === 'proposed' && _canSeeProposed && S.proposed === null) loadProposed();
+    if (tab === 'proposed' && S.proposed === null) loadProposed();
     if (tab === 'mine' && S.mineRows === null) loadMine();
     if (tab === 'nominate' && S.myNoms === null) loadNominate();
     if (tab === 'full' && S.fullRows === null) loadFull();

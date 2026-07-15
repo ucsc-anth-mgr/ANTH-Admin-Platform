@@ -79,6 +79,18 @@ const SETUP_SCHEMA = {
       ['visitor', '', ''],
     ],
   },
+  MODULE_TABS: {
+    tab: 'ModuleTabs',
+    // Per-module, per-role tab visibility overrides (TabRegistry.gs).
+    // One row per (Module, Tab). Roles is a comma list ('*' = anyone the
+    // module admits; blank = fall back to the code manifest's defaults);
+    // Enabled FALSE hides the tab from everyone, super admins included.
+    // No seed: rows are written lazily by Admin → Modules → Tabs — a
+    // module with no rows runs on its code-declared defaults, which is
+    // the correct starting state. Machine-managed — not for hand editing.
+    headers: ['Module', 'Tab', 'Roles', 'Enabled'],
+    seed: [],
+  },
   THESIS_ELIGIBILITY: {
     tab: 'ThesisEligibility',
     // Who may sponsor / read senior theses. Roles is the base set; the
@@ -623,6 +635,7 @@ function setUp() {
   _setupTab(usersSS, SETUP_SCHEMA.THESIS_ELIGIBILITY);
   _setupTab(usersSS, SETUP_SCHEMA.THESIS_SETTINGS);
   _setupTab(usersSS, SETUP_SCHEMA.SETTINGS);
+  _setupTab(usersSS, SETUP_SCHEMA.MODULE_TABS);
 
   // Audit spreadsheet gets the AuditLog tab
   _setupTab(auditSS, SETUP_SCHEMA.AUDIT);
@@ -831,7 +844,7 @@ function _ensureSuperAdminNote() {
  */
 function checkSetup() {
   const checks = [
-    ['USERS_CONFIG', CONFIG.SHEETS.USERS_CONFIG, [SETUP_SCHEMA.USERS.tab, SETUP_SCHEMA.ROLES.tab, SETUP_SCHEMA.MODULES.tab, SETUP_SCHEMA.SETTINGS.tab]],
+    ['USERS_CONFIG', CONFIG.SHEETS.USERS_CONFIG, [SETUP_SCHEMA.USERS.tab, SETUP_SCHEMA.ROLES.tab, SETUP_SCHEMA.MODULES.tab, SETUP_SCHEMA.SETTINGS.tab, SETUP_SCHEMA.MODULE_TABS.tab]],
     ['AUDIT_LOG',    CONFIG.SHEETS.AUDIT_LOG,    [SETUP_SCHEMA.AUDIT.tab]],
     ['SUBMISSIONS',  CONFIG.SHEETS.SUBMISSIONS,  []],
     ['PLATFORM',     CONFIG.SHEETS.PLATFORM,     [SETUP_SCHEMA.TASKS.tab, SETUP_SCHEMA.REPORTS.tab]],
@@ -877,6 +890,7 @@ function _schemaPlacement() {
     { sheetKey: 'USERS_CONFIG', def: SETUP_SCHEMA.THESIS_ELIGIBILITY },
     { sheetKey: 'USERS_CONFIG', def: SETUP_SCHEMA.THESIS_SETTINGS },
     { sheetKey: 'USERS_CONFIG', def: SETUP_SCHEMA.SETTINGS },
+    { sheetKey: 'USERS_CONFIG', def: SETUP_SCHEMA.MODULE_TABS },
     { sheetKey: 'AUDIT_LOG',    def: SETUP_SCHEMA.AUDIT },
     { sheetKey: 'PLATFORM',     def: SETUP_SCHEMA.TASKS },
     { sheetKey: 'PLATFORM',     def: SETUP_SCHEMA.REPORTS },

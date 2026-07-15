@@ -16,7 +16,673 @@
       </div>
 
       <!-- search / filter controls -->
+      <div id="um-cont<!-- users.html — User Management module (individual add/edit + batch import) -->
+<div id="users-module">
+
+  <!-- Tab bar — rendered from the TabRegistry (visibleTabs template var).
+       Which tabs each role sees is edited in Admin → Modules → Tabs. The
+       first visible tab renders active; init() switches to it, which shows
+       its panel and triggers its load. -->
+  <div class="module-tabs">
+    <? var usrTabs = JSON.parse(visibleTabs); ?>
+    <? usrTabs.forEach(function(t, i) { ?>
+    <button class="module-tab<?= i === 0 ? ' active' : '' ?>" data-tab="<?= t.key ?>" onclick="UsersUI.switchTab('<?= t.key ?>')">
+      <i class="ti <?= t.icon ?>"></i> <?= t.label ?><? if (t.key === 'requests') { ?> <span id="um-req-badge" class="badge badge-warning" style="display:none;margin-left:4px;"></span><? } ?>
+    </button>
+    <? }); ?>
+  </div>
+
+  <!-- ══ PEOPLE: list + add/edit ══════════════════════════ -->
+  <div id="utab-people" class="tab-panel" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title between"><span><i class="ti ti-users"></i> Users</span>
+        <button class="btn btn-secondary btn-sm" onclick="UsersUI.load()"><i class="ti ti-refresh"></i> Refresh</button>
+      </div>
+
+      <!-- search / filter controls -->
       <div id="um-controls" style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:14px;">
+        <div class="form-group" style="flex:1 1 240px;margin:0;">
+          <label class="form-label" for="um-search">Search</label>
+          <input class="form-input" type="text" id="um-search" placeholder="Name, email, or ID" oninput="UsersUI.onFilterChange()">
+        </div>
+        <div class="form-group" style="flex:0 1 200px;margin:0;">
+          <label class="form-label" for="um-filter-role">Role</label>
+          <select class="form-select" id="um-filter-role" onchange="UsersUI.onFilterChange()">
+            <option value="">All roles</option>
+          </select>
+        </div>
+        <div class="form-group" style="flex:0 1 160px;margin:0;">
+          <label class="form-label" for="um-filter-status">Status</label>
+          <select class="form-select" id="um-filter-status" onchange="UsersUI.onFilterChange()">
+            <option value="active">Active only</option>
+            <option value="inactive">Inactive only</option>
+            <option value="all">All statuses</option>
+          </select>
+        </div>
+        <button class="btn btn-secondary" id="um-clear-filters" onclick="UsersUI.clearFilters()" style="margin-bottom:0;"><i class="ti ti-filter-off"></i> Clear</button>
+      </div>
+      <div id="um-count" class="text-sm text-muted" style="margin-bottom:10px;"></div>
+
+      <div id="um-table"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
+    </div>
+  </div>
+
+  <!-- ══ ADD / EDIT: single user ══════════════════════════ -->
+  <div id="utab-add" class="tab-panel" style="display:none;">
+    <div class="card" style="max-width:560px;margin-top:20px;">
+      <div class="card-title between"><span id="um-form-title"><i class="ti ti-user-plus"></i> Add a user</span></div>
+      <div class="form-group">
+        <label class="form-label" for="um-email">Email address <span class="required">*</span></label>
+        <input class="form-input" type="email" id="um-email" required placeholder="user@ucsc.edu">
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label" for="um-firstname">First name</label>
+          <input class="form-input" type="text" id="um-firstname" placeholder="Maria">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="um-lastname">Last name</label>
+          <input class="form-input" type="text" id="um-lastname" placeholder="Ramirez">
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Roles <span class="required">*</span></label>
+        <div id="um-role-chips" style="display:flex;flex-wrap:wrap;gap:10px;margin-top:4px;"></div>
+        <div class="form-hint" id="um-role-hint"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label" for="um-studentid">Student ID</label>
+          <input class="form-input" type="text" id="um-studentid" placeholder="1234567">
+          <div class="form-hint">7 digits. Leave blank if none.</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="um-employeeid">Employee ID</label>
+          <input class="form-input" type="text" id="um-employeeid" placeholder="12345678">
+          <div class="form-hint">8 digits. Leave blank if none.</div>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="um-active">Status</label>
+        <select class="form-select" id="um-active"><option value="TRUE">Active</option><option value="FALSE">Deactivated</option></select>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="um-notes">Notes</label>
+        <input class="form-input" type="text" id="um-notes" placeholder="Optional">
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-primary" id="um-save-btn" onclick="UsersUI.save()"><i class="ti ti-device-floppy"></i> Save user</button>
+        <button class="btn btn-secondary" onclick="UsersUI.clear()">Clear</button>
+        <button class="btn btn-secondary" onclick="UsersUI.switchTab('people')"><i class="ti ti-arrow-left"></i> Back to list</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ REQUESTS: pending access requests ════════════════ -->
+  <div id="utab-requests" class="tab-panel" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title between"><span><i class="ti ti-inbox"></i> Pending access requests</span>
+        <button class="btn btn-secondary btn-sm" onclick="UsersUI.loadRequests()"><i class="ti ti-refresh"></i> Refresh</button>
+      </div>
+      <p class="text-muted text-sm" style="margin:-8px 0 16px;">
+        People who signed in without access can request it. You see requests for roles you're
+        permitted to grant; approving creates their user profile with the role(s) you choose.
+      </p>
+      <div id="um-requests"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
+    </div>
+  </div>
+
+  <!-- ══ BATCH IMPORT ═════════════════════════════════════ -->
+  <div id="utab-batch" class="tab-panel" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title"><i class="ti ti-file-upload"></i> Import users from CSV</div>
+      <p class="text-muted text-sm" style="margin:-8px 0 12px;">
+        Each upload is one kind of people (e.g. a student roster). Pick the role and ID type,
+        upload the report, confirm which columns are which, preview, then import.
+        Headers are flexible — the importer auto-detects name, email, and ID columns.
+      </p>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label" for="imp-role">Role for this batch <span class="required">*</span></label>
+          <select class="form-select" id="imp-role" onchange="UsersUI.onRoleChange()">
+            <option value="">— Select role —</option>
+          </select>
+          <div class="form-hint" id="imp-role-hint">Everyone in the file gets this role.</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="imp-idtype">This report's IDs are <span class="required">*</span></label>
+          <select class="form-select" id="imp-idtype">
+            <option value="student">Student IDs (7 digits)</option>
+            <option value="employee">Employee IDs (8 digits)</option>
+            <option value="none">No ID column</option>
+          </select>
+          <div class="form-hint">Defaults from the role; override if this report differs.</div>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <input type="file" id="imp-file" accept=".csv,text/csv" class="form-input" style="padding:7px;">
+        <div class="form-hint">CSV needs first name, last name, and an email and/or ID per person.</div>
+      </div>
+      <div class="form-group" style="background:#fff8e6;border:1px solid #f0d98c;border-radius:6px;padding:10px 12px;">
+        <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;">
+          <input type="checkbox" id="imp-sync" style="margin-top:3px;">
+          <span class="text-sm">
+            <strong>This file is the complete roster for this role.</strong><br>
+            <span class="text-muted">Anyone holding the role who is NOT in this file will lose it —
+            deactivated if it's their only role, or the role removed if they have others.
+            The preview lists every removal before anything happens.</span>
+          </span>
+        </label>
+      </div>
+      <div class="form-actions" style="margin-top:8px;">
+        <button class="btn btn-secondary" id="imp-detect-btn" onclick="UsersUI.detect()"><i class="ti ti-list-search"></i> Read file &amp; detect columns</button>
+      </div>
+
+      <div id="imp-mapping" style="display:none;margin-top:18px;">
+        <div class="card-title" style="font-size:15px;"><i class="ti ti-columns"></i> Confirm column mapping</div>
+        <p class="text-muted text-sm" style="margin:-6px 0 12px;">
+          <span id="imp-rowcount"></span> data rows found. Correct any column below before previewing.
+        </p>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">First name <span class="required">*</span></label>
+            <select class="form-select" id="map-first"></select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Last name <span class="required">*</span></label>
+            <select class="form-select" id="map-last"></select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Email</label>
+            <select class="form-select" id="map-email"></select>
+          </div>
+          <div class="form-group" id="map-id-group">
+            <label class="form-label">ID number</label>
+            <select class="form-select" id="map-id"></select>
+          </div>
+        </div>
+        <div class="form-actions">
+          <button class="btn btn-secondary" id="imp-preview-btn" onclick="UsersUI.previewImport()"><i class="ti ti-eye"></i> Preview</button>
+        </div>
+      </div>
+
+      <div id="imp-preview" style="margin-top:18px;"></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+window.UsersUI = (() => {
+
+  let _assignable = [];
+  let _idTypeDefaults = {};
+  let _csv = null;
+
+  // people-list state
+  let _users = [];                                  // last fetched list (cache)
+  let _sort = { key: 'name', dir: 'asc' };          // current sort
+
+  // Visible tabs for this user, injected by the server (TabRegistry).
+  const _tabs = <?!= visibleTabs ?>;
+  const _hasTab = {};
+  _tabs.forEach(t => { _hasTab[t.key] = true; });
+
+  function init() {
+    // Land on the first visible tab (the template marked it active;
+    // this shows its panel and triggers its load).
+    if (_tabs.length) switchTab(_tabs[0].key);
+
+    App.call('users', 'options', {}, res => {
+      const chips = document.getElementById('um-role-chips');
+      if (!chips) return;   // navigated away before the response arrived
+      _assignable = res.assignable || [];
+      _idTypeDefaults = res.idTypeDefaults || {};
+
+      // People tab: role chips
+      if (!_assignable.length) {
+        document.getElementById('um-role-hint').innerHTML =
+          '<span style="color:var(--color-danger);">You have no roles you are permitted to assign. A super admin can grant this under Admin → Roles → Import permissions.</span>';
+        document.getElementById('imp-role-hint').innerHTML =
+          '<span style="color:var(--color-danger);">You have no roles you are permitted to assign.</span>';
+      }
+      chips.innerHTML = _assignable.map(r =>
+        `<label class="role-chip" id="umchip-${r}"><input type="checkbox" value="${r}" onchange="this.closest('.role-chip').classList.toggle('checked', this.checked)"> ${r}</label>`
+      ).join('');
+
+      // Batch tab: role dropdown
+      const sel = document.getElementById('imp-role');
+      _assignable.forEach(r => {
+        const o = document.createElement('option');
+        o.value = r; o.textContent = r;
+        sel.appendChild(o);
+      });
+
+      load();
+      App.call('users', 'listRequests', {}, reqs => _refreshRequestBadge(reqs.length));
+    });
+  }
+
+  function switchTab(tab) {
+    if (!_hasTab[tab]) return;   // not one of this user's tabs
+    document.querySelectorAll('#users-module .tab-panel').forEach(p => p.style.display = 'none');
+    document.querySelectorAll('#users-module .module-tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+    document.getElementById('utab-' + tab).style.display = 'block';
+    if (tab === 'people') load();
+    if (tab === 'requests') loadRequests();
+  }
+
+  // ── People: list + add/edit ─────────────────────────────
+  function load() {
+    const el = document.getElementById('um-table');
+    if (!el) return;
+    el.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
+    App.call('users', 'listUsers', {}, users => {
+      if (!document.getElementById('um-table')) return;
+      _users = users || [];
+      _populateRoleFilter();
+      _render();
+    });
+  }
+
+  // Build the Role filter dropdown from roles actually present in the list,
+  // unioned with the assignable roles, preserving the current selection.
+  function _populateRoleFilter() {
+    const sel = document.getElementById('um-filter-role');
+    if (!sel) return;
+    const prev = sel.value;
+    const present = new Set();
+    _users.forEach(u => (u.roles || []).forEach(r => present.add(r)));
+    _assignable.forEach(r => present.add(r));
+    const roles = Array.from(present).sort();
+    sel.innerHTML = '<option value="">All roles</option>'
+      + roles.map(r => `<option value="${r.replace(/"/g,'&quot;')}">${r}</option>`).join('');
+    if (roles.includes(prev)) sel.value = prev;
+  }
+
+  function onFilterChange() { _render(); }
+
+  function clearFilters() {
+    const s = document.getElementById('um-search');     if (s) s.value = '';
+    const r = document.getElementById('um-filter-role');   if (r) r.value = '';
+    const st = document.getElementById('um-filter-status'); if (st) st.value = 'active';
+    _render();
+  }
+
+  function sortBy(key) {
+    if (_sort.key === key) {
+      _sort.dir = _sort.dir === 'asc' ? 'desc' : 'asc';
+    } else {
+      _sort.key = key;
+      _sort.dir = 'asc';
+    }
+    _render();
+  }
+
+  // Apply search + filters + sort to the cache and draw the table.
+  function _render() {
+    const el = document.getElementById('um-table');
+    if (!el) return;
+
+    if (!_users.length) {
+      el.innerHTML = '<div class="empty-state">No users yet.</div>';
+      _updateCount(0, 0);
+      return;
+    }
+
+    const q = (document.getElementById('um-search') || {}).value || '';
+    const roleFilter = (document.getElementById('um-filter-role') || {}).value || '';
+    const statusFilter = (document.getElementById('um-filter-status') || {}).value || 'active';
+    const needle = q.trim().toLowerCase();
+
+    let rows = _users.filter(u => {
+      // status
+      if (statusFilter === 'active' && !u.active) return false;
+      if (statusFilter === 'inactive' && u.active) return false;
+      // role
+      if (roleFilter && !(u.roles || []).includes(roleFilter)) return false;
+      // search: name, email, IDs, alt-name spellings
+      if (needle) {
+        const hay = [
+          u.nameLastFirst, u.name, u.firstName, u.lastName, u.email,
+          u.studentId, u.employeeId,
+        ].concat((u.altNames || []).reduce((acc, a) => acc.concat([a.first, a.last]), []))
+         .filter(Boolean).join(' ').toLowerCase();
+        if (hay.indexOf(needle) === -1) return false;
+      }
+      return true;
+    });
+
+    rows = _sortRows(rows);
+    _updateCount(rows.length, _users.length);
+
+    if (!rows.length) {
+      el.innerHTML = '<div class="empty-state"><i class="ti ti-search-off" style="font-size:28px;display:block;margin-bottom:8px;"></i>No users match your filters.</div>';
+      return;
+    }
+
+    const body = rows.map(u => _rowHtml(u)).join('');
+    el.innerHTML =
+      '<div class="table-wrap"><table class="data-table"><thead><tr>'
+      + _th('Name / Email', 'name')
+      + _th('Roles', 'roles')
+      + _th('IDs', 'ids')
+      + _th('Status', 'status')
+      + '<th></th>'
+      + '</tr></thead><tbody>' + body + '</tbody></table></div>';
+  }
+
+  // Sortable header cell with direction indicator.
+  function _th(label, key) {
+    const active = _sort.key === key;
+    const arrow = active ? (_sort.dir === 'asc' ? ' ▲' : ' ▼') : '';
+    return `<th class="um-sortable" style="cursor:pointer;user-select:none;white-space:nowrap;" onclick="UsersUI.sortBy('${key}')">${label}<span class="text-muted">${arrow}</span></th>`;
+  }
+
+  function _sortRows(rows) {
+    const dir = _sort.dir === 'asc' ? 1 : -1;
+    const key = _sort.key;
+    const val = u => {
+      switch (key) {
+        case 'roles':  return (u.roles || []).slice().sort().join(',').toLowerCase();
+        case 'ids':    return (u.studentId || u.employeeId || '').toString();
+        case 'status': return u.active ? '0' : '1';   // active first when asc
+        case 'name':
+        default:       return (u.nameLastFirst || u.email || '').toLowerCase();
+      }
+    };
+    // copy before sort so the cache order is untouched
+    return rows.slice().sort((a, b) => {
+      const av = val(a), bv = val(b);
+      if (av < bv) return -1 * dir;
+      if (av > bv) return  1 * dir;
+      // stable tiebreak by email
+      const ae = (a.email || '').toLowerCase(), be = (b.email || '').toLowerCase();
+      return ae < be ? -1 : ae > be ? 1 : 0;
+    });
+  }
+
+  function _rowHtml(u) {
+    const roleBadges = (u.roles || []).map(r => `<span class="badge badge-navy" style="margin:1px;">${r}</span>`).join(' ');
+    const ids = [];
+    if (u.studentId) ids.push(`${u.studentId} <span class="text-muted text-sm">(student)</span>`);
+    if (u.employeeId) ids.push(`${u.employeeId} <span class="text-muted text-sm">(employee)</span>`);
+    // Don't repeat the email as the name when no real name is stored.
+    const nameCell = (u.nameLastFirst && u.nameLastFirst !== u.email)
+      ? u.nameLastFirst
+      : '<span class="text-muted">—</span>';
+    const edit = u.editable
+      ? `<a class="edit-link" onclick='UsersUI.edit(${JSON.stringify(u).replace(/'/g,"&#39;")})'><i class="ti ti-pencil"></i> Edit</a>
+         <a class="edit-link ${u.active?'danger':''}" onclick="UsersUI.toggleActive('${u.email}', ${u.active?'false':'true'})">
+           <i class="ti ${u.active?'ti-user-off':'ti-user-check'}"></i> ${u.active?'Deactivate':'Reactivate'}</a>`
+      : '<span class="text-muted text-sm">—</span>';
+    return `
+      <tr>
+        <td>${nameCell}<div class="text-sm text-muted">${u.email}</div></td>
+        <td>${roleBadges}</td>
+        <td>${ids.join('<br>') || '<span class="text-muted">—</span>'}</td>
+        <td><span class="badge ${u.active?'badge-success':'badge-neutral'}">${u.active?'Active':'Inactive'}</span></td>
+        <td>${edit}</td>
+      </tr>`;
+  }
+
+  function _updateCount(shown, total) {
+    const el = document.getElementById('um-count');
+    if (!el) return;
+    el.textContent = (shown === total)
+      ? `${total} user${total === 1 ? '' : 's'}`
+      : `Showing ${shown} of ${total} users`;
+  }
+
+  function edit(u) {
+    switchTab('add');
+    document.getElementById('um-form-title').innerHTML = '<i class="ti ti-pencil"></i> Edit ' + (u.email || 'user');
+    document.getElementById('um-email').value = u.email;
+    document.getElementById('um-firstname').value = u.firstName || '';
+    document.getElementById('um-lastname').value = u.lastName || '';
+    document.getElementById('um-studentid').value = u.studentId || '';
+    document.getElementById('um-employeeid').value = u.employeeId || '';
+    document.getElementById('um-active').value = u.active ? 'TRUE' : 'FALSE';
+    document.getElementById('um-notes').value = u.notes || '';
+    const ur = u.roles || [];
+    document.querySelectorAll('#um-role-chips input').forEach(inp => {
+      inp.checked = ur.includes(inp.value);
+      document.getElementById('umchip-'+inp.value).classList.toggle('checked', inp.checked);
+    });
+    document.getElementById('um-email').scrollIntoView({ behavior: 'smooth' });
+  }
+
+  function save() {
+    const email = document.getElementById('um-email').value.trim();
+    if (!email) { Toast.show('Email is required.', 'error'); return; }
+    const roles = Array.from(document.querySelectorAll('#um-role-chips input:checked')).map(i=>i.value);
+    if (!roles.length) { Toast.show('Select at least one role.', 'error'); return; }
+    const studentId = document.getElementById('um-studentid').value.trim();
+    const employeeId = document.getElementById('um-employeeid').value.trim();
+    if (studentId && !/^\d{7}$/.test(studentId)) { Toast.show('Student ID must be exactly 7 digits.', 'error'); return; }
+    if (employeeId && !/^\d{8}$/.test(employeeId)) { Toast.show('Employee ID must be exactly 8 digits.', 'error'); return; }
+    FormHelper.setLoading('um-save-btn', true);
+    App.call('users', 'upsertUser', {
+      email, roles,
+      firstName: document.getElementById('um-firstname').value.trim(),
+      lastName: document.getElementById('um-lastname').value.trim(),
+      studentId, employeeId,
+      active: document.getElementById('um-active').value === 'TRUE',
+      notes: document.getElementById('um-notes').value.trim(),
+    }, res => {
+      FormHelper.setLoading('um-save-btn', false);
+      Toast.show('User ' + res.status + ': ' + email, 'success');
+      clear();
+      switchTab('people');
+    }, () => FormHelper.setLoading('um-save-btn', false));
+  }
+
+  function clear() {
+    ['um-email','um-firstname','um-lastname','um-studentid','um-employeeid','um-notes'].forEach(id => document.getElementById(id).value='');
+    document.getElementById('um-active').value = 'TRUE';
+    document.querySelectorAll('#um-role-chips input').forEach(i => { i.checked=false; document.getElementById('umchip-'+i.value).classList.remove('checked'); });
+    const t = document.getElementById('um-form-title');
+    if (t) t.innerHTML = '<i class="ti ti-user-plus"></i> Add a user';
+  }
+
+  // ── Batch import ────────────────────────────────────────
+  function onRoleChange() {
+    const role = document.getElementById('imp-role').value;
+    if (role && _idTypeDefaults[role]) {
+      document.getElementById('imp-idtype').value = _idTypeDefaults[role];
+    }
+  }
+
+  function detect() {
+    const file = document.getElementById('imp-file').files[0];
+    if (!file) { Toast.show('Choose a CSV file first.', 'error'); return; }
+    if (!document.getElementById('imp-role').value) { Toast.show('Select the role for this batch.', 'error'); return; }
+    const reader = new FileReader();
+    reader.onload = e => {
+      _csv = e.target.result;
+      FormHelper.setLoading('imp-detect-btn', true);
+      App.call('users', 'detectColumns', { csv: _csv }, res => {
+        FormHelper.setLoading('imp-detect-btn', false);
+        _renderMapping(res);
+      }, () => FormHelper.setLoading('imp-detect-btn', false));
+    };
+    reader.onerror = () => Toast.show('Could not read the file.', 'error');
+    reader.readAsText(file);
+  }
+
+  function _renderMapping(res) {
+    document.getElementById('imp-rowcount').textContent = res.rowCount;
+    [
+      { id: 'map-first', key: 'first' },
+      { id: 'map-last',  key: 'last' },
+      { id: 'map-email', key: 'email' },
+      { id: 'map-id',    key: 'id' },
+    ].forEach(f => {
+      const sel = document.getElementById(f.id);
+      sel.innerHTML = '<option value="">— Not in this file —</option>'
+        + res.headers.map(h => `<option value="${h.replace(/"/g,'&quot;')}">${h}</option>`).join('');
+      sel.value = res.mapping[f.key] || '';
+    });
+    document.getElementById('imp-mapping').style.display = 'block';
+    document.getElementById('imp-preview').innerHTML = '';
+  }
+
+  function _settings() {
+    return {
+      csv: _csv,
+      role: document.getElementById('imp-role').value,
+      idType: document.getElementById('imp-idtype').value,
+      syncRoster: document.getElementById('imp-sync').checked,
+      mapping: {
+        first: document.getElementById('map-first').value,
+        last:  document.getElementById('map-last').value,
+        email: document.getElementById('map-email').value,
+        id:    document.getElementById('map-id').value,
+      },
+    };
+  }
+
+  function previewImport() {
+    const s = _settings();
+    if (!s.mapping.first || !s.mapping.last) { Toast.show('Map the First and Last name columns.', 'error'); return; }
+    if (s.idType !== 'none' && !s.mapping.id) { Toast.show('Map the ID column, or set the ID type to "none".', 'error'); return; }
+    const out = document.getElementById('imp-preview');
+    out.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Validating…</span></div>';
+    App.call('users', 'previewImport', s, plan => { out.innerHTML = _renderPlan(plan); }, () => { out.innerHTML = ''; });
+  }
+
+  function _renderPlan(plan) {
+    const s = plan.summary;
+    const badge = (n, cls, label) => `<span class="badge ${cls}" style="margin-right:8px;">${n} ${label}</span>`;
+    const rows = plan.rows.map(r => {
+      if (r.action === 'skip') {
+        return `<tr><td>${r.line}</td><td>${r.email||'—'}</td><td><span class="badge badge-danger">skip</span></td><td class="text-sm" style="color:var(--color-danger);">${r.reason}</td></tr>`;
+      }
+      if (r.action === 'create') {
+        return `<tr><td>${r.line}</td><td>${r.email}</td><td><span class="badge badge-success">create</span></td><td class="text-sm">${r.details||''}</td></tr>`;
+      }
+      if (r.action === 'sync') {
+        return `<tr><td>${r.line}</td><td>${r.email||'—'}</td><td><span class="badge badge-warning">roster sync</span></td><td class="text-sm">${r.details||''}</td></tr>`;
+      }
+      return `<tr><td>${r.line}</td><td>${r.email||'—'}</td><td><span class="badge badge-navy">update</span></td><td class="text-sm">${r.details||''}</td></tr>`;
+    }).join('');
+    const canCommit = (s.create + s.update + (s.sync||0)) > 0;
+    return `
+      <div style="margin-bottom:12px;">${badge(s.create,'badge-success','to create')}${badge(s.update,'badge-navy','to update')}${s.sync ? badge(s.sync,'badge-warning','roster removals') : ''}${badge(s.skip,'badge-danger','to skip')}</div>
+      <div class="table-wrap"><table class="data-table"><thead><tr><th>Line</th><th>Email</th><th>Action</th><th>Details</th></tr></thead><tbody>${rows}</tbody></table></div>
+      <div class="form-actions">
+        <button class="btn btn-primary" id="imp-commit-btn" onclick="UsersUI.commitImport()" ${canCommit?'':'disabled'}><i class="ti ti-check"></i> Apply ${s.create + s.update} import(s)${s.sync ? ' + ' + s.sync + ' removal(s)' : ''}</button>
+        <button class="btn btn-secondary" onclick="UsersUI.cancelImport()">Cancel</button>
+      </div>
+      ${s.skip ? `<p class="text-sm text-muted" style="margin-top:8px;">${s.skip} row(s) will be skipped — including any conflicts, which are listed with details above.</p>` : ''}`;
+  }
+
+  function commitImport() {
+    if (!_csv) { Toast.show('Read a file first.', 'error'); return; }
+    FormHelper.setLoading('imp-commit-btn', true);
+    App.call('users', 'commitImport', _settings(), res => {
+      const s = res.summary;
+      Toast.show(`Done: ${s.created} created, ${s.updated} updated, ${s.synced||0} roster removal(s), ${s.skipped} skipped.`, 'success', 6000);
+      cancelImport();
+      load();
+    }, () => FormHelper.setLoading('imp-commit-btn', false));
+  }
+
+  function cancelImport() {
+    _csv = null;
+    document.getElementById('imp-file').value = '';
+    document.getElementById('imp-sync').checked = false;
+    document.getElementById('imp-mapping').style.display = 'none';
+    document.getElementById('imp-preview').innerHTML = '';
+  }
+
+  function toggleActive(email, makeActive) {
+    const active = makeActive === true || makeActive === 'true';
+    if (!active && !confirm('Deactivate ' + email + '?\n\nThey lose access immediately, but their profile (names, IDs) is kept for matching and they can be reactivated later.')) return;
+    App.call('users', 'setActive', { email: email, active: active }, res => {
+      Toast.show(res.status + ': ' + res.email, 'success');
+      load();
+    });
+  }
+
+  // ── Requests queue ──────────────────────────────────────
+  function loadRequests() {
+    const el = document.getElementById('um-requests');
+    if (!el) return;
+    el.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
+    App.call('users', 'listRequests', {}, reqs => {
+      if (!document.getElementById('um-requests')) return;
+      _refreshRequestBadge(reqs.length);
+      if (!reqs.length) { el.innerHTML = '<div class="empty-state"><i class="ti ti-inbox-off" style="font-size:32px;display:block;margin-bottom:8px;"></i>No pending requests</div>'; return; }
+      el.innerHTML = reqs.map(r => _requestCard(r)).join('');
+    });
+  }
+
+  function _refreshRequestBadge(n) {
+    const badge = document.getElementById('um-req-badge');
+    if (!badge) return;
+    if (n) { badge.textContent = n; badge.style.display = 'inline-flex'; }
+    else badge.style.display = 'none';
+  }
+
+  function _requestCard(r) {
+    const roleOptions = _assignable.map(role =>
+      `<label class="role-chip" id="umreq-${r.requestId}-${role}">
+         <input type="checkbox" value="${role}" ${role===r.requestedRole?'checked':''}
+           onchange="this.closest('.role-chip').classList.toggle('checked', this.checked)"> ${role}
+       </label>`).join('');
+    const idText = r.idNumber ? `${r.idNumber} (${r.idType||'id'})` : '—';
+    return `
+      <div class="card" style="border:1px solid var(--color-border);box-shadow:none;margin-bottom:14px;">
+        <div class="flex between items-center" style="margin-bottom:8px;">
+          <div><strong>${r.name||'(no name)'}</strong> <span class="text-muted text-sm">${r.email}</span></div>
+          <span class="text-sm text-muted">${r.submittedAt}</span>
+        </div>
+        <div class="text-sm" style="margin-bottom:6px;">
+          ID: ${idText} &nbsp;·&nbsp; Requested role: <span class="badge badge-gold">${r.requestedRole||'none'}</span>
+        </div>
+        ${r.note ? `<div class="text-sm text-muted" style="margin-bottom:10px;">"${r.note}"</div>` : ''}
+        <div style="margin:10px 0 4px;font-size:13px;font-weight:600;">Grant role(s):</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;" id="umreqroles-${r.requestId}">${roleOptions}</div>
+        <div class="flex gap-2">
+          <button class="btn btn-primary btn-sm" onclick="UsersUI.approveRequest('${r.requestId}')"><i class="ti ti-check"></i> Approve</button>
+          <button class="btn btn-danger btn-sm" onclick="UsersUI.rejectRequest('${r.requestId}')"><i class="ti ti-x"></i> Reject</button>
+        </div>
+      </div>`;
+  }
+
+  function approveRequest(requestId) {
+    const roles = Array.from(document.querySelectorAll('#umreqroles-' + requestId + ' input:checked')).map(i => i.value);
+    if (!roles.length) { Toast.show('Select at least one role to grant.', 'error'); return; }
+    const note = prompt('Optional note to include in the approval email:') || '';
+    App.call('users', 'approveRequest', { requestId, roles, note }, res => {
+      Toast.show('Approved: ' + res.email, 'success');
+      loadRequests(); load();
+    });
+  }
+
+  function rejectRequest(requestId) {
+    const note = prompt('Reason for rejection (emailed to the requester):');
+    if (note === null) return;  // cancelled
+    App.call('users', 'rejectRequest', { requestId, note }, res => {
+      Toast.show('Rejected: ' + res.email, 'success');
+      loadRequests();
+    });
+  }
+
+  return { init, switchTab, load, edit, save, clear, toggleActive,
+           onFilterChange, clearFilters, sortBy,
+           loadRequests, approveRequest, rejectRequest,
+           onRoleChange, detect, previewImport, commitImport, cancelImport };
+
+})();
+
+UsersUI.init();
+</script>rols" style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:14px;">
         <div class="form-group" style="flex:1 1 240px;margin:0;">
           <label class="form-label" for="um-search">Search</label>
           <input class="form-input" type="text" id="um-search" placeholder="Name, email, or ID" oninput="UsersUI.onFilterChange()">

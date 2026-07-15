@@ -69,6 +69,33 @@ const ThesisModule = (() => {
   // Quarters offered at submission (term half of the filename prefix).
   const QUARTERS = ['Fall', 'Winter', 'Spring', 'Summer'];
 
+  // ── Tab manifest (TabRegistry) ─────────────────────────────
+  // Declares this module's tabs for per-role visibility, edited in
+  // Admin → Modules → Tabs. NOTE: the Submit tab is additionally
+  // DATA-gated client-side — even when visible by role, init() only
+  // reveals it while the student has no thesis on record. Modal and
+  // shared actions (get, sponsorDecision, readerDecision,
+  // returnToStudent, returnToSponsor, deleteThesis, repairAdvisorTasks,
+  // listEligible, listCountries) stay unlisted — each is guarded
+  // inside its own handler.
+  const TABS = [
+    { key: 'submit',    label: 'Submit a thesis',  icon: 'ti-file-upload',
+      roles: ['undergraduate_student'], actions: ['submit'] },
+    { key: 'mine',      label: 'My theses',        icon: 'ti-list',
+      roles: ['undergraduate_student'], actions: ['mySubmissions'] },
+    { key: 'queue',     label: 'Review queue',     icon: 'ti-inbox',
+      roles: ['senate_faculty', 'lecturer', 'staff', 'staff_undergrad'],
+      actions: ['queue'] },
+    { key: 'sponsored', label: 'Sponsored theses', icon: 'ti-user-check',
+      roles: ['senate_faculty', 'lecturer'], actions: ['sponsored'] },
+    { key: 'grad',      label: 'Graduation queue', icon: 'ti-school',
+      roles: [ADVISOR_ROLE], floor: ADVISOR_ROLE,
+      actions: ['gradQueue', 'advisorComplete', 'remindResponsible'] },
+    { key: 'settings',  label: 'Settings',         icon: 'ti-settings',
+      roles: [ADVISOR_ROLE], floor: ADVISOR_ROLE,
+      actions: ['getSettings', 'saveSettings'] },
+  ];
+
   // Optional decision-comment PDFs (sponsor + reader) live in their OWN Drive
   // folder, separate from the thesis PDFs. Every workflow participant is
   // granted viewer access to a comment file when it is attached. When a
@@ -1388,6 +1415,7 @@ const ThesisModule = (() => {
 
 
   return {
+    TABS: TABS,
     listEligible, listCountries, submit, mySubmissions, sponsored, queue, get,
     sponsorDecision, readerDecision, advisorComplete, returnToStudent, returnToSponsor,
     gradQueue, remindResponsible, repairAdvisorTasks, deleteThesis,

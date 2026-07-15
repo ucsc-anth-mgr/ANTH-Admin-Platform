@@ -29,6 +29,52 @@
 
 const PersonnelModule = (() => {
 
+  // ── Tab manifest (TabRegistry) ─────────────────────────────
+  // Declares this module's tabs for the platform's per-role visibility
+  // system (Admin → Modules → Tabs). Keys/labels/icons mirror the UI's
+  // showTab views. DEFAULTS mirror the server-side gates: nearly every
+  // action in this module is _requireSuperAdmin, so every tab except
+  // Roster defaults to super_admin only (roles: []); Roster's reads
+  // (listRoster, listRanks, getReviewHistory) are unguarded, so it
+  // defaults to ['*'] — anyone the module itself admits. Widen a tab's
+  // roles in the Tabs editor if the module ever admits non-admins who
+  // should see more.
+  // NOTE (Phase 1): `actions` and `floor` are declarative until the
+  // dispatch gateway lands — a visible tab does NOT grant actions; the
+  // in-module checks (_requireSuperAdmin, assignee checks) remain the
+  // authority. Unlisted programmatic actions: ping, getAttributes,
+  // getPersonSummary, computeCaseSchedule, listCycles.
+  const TABS = [
+    { key: 'roster', label: 'Roster', icon: 'ti-users', roles: ['*'],
+      actions: ['listRoster', 'getReviewHistory', 'listRanks', 'updatePersonAttributes'] },
+    { key: 'import', label: 'Import rank & step', icon: 'ti-file-upload',
+      roles: [], floor: 'super_admin',
+      actions: ['detectColumns', 'previewRankImport', 'commitRankImport',
+                'detectHistoryColumns', 'previewHistoryImport', 'commitHistoryImport'] },
+    { key: 'cases', label: 'Cases', icon: 'ti-clipboard-list',
+      roles: [], floor: 'super_admin',
+      actions: ['listCases', 'listReviewTypes', 'updateCase', 'createCase',
+                'checkCaseEligibility', 'detectCallColumns', 'previewCallImport',
+                'commitCallImport', 'computeScheduleForCase', 'listCaseComponents',
+                'listCommitteeMembers', 'assignComponent', 'markComponentDrafted',
+                'reopenComponent', 'committeeWorkload', 'exportWorkloadToSheet',
+                'caseAssignments'] },
+    { key: 'anticipated', label: 'Anticipated Call', icon: 'ti-crystal-ball',
+      roles: [], floor: 'super_admin',
+      actions: ['listAnticipatedCandidates', 'exportAnticipatedToSheet',
+                'exportAnticipatedToCsv'] },
+    { key: 'comms', label: 'Communications', icon: 'ti-mail',
+      roles: [], floor: 'super_admin',
+      actions: ['getCommTemplates', 'saveCommTemplate', 'previewCommunication',
+                'sendCommunications', 'logCopiedCommunication', 'listCommunicationsLog',
+                'listPolicyDocs', 'savePolicyDocs'] },
+    { key: 'settings', label: 'Calendar', icon: 'ti-calendar-cog',
+      roles: [], floor: 'super_admin',
+      actions: ['getSchedulerSettings', 'saveSchedulerSettings', 'getCycle',
+                'setCycleAnchors', 'findCalendarDeadlines', 'computeCycleSchedule',
+                'proposeDate', 'exportCycleScheduleToSheet'] },
+  ];
+
   // ── Module-local config accessors ──────────────────────────
   // Resolved lazily so a missing CONFIG block fails loudly at call time
   // (not at file-load), matching how other modules read their config.
@@ -4089,8 +4135,9 @@ const PersonnelModule = (() => {
   }
 
 
-  // Only these names are dispatchable.
+  // Only these names are dispatchable (TABS is the tab manifest, not an action).
   return {
+    TABS: TABS,
     ping,
     getAttributes,
     getPersonSummary,

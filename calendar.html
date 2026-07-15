@@ -46,16 +46,23 @@
     <div class="card-title between">
       <span><i class="ti ti-calendar"></i> Department Calendar</span>
     </div>
+    <!-- Tab bar — rendered from the TabRegistry (visibleTabs template
+         var). Which tabs each role sees is edited in Admin → Modules →
+         Tabs; the manage/imports defaults mirror the module's
+         Settings-driven manager list ('staff'). The first visible tab
+         renders active; init() switches to it. -->
     <div class="module-tabs" role="tablist" style="margin-top:8px;">
-      <button class="module-tab active" data-tab="view" onclick="CalendarUI.switchTab('view')" role="tab">Calendar</button>
-      <button class="module-tab" data-tab="manage" id="cal-tab-btn-manage" onclick="CalendarUI.switchTab('manage')" role="tab" style="display:none;">Manage Deadlines</button>
-      <button class="module-tab" data-tab="imports" id="cal-tab-btn-imports" onclick="CalendarUI.switchTab('imports')" role="tab" style="display:none;">Imports <span id="cal-pending-badge" class="badge badge-gold" style="display:none;"></span></button>
-      <button class="module-tab" data-tab="settings" id="cal-tab-btn-settings" onclick="CalendarUI.switchTab('settings')" role="tab" style="display:none;">Settings</button>
+      <? var calTabs = JSON.parse(visibleTabs); ?>
+      <? calTabs.forEach(function(t, i) { ?>
+      <button class="module-tab<?= i === 0 ? ' active' : '' ?>" data-tab="<?= t.key ?>" onclick="CalendarUI.switchTab('<?= t.key ?>')" role="tab">
+        <i class="ti <?= t.icon ?>"></i> <?= t.label ?><? if (t.key === 'imports') { ?> <span id="cal-pending-badge" class="badge badge-gold" style="display:none;"></span><? } ?>
+      </button>
+      <? }); ?>
     </div>
   </div>
 
   <!-- ── Tab: Calendar view ─────────────────────────────────── -->
-  <div id="cal-tab-view" class="tab-panel" role="tabpanel">
+  <div id="cal-tab-view" class="tab-panel" role="tabpanel" style="display:none;">
     <div class="card" style="margin-top:20px;">
       <div class="calmod-toolbar">
         <div class="calmod-nav">
@@ -360,6 +367,11 @@
 <script>
 window.CalendarUI = (() => {   // window.X — module scripts re-execute on load
 
+  // Visible tabs for this user, injected by the server (TabRegistry).
+  const _tabs = <?!= visibleTabs ?>;
+  const _hasTab = {};
+  _tabs.forEach(t => { _hasTab[t.key] = true; });
+
   const S = {
     boot: null,
     view: 'month',
@@ -383,14 +395,13 @@ window.CalendarUI = (() => {   // window.X — module scripts re-execute on load
   function init() {
     const now = new Date();
     S.cursor = new Date(now.getFullYear(), now.getMonth(), 1);
+    // Land on the first visible tab (the template marked it active).
+    if (_tabs.length) switchTab(_tabs[0].key);
     App.call('calendar', 'bootstrap', {}, b => {
       S.boot = b || {};
-      if (S.boot.canManage) {
-        document.getElementById('cal-tab-btn-manage').style.display = '';
-        document.getElementById('cal-tab-btn-imports').style.display = '';
-        _pendingBadge(S.boot.pendingCount || 0);
-      }
-      if (S.boot.isSuperAdmin) document.getElementById('cal-tab-btn-settings').style.display = '';
+      // Tab visibility is server-rendered from the TabRegistry; only
+      // the Imports pending badge remains a client concern.
+      if (S.boot.canManage) _pendingBadge(S.boot.pendingCount || 0);
       _renderRoleChips('cal-f-roles', []);
       _renderSwatches('cal-f-color', '');
       const psel = document.getElementById('cal-s-parser');
@@ -404,11 +415,12 @@ window.CalendarUI = (() => {   // window.X — module scripts re-execute on load
       // Deep link: a refresh-review Task points at a calendar_source —
       // land the reviewer directly on the Imports tab.
       const f = window.__focus;
-      if (f && f.sourceType === 'calendar_source' && S.boot.canManage) switchTab('imports');
+      if (f && f.sourceType === 'calendar_source' && _hasTab.imports) switchTab('imports');
     });
   }
 
   function switchTab(tab) {
+    if (!_hasTab[tab]) return;   // not one of this user's tabs
     document.querySelectorAll('#calendar-module .tab-panel').forEach(p => p.style.display = 'none');
     document.querySelectorAll('#calendar-module .module-tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
     document.getElementById('cal-tab-' + tab).style.display = 'block';
@@ -1195,7 +1207,8 @@ window.CalendarUI = (() => {   // window.X — module scripts re-execute on load
       S.boot.managerRoles = res.managerRoles || [];
       S.boot.canManage = S.boot.isSuperAdmin ||
         (S.boot.userRoles || []).some(r => S.boot.managerRoles.includes(r));
-      document.getElementById('cal-tab-btn-manage').style.display = S.boot.canManage ? '' : 'none';
+      // Tab visibility is registry-managed: mirror manager-role changes
+      // in Admin → Modules → Tabs so the tabs follow the authority.
       Toast.show('Settings saved. Deadline managers: '
         + (S.boot.managerRoles.length ? S.boot.managerRoles.join(', ') : 'super admins only') + '.', 'success');
     }, () => _endBusy('cal-set-save'));

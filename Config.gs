@@ -90,6 +90,9 @@ const CONFIG = {
     REQUESTS:    'Requests',
     IMPORT_POLICY: 'ImportPolicy',
     NOTIFY_RULES: 'NotifyRules',
+    // Per-module, per-role tab visibility overrides (TabRegistry.gs).
+    // Machine-managed via Admin → Modules → Tabs — not for hand editing.
+    MODULE_TABS: 'ModuleTabs',
     // Platform-wide, module-keyed settings (Settings.gs). Lives in
     // USERS_CONFIG with the other config tabs. Machine-managed via the
     // Admin UI — not intended for hand editing.

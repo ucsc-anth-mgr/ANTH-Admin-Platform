@@ -22,6 +22,24 @@
 
 const UserManagerModule = (() => {
 
+  // ── Tab manifest (TabRegistry) ─────────────────────────────
+  // Declares this module's tabs for per-role visibility, edited in
+  // Admin → Modules → Tabs. roles ['*'] = anyone the module admits.
+  // Tab visibility is presentation only: every action here is ALSO
+  // gated server-side by the ImportPolicy _assertManager check.
+  // options() is the shared bootstrap loader and stays unlisted.
+  const TABS = [
+    { key: 'people',   label: 'People',       icon: 'ti-users',       roles: ['*'],
+      actions: ['listUsers', 'setActive'] },
+    { key: 'add',      label: 'Add / edit',   icon: 'ti-user-plus',   roles: ['*'],
+      actions: ['upsertUser'] },
+    { key: 'requests', label: 'Requests',     icon: 'ti-inbox',       roles: ['*'],
+      actions: ['listRequests', 'approveRequest', 'rejectRequest'] },
+    { key: 'batch',    label: 'Batch import', icon: 'ti-file-upload', roles: ['*'],
+      actions: ['detectColumns', 'previewImport', 'commitImport'] },
+  ];
+
+
   // ── Action: bootstrap for the forms ────────────────────────
   function options(p, user, roles) {
     _assertManager(roles);
@@ -187,7 +205,8 @@ const UserManagerModule = (() => {
     }
   }
 
-  return { options, listUsers, upsertUser, setActive,
+  return { TABS: TABS,
+           options, listUsers, upsertUser, setActive,
            listRequests, approveRequest, rejectRequest,
            detectColumns, previewImport, commitImport };
 

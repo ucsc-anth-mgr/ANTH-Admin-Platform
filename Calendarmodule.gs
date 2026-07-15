@@ -16,6 +16,31 @@
 
 const CalendarModule = (() => {
 
+  // ── Tab manifest (TabRegistry) ─────────────────────────────
+  // Declares this module's tabs for per-role visibility, edited in
+  // Admin → Modules → Tabs. Visibility only: deadline-management
+  // AUTHORITY stays with the Settings-driven manager list
+  // (_assertManager via CalendarService.canManage). The manage/imports
+  // defaults below mirror that list's 'staff' default — if a
+  // super_admin changes the manager roles in the module's Settings
+  // tab, mirror the change in Admin → Modules → Tabs so the tabs
+  // follow the authority. bootstrap is the shared loader and
+  // nightlyRefresh is the Scheduler's entry — both stay unlisted.
+  const TABS = [
+    { key: 'view',     label: 'Calendar',         icon: 'ti-calendar',       roles: ['*'],
+      actions: ['listRange'] },
+    { key: 'manage',   label: 'Manage Deadlines', icon: 'ti-flag',           roles: ['staff'],
+      actions: ['listDeadlines', 'createDeadline', 'updateDeadline',
+                'deleteDeadline', 'duplicateDeadline'] },
+    { key: 'imports',  label: 'Imports',          icon: 'ti-cloud-download', roles: ['staff'],
+      actions: ['listSources', 'saveSource', 'deleteSource', 'refreshSource',
+                'listPending', 'commitPending', 'dismissPending',
+                'harvestPreview', 'harvestCommit'] },
+    { key: 'settings', label: 'Settings',         icon: 'ti-settings',       roles: [], floor: 'super_admin',
+      actions: ['getSettings', 'saveSettings'] },
+  ];
+
+
   // ── Action: bootstrap ──────────────────────────────────────
   // Everything the UI needs to draw itself once: role vocabulary for
   // pickers, the viewer's own roles, and management flags.
@@ -188,8 +213,9 @@ const CalendarModule = (() => {
   }
 
 
-  // Only these names are dispatchable.
+  // Only these names are dispatchable (TABS is the tab manifest).
   return {
+    TABS: TABS,
     bootstrap, listRange,
     listDeadlines, createDeadline, updateDeadline, deleteDeadline, duplicateDeadline,
     listSources, saveSource, deleteSource, refreshSource,

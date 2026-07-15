@@ -39,6 +39,14 @@ const AdminModule = (() => {
   function setModuleEnabled(p)       { return ModuleManager.setEnabled(p.key, p.enabled); }
   function removeModule(p)           { return ModuleManager.remove(p.key); }
 
+  // ── Tab visibility (per-module, per-role — TabRegistry) ────
+  // Which roles see each tab inside a module. Backed by the ModuleTabs
+  // sheet; defaults come from each handler's code-declared TABS manifest.
+  // VISIBILITY ONLY — every action keeps its own permission check in its
+  // handler regardless of tab configuration.
+  function listModuleTabs(p)         { return TabRegistry.listForModule(String((p || {}).key || '')); }
+  function saveModuleTabs(p)         { p = p || {}; return TabRegistry.saveForModule(p.key, p.tabs); }
+
   // ── Roles Manager ──────────────────────────────────────────
   function listRolesDetailed()       { return RolesManager.list(); }
   function upsertRole(p)             { return RolesManager.upsert(p); }
@@ -146,6 +154,7 @@ const AdminModule = (() => {
   return {
     listUsers, listRoles, upsertUser, recentAudit,
     listModules, availableHandlers, registeredHandlers, upsertModule, setModuleEnabled, removeModule, iconChoices,
+    listModuleTabs, saveModuleTabs,
     listRolesDetailed, upsertRole, removeRole, roleUsage,
     listPendingRequests, listAllRequests, approveRequest, rejectRequest,
     listImportPolicy, upsertImportPolicy, removeImportPolicy,

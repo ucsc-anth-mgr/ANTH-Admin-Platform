@@ -152,6 +152,40 @@ const ServiceModule = (() => {
   // recorded via the "person without a portal profile" RawName path.
   const ASSIGNABLE_ROLES = ['senate_faculty', 'lecturer'];
 
+  // ── Tab manifest (TabRegistry) ─────────────────────────────
+  // Code-declared defaults for the module's tab bar; Admin → Modules →
+  // Tabs overrides WHO SEES each tab per role. Visibility only — every
+  // action keeps its own permission check (_assertAdmin etc.) no matter
+  // what the tab configuration says. roles: ['*'] = anyone the module
+  // admits; [] = super_admin only. `actions` records which dispatch
+  // actions each tab owns and `floor` the intended hard minimum — both
+  // UNUSED until per-action gating ships (Phase 2); declared now so
+  // that phase becomes a gateway change, not another module sweep.
+  // (bootstrap, currentAssignments's use by bootstrap, listPeople's use
+  // by forms, etc. — shared loaders stay under handler checks only.)
+  const TABS = [
+    { key: 'directory', label: 'Current Assignments', icon: 'ti-users-group', roles: ['*'],
+      actions: ['currentAssignments'] },
+    { key: 'proposed', label: 'Proposed', icon: 'ti-calendar', roles: [CHAIR_ROLE],
+      actions: ['proposedSlate'] },
+    { key: 'mine', label: 'My History', icon: 'ti-history', roles: ['*'],
+      actions: ['myHistory', 'submitCorrection'] },
+    { key: 'nominate', label: 'Nominate', icon: 'ti-star', roles: ['*'],
+      actions: ['myNominations', 'submitNomination', 'withdrawNomination', 'moveNomination'] },
+    { key: 'full', label: 'Full History', icon: 'ti-archive', roles: [HISTORY_ROLE],
+      actions: ['fullHistory'] },
+    { key: 'assignments', label: 'Assignments', icon: 'ti-clipboard-list', roles: [], floor: 'super_admin',
+      actions: ['listPeople', 'addAssignment', 'updateAssignment', 'deleteAssignment', 'reapplyAutoAssigns'] },
+    { key: 'categories', label: 'Categories', icon: 'ti-category', roles: [], floor: 'super_admin',
+      actions: ['listCatalog', 'upsertCategory', 'removeCategory'] },
+    { key: 'corrections', label: 'Corrections', icon: 'ti-inbox', roles: [], floor: 'super_admin',
+      actions: ['listCorrections', 'resolveCorrection'] },
+    { key: 'nominations', label: 'Nominations', icon: 'ti-list-numbers', roles: [], floor: 'super_admin',
+      actions: ['setNominationWindow', 'listNominations', 'acceptNomination', 'declineNomination'] },
+    { key: 'import', label: 'Import', icon: 'ti-file-upload', roles: [], floor: 'super_admin',
+      actions: ['importPreview', 'resolveImportName', 'importCommit', 'importNominationsPreview', 'importNominationsCommit'] },
+  ];
+
   // ── Configuration access (read lazily so load order is irrelevant) ──
   function SHEET() {
     const id = String((CONFIG.SHEETS && CONFIG.SHEETS.SERVICE) || '').trim();
@@ -1830,8 +1864,11 @@ const ServiceModule = (() => {
   }
 
 
-  // Only these names are dispatchable.
+  // Only FUNCTION names are dispatchable — dispatch() checks
+  // typeof handler[action] === 'function', so the TABS manifest below is
+  // readable by TabRegistry but can never be invoked as an action.
   return {
+    TABS: TABS,
     // everyone in the module
     bootstrap, currentAssignments, proposedSlate, myHistory, fullHistory, submitCorrection,
     myNominations, submitNomination, withdrawNomination, moveNomination,

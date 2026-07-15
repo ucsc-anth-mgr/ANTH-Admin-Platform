@@ -3,46 +3,22 @@
 
 <div id="thesis-module">
 
-  <!-- Tab bar (role-aware). Students submit and track; reviewers see their
-       queue and sponsorship history. Keep the role lists below in sync with
-       the _canReview/_isStudent constants in the controller script. -->
+  <!-- Tab bar — rendered from the TabRegistry (visibleTabs template var).
+       Which tabs each role sees is edited in Admin → Modules → Tabs.
+       All buttons render inactive: init() always picks the landing tab.
+       The Submit tab is additionally DATA-gated — it renders hidden and
+       init() reveals it only while the student has no thesis on record,
+       so returning students never see it flash in. `roles` stays parsed
+       here because the Review-queue panel's super_admin scriptlet below
+       still needs it. -->
   <div class="module-tabs" role="tablist" aria-label="Senior Thesis sections">
     <? var roles = JSON.parse(userRoles); ?>
-    <? var canReview = false; ?>
-    <? ['super_admin','senate_faculty','lecturer','staff','staff_undergrad'].forEach(function(r){ if (roles.includes(r)) canReview = true; }); ?>
-    <? var isStudent = roles.includes('undergraduate_student'); ?>
-    <? if (isStudent) { ?>
-    <!-- Hidden by default: revealed by init() only when the student has no
-         existing thesis, so returning students never see it flash in. -->
-    <button class="module-tab" role="tab" aria-selected="false" data-tab="submit" id="tab-btn-submit" style="display:none;" onclick="ThesisUI.switchTab('submit')">
-      <i class="ti ti-file-upload"></i> Submit a thesis
+    <? var thTabs = JSON.parse(visibleTabs); ?>
+    <? thTabs.forEach(function(t) { ?>
+    <button class="module-tab" role="tab" aria-selected="false" data-tab="<?= t.key ?>"<?!= t.key === 'submit' ? ' id="tab-btn-submit" style="display:none;"' : '' ?> onclick="ThesisUI.switchTab('<?= t.key ?>')">
+      <i class="ti <?= t.icon ?>"></i> <?= t.label ?>
     </button>
-    <button class="module-tab" role="tab" aria-selected="false" data-tab="mine" onclick="ThesisUI.switchTab('mine')">
-      <i class="ti ti-list"></i> My theses
-    </button>
-    <? } ?>
-    <? if (canReview) { ?>
-    <button class="module-tab" role="tab" aria-selected="false" data-tab="queue" onclick="ThesisUI.switchTab('queue')">
-      <i class="ti ti-inbox"></i> Review queue
-    </button>
-    <? } ?>
-    <? var canSponsor = roles.includes('senate_faculty') || roles.includes('lecturer') || roles.includes('super_admin'); ?>
-    <? if (canSponsor) { ?>
-    <button class="module-tab" role="tab" aria-selected="false" data-tab="sponsored" onclick="ThesisUI.switchTab('sponsored')">
-      <i class="ti ti-user-check"></i> Sponsored theses
-    </button>
-    <? } ?>
-    <? var isAdvisor = roles.includes('staff_undergrad') || roles.includes('super_admin'); ?>
-    <? if (isAdvisor) { ?>
-    <button class="module-tab" role="tab" aria-selected="false" data-tab="grad" onclick="ThesisUI.switchTab('grad')">
-      <i class="ti ti-school"></i> Graduation queue
-    </button>
-    <? } ?>
-    <? if (isAdvisor) { ?>
-    <button class="module-tab" role="tab" aria-selected="false" data-tab="settings" onclick="ThesisUI.switchTab('settings')">
-      <i class="ti ti-settings"></i> Settings
-    </button>
-    <? } ?>
+    <? }); ?>
   </div>
 
   <!-- ── Tab: Submit ───────────────────────────────────── -->
@@ -296,9 +272,12 @@ window.ThesisUI = (() => {
   let _commentFile = null;     // { dataBase64, mimeType } or null
   let _resubmitId = null;      // set when revising a returned thesis
   const _roles = <?!= userRoles ?>;
-  // Keep in sync with the role lists in the tab-bar template scriptlets.
-  const _canReview = ['super_admin','senate_faculty','lecturer','staff','staff_undergrad']
-    .some(r => _roles.indexOf(r) !== -1);
+  // Visible tabs for this user, injected by the server (TabRegistry).
+  // Tab logic keys off presence (_hasTab); the action panels below still
+  // key off role identity (_roles), which they genuinely need.
+  const _tabs = <?!= visibleTabs ?>;
+  const _hasTab = {};
+  _tabs.forEach(t => { _hasTab[t.key] = true; });
   const _isStudent = _roles.indexOf('undergraduate_student') !== -1;
   const _isAdvisorUser = _roles.indexOf('staff_undergrad') !== -1 || _roles.indexOf('super_admin') !== -1;
 
@@ -322,7 +301,7 @@ window.ThesisUI = (() => {
     // student can submit; for anyone else the form tab does not exist, so
     // the request falls through to the normal default below.
     const ff = window.__focus;
-    if (ff && ff.sourceId === 'form' && _isStudent) {
+    if (ff && ff.sourceId === 'form' && _isStudent && _hasTab.submit) {
       const btn = document.getElementById('tab-btn-submit');
       if (btn) btn.style.display = '';
       switchTab('submit');
@@ -337,13 +316,19 @@ window.ThesisUI = (() => {
     // land on their work queue (Graduation queue); other reviewers on the
     // Review queue.
     const _isAdvisorRole = _roles.indexOf('staff_undergrad') !== -1;
-    if (_isStudent) {
+    if (_isStudent && _hasTab.mine) {
       // The Submit tab starts hidden; decide the layout from the student's
       // data behind the busy overlay, then reveal the right tab. On a
       // failed load, fail open to Submit — the server's per-term rule is
       // the real duplicate guard.
       _busy('Loading your theses…');
       const showSubmit = () => {
+        if (!_hasTab.submit) {
+          // Submit hidden by the registry: land somewhere that exists.
+          if (_hasTab.mine) switchTab('mine');
+          else if (_tabs.length) switchTab(_tabs[0].key);
+          return;
+        }
         const btn = document.getElementById('tab-btn-submit');
         if (btn) btn.style.display = '';
         switchTab('submit');
@@ -359,8 +344,12 @@ window.ThesisUI = (() => {
           showSubmit();
         }
       }, () => { _idle(); showSubmit(); });
-    } else {
-      switchTab(_isAdvisorRole ? 'grad' : (_canReview ? 'queue' : 'submit'));
+    } else if (_isAdvisorRole && _hasTab.grad) {
+      switchTab('grad');
+    } else if (_hasTab.queue) {
+      switchTab('queue');
+    } else if (_tabs.length) {
+      switchTab(_tabs[0].key);
     }
 
     // Dashboard/email deep-link: open the focused record's detail. If the
@@ -444,6 +433,7 @@ window.ThesisUI = (() => {
 
   // ── Tabs ─────────────────────────────────────────────
   function switchTab(tab) {
+    if (!_hasTab[tab]) return;   // not one of this user's tabs
     document.querySelectorAll('#thesis-module .tab-panel').forEach(p => p.style.display = 'none');
     document.querySelectorAll('#thesis-module .module-tab').forEach(b => {
       const on = b.dataset.tab === tab;

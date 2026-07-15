@@ -153,6 +153,15 @@ function getModuleHTML(moduleKey) {  const user     = Session.getActiveUser().ge
   const tmpl = HtmlService.createTemplateFromFile(modConfig.include);
   tmpl.currentUser = user;
   tmpl.userRoles   = JSON.stringify(roles);
+  // Per-role tab visibility (TabRegistry): the resolved tab list for THIS
+  // user, as JSON, for converted templates to loop over with <?!= ?>.
+  // A module whose handler declares no TABS manifest gets '[]' and simply
+  // never references the variable — unconverted modules are unaffected.
+  try {
+    tmpl.visibleTabs = JSON.stringify(TabRegistry.visibleTabs(moduleKey, roles));
+  } catch (e) {
+    tmpl.visibleTabs = '[]';
+  }
   return tmpl.evaluate().getContent();
 }
 

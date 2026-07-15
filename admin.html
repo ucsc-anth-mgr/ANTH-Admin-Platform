@@ -19,6 +19,7 @@
       <p class="text-muted text-sm" style="margin:-8px 0 16px;">
         Turn modules on or off, rename them, change who can access them, and set their menu order.
         New module <em>code</em> is added by a developer; once added, it appears here ready to configure.
+        <em>Tabs</em> controls which roles see each tab inside a module.
       </p>
       <div id="modules-table"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
     </div>
@@ -400,10 +401,14 @@ window.AdminUI = (() => {
             </label>
           </td>
           <td style="white-space:nowrap;">
+            ${m.key === 'admin' ? '' : `<a class="edit-link" onclick="AdminUI.toggleTabsRow('${m.key}')"><i class="ti ti-layout-navbar"></i> Tabs</a>`}
             <a class="edit-link" onclick='AdminUI.editModule(${JSON.stringify(m)})'><i class="ti ti-pencil"></i> Edit</a>
             ${m.key === 'admin' ? '' : `<a class="edit-link danger" onclick="AdminUI.deleteModule('${m.key}','${m.label}')"><i class="ti ti-trash"></i> Remove</a>`}
           </td>
-        </tr>`).join('');
+        </tr>${m.key === 'admin' ? '' : `
+        <tr id="tabsrow-${m.key}" style="display:none;"><td colspan="6" style="background:var(--color-bg);">
+          <div id="tabsbox-${m.key}" style="padding:8px 6px;"></div>
+        </td></tr>`}`).join('');
       el.innerHTML = `<div class="table-wrap"><table class="data-table">
         <thead><tr><th>Module</th><th>Access</th><th>Order</th><th>Code</th><th>On</th><th></th></tr></thead>
         <tbody>${rows}</tbody></table></div>`;
@@ -555,6 +560,123 @@ window.AdminUI = (() => {
       closeModuleForm();
       loadModules();
     }, () => FormHelper.setLoading('save-module-btn', false));
+  }
+
+  // ══ TAB VISIBILITY (per-module expander) ══════════════
+  // Expands under a Module Manager row: one line per tab from the
+  // module's code-declared TABS manifest, with role chips and an On/Off
+  // switch, saved as a batch per module. Visibility only — the server's
+  // per-action permission checks are unaffected by anything set here.
+  let _tabsCache = {};   // moduleKey -> last fetched listModuleTabs result
+
+  function toggleTabsRow(key) {
+    const row = document.getElementById('tabsrow-' + key);
+    if (!row) return;
+    const open = row.style.display !== 'none';
+    if (open) { row.style.display = 'none'; return; }
+    row.style.display = '';
+    const box = document.getElementById('tabsbox-' + key);
+    if (!box) return;
+    box.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
+    App.call('admin', 'listModuleTabs', { key }, res => {
+      if (!document.getElementById('tabsbox-' + key)) return;
+      _tabsCache[key] = res || { tabs: [], orphans: [] };
+      _renderTabsEditor(key);
+    }, () => {
+      const b = document.getElementById('tabsbox-' + key);
+      if (b) b.innerHTML = '<div class="empty-state text-sm">Could not load tab settings.</div>';
+    });
+  }
+
+  function _renderTabsEditor(key) {
+    const box = document.getElementById('tabsbox-' + key);
+    if (!box) return;
+    const d = _tabsCache[key];
+    if (!d || !d.tabs || !d.tabs.length) {
+      box.innerHTML = '<div class="text-sm text-muted" style="padding:6px 2px;">This module\'s code does not declare configurable tabs yet — a developer adds a TABS manifest to its handler.</div>';
+      return;
+    }
+    const roleOpts = (_roles || []).filter(r => r !== 'super_admin');
+    const rows = d.tabs.map(t => {
+      const sid = _slugId(key) + '-' + _slugId(t.key);
+      const star = t.roles.indexOf('*') !== -1;
+      const lockChip = '<span class="role-chip checked" style="opacity:.6;cursor:default;" title="Super admins always see every tab that is switched on."><i class="ti ti-lock"></i> super_admin</span>';
+      const starChip = '<label class="role-chip' + (star ? ' checked' : '') + '">'
+        + '<input type="checkbox" value="*"' + (star ? ' checked' : '')
+        + ' onchange="AdminUI.onTabChip(\'' + sid + '\', this)"> Everyone in module</label>';
+      const chips = roleOpts.map(r => {
+        const on = !star && t.roles.indexOf(r) !== -1;
+        return '<label class="role-chip' + (on ? ' checked' : '') + '">'
+          + '<input type="checkbox" value="' + _escAttr(r) + '"' + (on ? ' checked' : '')
+          + ' onchange="AdminUI.onTabChip(\'' + sid + '\', this)"> ' + _escAttr(r) + '</label>';
+      }).join('');
+      const floorNote = t.floor
+        ? '<div class="text-sm text-muted">actions require ' + _escAttr(t.floor) + '</div>' : '';
+      return '<tr>'
+        + '<td style="white-space:nowrap;"><i class="ti ' + _escAttr(t.icon) + '" style="vertical-align:middle;margin-right:6px;color:var(--ucsc-navy);"></i><strong>' + _escAttr(t.label) + '</strong>'
+        + '<div class="text-sm text-muted">' + _escAttr(t.key) + '</div>' + floorNote + '</td>'
+        + '<td><div id="tchips-' + sid + '" style="display:flex;flex-wrap:wrap;gap:8px;">' + lockChip + starChip + chips + '</div></td>'
+        + '<td><label class="toggle-switch" title="Off hides this tab from everyone, super admins included.">'
+        + '<input type="checkbox" id="ten-' + sid + '"' + (t.enabled ? ' checked' : '') + '>'
+        + '<span class="toggle-slider"></span></label></td>'
+        + '</tr>';
+    }).join('');
+    const orphanNote = (d.orphans && d.orphans.length)
+      ? '<p class="text-sm" style="color:#9a6206;margin:10px 0 0;"><i class="ti ti-alert-triangle"></i> '
+        + d.orphans.length + ' saved tab(s) no longer exist in this module\'s code ('
+        + d.orphans.map(o => _escAttr(o.tab)).join(', ') + ') — cleaned up automatically on save.</p>'
+      : '';
+    box.innerHTML = '<p class="text-sm text-muted" style="margin:2px 0 10px;">'
+      + 'Who sees each tab. Super admins always see every tab that is switched on; '
+      + 'unchecking every role leaves a tab visible to super admins only. '
+      + 'The switch hides a tab from everyone.</p>'
+      + '<div class="table-wrap"><table class="data-table"><thead><tr><th>Tab</th><th>Visible to</th><th>On</th></tr></thead>'
+      + '<tbody>' + rows + '</tbody></table></div>'
+      + orphanNote
+      + '<div class="form-actions" style="margin-top:12px;">'
+      + '<button class="btn btn-primary btn-sm" id="savetabs-' + _slugId(key) + '" onclick="AdminUI.saveModuleTabs(\'' + _escAttr(key) + '\')"><i class="ti ti-device-floppy"></i> Save tab settings</button>'
+      + '<button class="btn btn-secondary btn-sm" onclick="AdminUI.toggleTabsRow(\'' + _escAttr(key) + '\')">Close</button>'
+      + '</div>';
+  }
+
+  // 'Everyone in module' (*) and specific roles are mutually exclusive.
+  function onTabChip(sid, input) {
+    const wrap = document.getElementById('tchips-' + sid);
+    if (!wrap) return;
+    if (input.checked) {
+      wrap.querySelectorAll('input').forEach(i => {
+        if (input.value === '*' ? i.value !== '*' : i.value === '*') i.checked = false;
+      });
+    }
+    wrap.querySelectorAll('input').forEach(i => {
+      i.closest('.role-chip').classList.toggle('checked', i.checked);
+    });
+  }
+
+  function saveModuleTabs(key) {
+    const d = _tabsCache[key];
+    if (!d || !d.tabs) return;
+    const tabs = d.tabs.map(t => {
+      const sid = _slugId(key) + '-' + _slugId(t.key);
+      const wrap = document.getElementById('tchips-' + sid);
+      const roles = wrap
+        ? Array.from(wrap.querySelectorAll('input:checked')).map(i => i.value)
+        : t.roles;
+      const en = document.getElementById('ten-' + sid);
+      return { tab: t.key, roles: roles, enabled: en ? en.checked : t.enabled };
+    });
+    const btn = 'savetabs-' + _slugId(key);
+    FormHelper.setLoading(btn, true);
+    App.call('admin', 'saveModuleTabs', { key: key, tabs: tabs }, res => {
+      FormHelper.setLoading(btn, false);
+      Toast.show('Tab settings saved for ' + key + '. Users see the change the next time the module loads.'
+        + (res && res.orphansRemoved ? ' Cleaned up ' + res.orphansRemoved + ' stale row(s).' : ''), 'success');
+      App.call('admin', 'listModuleTabs', { key }, fresh => {
+        if (!document.getElementById('tabsbox-' + key)) return;
+        _tabsCache[key] = fresh || { tabs: [], orphans: [] };
+        _renderTabsEditor(key);
+      });
+    }, () => FormHelper.setLoading(btn, false));
   }
 
   // ══ USERS ═════════════════════════════════════════════
@@ -1082,7 +1204,7 @@ window.AdminUI = (() => {
     });
   }
 
-  return { init, switchTab, loadModules, toggleModule, deleteModule, openModuleForm, editModule, closeModuleForm, checkHandler, pickIcon, onModuleChip, saveModule, loadUsers, onUserFilterChange, clearUserFilters, sortUsersBy, onChip, editUser, saveUser, clearUserForm, loadAudit, loadRoles, editRole, saveRole, clearRoleForm, deleteRole, explainBlocked, loadRequests, approveRequest, rejectRequest, loadImportPolicy, editPolicy, savePolicy, deletePolicy, loadNotifyRules, editNotifyRule, saveNotifyRule, deleteNotifyRule, loadModuleReplyTos, saveModuleReplyTo };
+  return { init, switchTab, loadModules, toggleModule, deleteModule, openModuleForm, editModule, closeModuleForm, checkHandler, pickIcon, onModuleChip, saveModule, toggleTabsRow, onTabChip, saveModuleTabs, loadUsers, onUserFilterChange, clearUserFilters, sortUsersBy, onChip, editUser, saveUser, clearUserForm, loadAudit, loadRoles, editRole, saveRole, clearRoleForm, deleteRole, explainBlocked, loadRequests, approveRequest, rejectRequest, loadImportPolicy, editPolicy, savePolicy, deletePolicy, loadNotifyRules, editNotifyRule, saveNotifyRule, deleteNotifyRule, loadModuleReplyTos, saveModuleReplyTo };
 
 })();
 
