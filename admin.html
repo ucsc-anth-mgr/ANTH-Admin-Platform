@@ -325,7 +325,8 @@ window.AdminUI = (() => {
 
   let _roles = [];
   let _iconChoices = [];
-  let _availableHandlers = [];
+  let _availableHandlers = [];   // registered in code but NOT yet configured in the sheet
+  let _registeredHandlers = [];  // ALL handlers registered in code — the validation list
   let _editingKey = null;
 
   // users-roster state
@@ -444,7 +445,6 @@ window.AdminUI = (() => {
     _populateHandlerSelect(m.handler);
     _renderIconPicker(m.icon);
     _renderModuleRoleChips(m.roles);
-    checkHandler();
     document.getElementById('module-form-card').style.display = 'block';
     document.getElementById('module-form-card').scrollIntoView({ behavior: 'smooth' });
   }
@@ -459,17 +459,37 @@ window.AdminUI = (() => {
   }
 
   function _populateHandlerSelect(selected) {
-    // Combine registered handlers (from code) with any currently-set value
-    App.call('admin', 'availableHandlers', {}, available => {
-      _availableHandlers = available;
-      const sel = document.getElementById('m-handler');
-      const all = new Set(available);
-      if (selected) all.add(selected);
-      // Always include known registered handlers
-      ['AdminModule','SubmissionsModule'].forEach(h => all.add(h));
-      sel.innerHTML = '<option value="">— Select handler —</option>' +
-        Array.from(all).map(h => `<option value="${h}" ${h===selected?'selected':''}>${h}</option>`).join('');
-      checkHandler();
+    // Two lists, fetched together:
+    //  · registeredHandlers — EVERYTHING registered in code; the validation
+    //    list for checkHandler(). Validating against availableHandlers (as
+    //    this used to) falsely warned on every already-configured module,
+    //    because "available" excludes handlers the sheet already uses.
+    //  · availableHandlers — registered but not yet configured; these are
+    //    the dropdown options (plus the row's current value when editing).
+    App.call('admin', 'registeredHandlers', {}, registered => {
+      _registeredHandlers = registered || [];
+      App.call('admin', 'availableHandlers', {}, available => {
+        _availableHandlers = available || [];
+        const sel = document.getElementById('m-handler');
+        const all = new Set(_availableHandlers);
+        if (selected) all.add(selected);
+        sel.innerHTML = '<option value="">— Select handler —</option>' +
+          Array.from(all).map(h => `<option value="${h}" ${h===selected?'selected':''}>${h}</option>`).join('');
+        checkHandler();
+      });
+    }, () => {
+      // registeredHandlers unavailable (older server) — degrade: options
+      // from availableHandlers only, validation treats options as valid.
+      _registeredHandlers = [];
+      App.call('admin', 'availableHandlers', {}, available => {
+        _availableHandlers = available || [];
+        const sel = document.getElementById('m-handler');
+        const all = new Set(_availableHandlers);
+        if (selected) all.add(selected);
+        sel.innerHTML = '<option value="">— Select handler —</option>' +
+          Array.from(all).map(h => `<option value="${h}" ${h===selected?'selected':''}>${h}</option>`).join('');
+        checkHandler();
+      });
     });
   }
 
@@ -477,9 +497,14 @@ window.AdminUI = (() => {
     const val = document.getElementById('m-handler').value;
     const warn = document.getElementById('handler-warning');
     const txt = document.getElementById('handler-warning-text');
-    // Warn if the selected handler isn't among registered ones
-    App.call('admin', 'listModules', {}, () => {}); // noop keep-alive
-    if (val && !['AdminModule','SubmissionsModule'].includes(val) && !_availableHandlers.includes(val)) {
+    if (!val) { warn.style.display = 'none'; return; }
+    // Valid = registered in code. Fall back to the dropdown's own contents
+    // when the registered list couldn't be fetched (older server) — every
+    // dropdown option except a hand-set stale value is registered anyway.
+    const known = _registeredHandlers.length ? _registeredHandlers : _availableHandlers;
+    const ok = known.includes(val) ||
+      (!_registeredHandlers.length && _availableHandlers.includes(val));
+    if (!ok && _registeredHandlers.length) {
       txt.textContent = 'The handler "' + val + '" is not registered in code yet. The module will appear in the menu but will error when opened until a developer adds it.';
       warn.style.display = 'block';
     } else {

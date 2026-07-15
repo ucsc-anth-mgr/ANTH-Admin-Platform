@@ -234,6 +234,10 @@
           <input type="checkbox" id="svc-asn-historical" onchange="ServiceUI.togglePersonMode()">
           Person without a portal profile (historical record)
         </label>
+        <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
+          <input type="checkbox" id="svc-asn-adhoc">
+          Ad hoc member — hidden from Current Assignments (still on the person's record, badged in history)
+        </label>
       </div>
       <div class="form-row">
         <div class="form-group" id="svc-asn-person-wrap">
@@ -331,6 +335,21 @@
           Each ticked committee shows a role, prefilled with its default: leave it untouched to
           follow that committee's default role, or edit it to pin a specific role (e.g. Chair).
           Skipped if the person is already on that committee for the year. No cascade on delete.
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="svc-cat-grantsrole">Grants portal role</label>
+        <input class="form-input" id="svc-cat-grantsrole" placeholder="e.g. personnel_committee">
+        <label style="display:flex;align-items:center;gap:8px;font-weight:normal;margin-top:6px;">
+          <input type="checkbox" id="svc-cat-grantsrole-members"> Members only — the committee Chair is excluded
+        </label>
+        <div class="form-hint">
+          Keeps this portal role equal to the committee's <em>current-year</em> membership, so other
+          modules can read it (e.g. Academic Personnel reads <code>personnel_committee</code> for who
+          can be assigned drafts). Create the role first in Admin → Roles. The role is maintained
+          automatically: it is granted on assignment, revoked on removal or when the year rolls over,
+          and a manual grant not backed by a current assignment is removed at the next sync. People
+          recorded by name only (no portal profile) cannot receive a role.
         </div>
       </div>
       <div class="form-group">
@@ -520,6 +539,7 @@ window.ServiceUI = (() => {
       sortWeight:         { get: r => r.sortWeight,         type: 'number' },
       nominationEligible: { get: r => r.nominationEligible, type: 'bool' },
       autoAssigns:        { get: r => r.autoAssigns,        type: 'text' },
+      grantsRole:         { get: r => r.grantsRole,         type: 'text' },
       usageCount:         { get: r => r.usageCount || 0,    type: 'number' },
     },
     corr: {
@@ -963,7 +983,7 @@ window.ServiceUI = (() => {
       + rows.map(r =>
           '<tr><td><strong>' + _esc(r.year) + '</strong></td>'
           + (opts.showName ? '<td>' + _esc(r.nameLastFirst) + (r.hasProfile ? '' : ' <span class="badge badge-neutral">no profile</span>') + '</td>' : '')
-          + '<td>' + _esc(r.categoryLabel) + '</td><td>' + _esc(r.role) + '</td>'
+          + '<td>' + _esc(r.categoryLabel) + (r.isAdHoc ? ' <span class="badge badge-neutral">ad hoc</span>' : '') + '</td><td>' + _esc(r.role) + '</td>'
           + '<td>' + _esc(r.quarter) + '</td><td class="text-muted">' + _esc(r.notes) + '</td></tr>'
         ).join('')
       + '</tbody></table></div>';
@@ -1024,7 +1044,7 @@ window.ServiceUI = (() => {
       + _applySort('asn', rows).map(r =>
           '<tr><td>' + _esc(r.year) + '</td>'
           + '<td>' + _esc(r.nameLastFirst) + (r.hasProfile ? '' : ' <span class="badge badge-neutral">no profile</span>') + '</td>'
-          + '<td>' + _esc(r.categoryLabel) + '</td><td>' + _esc(r.role) + '</td><td>' + _esc(r.quarter) + '</td>'
+          + '<td>' + _esc(r.categoryLabel) + (r.isAdHoc ? ' <span class="badge badge-neutral">ad hoc</span>' : '') + '</td><td>' + _esc(r.role) + '</td><td>' + _esc(r.quarter) + '</td>'
           + '<td class="text-muted">' + _esc(r.notes) + '</td>'
           + '<td style="white-space:nowrap;">'
           +   '<button class="btn btn-secondary btn-sm" onclick="ServiceUI.editAssignment(\'' + _esc(r.assignmentId) + '\')" aria-label="Edit assignment"><i class="ti ti-pencil"></i></button> '
@@ -1038,6 +1058,7 @@ window.ServiceUI = (() => {
     S.editingAssignmentId = '';
     $('svc-asn-form-title').textContent = 'Add assignment';
     $('svc-asn-historical').checked = false; togglePersonMode();
+    $('svc-asn-adhoc').checked = false;
     $('svc-asn-person').value = ''; $('svc-asn-rawname').value = '';
     $('svc-asn-category').value = ''; $('svc-asn-role').value = '';
     $('svc-asn-yearval').value = S.boot ? S.boot.currentYear : '';
@@ -1054,6 +1075,7 @@ window.ServiceUI = (() => {
     $('svc-asn-form-title').textContent = 'Edit assignment';
     const historical = !r.personEmail;
     $('svc-asn-historical').checked = historical; togglePersonMode();
+    $('svc-asn-adhoc').checked = !!r.isAdHoc;
     $('svc-asn-person').value = r.personEmail || '';
     $('svc-asn-rawname').value = r.rawName || '';
     $('svc-asn-category').value = r.categoryKey;
@@ -1087,6 +1109,7 @@ window.ServiceUI = (() => {
       role: $('svc-asn-role').value,
       year: $('svc-asn-yearval').value,
       quarter: $('svc-asn-quarter').value,
+      isAdHoc: $('svc-asn-adhoc').checked,
       notes: $('svc-asn-notes').value,
     };
     const done = res => {
@@ -1135,14 +1158,16 @@ window.ServiceUI = (() => {
       + _th('cat', 'label', 'Label') + _th('cat', 'active', 'Status') + _th('cat', 'isQuarterly', 'Quarterly')
       + _th('cat', 'defaultRole', 'Default role') + _th('cat', 'isLeadership', 'Leadership')
       + _th('cat', 'sortWeight', 'Weight') + _th('cat', 'nominationEligible', 'Nomination')
-      + _th('cat', 'autoAssigns', 'Auto-assigns') + _th('cat', 'usageCount', 'In use') + '<th></th>'
+      + _th('cat', 'autoAssigns', 'Auto-assigns') + _th('cat', 'grantsRole', 'Grants role')
+      + _th('cat', 'usageCount', 'In use') + '<th></th>'
       + '</tr></thead><tbody>'
       + _applySort('cat', S.catalog).map(c =>
           '<tr><td>' + _esc(c.label) + '</td>'
           + '<td>' + (c.active ? '<span class="badge badge-success">Active</span>' : '<span class="badge badge-neutral">Inactive</span>') + '</td>'
           + '<td>' + yn(c.isQuarterly) + '</td><td>' + _esc(c.defaultRole) + '</td>'
           + '<td>' + yn(c.isLeadership) + '</td><td>' + _esc(c.sortWeight) + '</td>'
-          + '<td>' + yn(c.nominationEligible) + '</td><td class="text-muted text-sm">' + _esc(c.autoAssigns || '') + '</td><td>' + _esc(c.usageCount || 0) + '</td>'
+          + '<td>' + yn(c.nominationEligible) + '</td><td class="text-muted text-sm">' + _esc(c.autoAssigns || '') + '</td>'
+          + '<td class="text-muted text-sm">' + _esc(c.grantsRole || '') + '</td><td>' + _esc(c.usageCount || 0) + '</td>'
           + '<td style="white-space:nowrap;">'
           +   '<button class="btn btn-secondary btn-sm" onclick="ServiceUI.editCategory(\'' + _esc(c.key) + '\')" aria-label="Edit category"><i class="ti ti-pencil"></i></button>'
           +   (c.usageCount ? '' : ' <button class="btn btn-secondary btn-sm" onclick="ServiceUI.deleteCategory(\'' + _esc(c.key) + '\')" aria-label="Delete category"><i class="ti ti-trash"></i></button>')
@@ -1242,6 +1267,7 @@ window.ServiceUI = (() => {
     $('svc-cat-key-note').textContent = '';
     $('svc-cat-label').value = ''; $('svc-cat-defaultrole').value = 'Member';
     _renderAutoAssignPicker('', '');
+    $('svc-cat-grantsrole').value = ''; $('svc-cat-grantsrole-members').checked = false;
     $('svc-cat-sortweight').value = '100';
     $('svc-cat-active').checked = true; $('svc-cat-quarterly').checked = false;
     $('svc-cat-leadership').checked = false; $('svc-cat-nomination').checked = true;
@@ -1258,6 +1284,10 @@ window.ServiceUI = (() => {
     $('svc-cat-key-note').textContent = 'Key: ' + key + ' (permanent)';
     $('svc-cat-label').value = c.label; $('svc-cat-defaultrole').value = c.defaultRole;
     _renderAutoAssignPicker(key, c.autoAssigns || '');
+    const gr = String(c.grantsRole || '');
+    const grAt = gr.indexOf(':');
+    $('svc-cat-grantsrole').value = grAt === -1 ? gr : gr.slice(0, grAt);
+    $('svc-cat-grantsrole-members').checked = grAt !== -1 && gr.slice(grAt + 1).trim().toLowerCase() === 'members';
     $('svc-cat-sortweight').value = c.sortWeight;
     $('svc-cat-active').checked = c.active; $('svc-cat-quarterly').checked = c.isQuarterly;
     $('svc-cat-leadership').checked = c.isLeadership; $('svc-cat-nomination').checked = c.nominationEligible;
@@ -1279,10 +1309,18 @@ window.ServiceUI = (() => {
       isLeadership: $('svc-cat-leadership').checked,
       nominationEligible: $('svc-cat-nomination').checked,
       autoAssigns: _composeAutoAssigns(),
+      grantsRole: (function () {
+        const role = $('svc-cat-grantsrole').value.trim().toLowerCase();
+        return role ? role + ($('svc-cat-grantsrole-members').checked ? ':members' : '') : '';
+      })(),
       notes: $('svc-cat-notes').value,
     };
-    App.call('service', 'upsertCategory', payload, () => {
-      Toast.show('Category saved.', 'success');
+    App.call('service', 'upsertCategory', payload, res => {
+      let msg = 'Category saved.';
+      if (res && res.roleSync && (res.roleSync.granted || res.roleSync.revoked)) {
+        msg += ' Role sync: ' + res.roleSync.granted + ' granted, ' + res.roleSync.revoked + ' revoked.';
+      }
+      Toast.show(msg, 'success');
       cancelCategory();
       _reloadBootCatalog();
       loadCatalog();

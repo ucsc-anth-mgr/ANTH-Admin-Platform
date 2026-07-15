@@ -95,6 +95,39 @@
 //     Accepting a nomination also auto-accepts the person's own OPEN
 //     nominations for companion committees (provenance decision note),
 //     so nothing moot lingers in the queue.
+//   - AD HOC (per-assignment visibility): an ASSIGNMENT flagged IsAdHoc
+//     is hidden from the Current Assignments directory only — the
+//     member is ad hoc, not the committee, so the committee's card and
+//     its regular members render normally (a committee whose members
+//     are ALL ad hoc simply has no card, since Current is populated-
+//     only). The record remains fully visible — badged "ad hoc" — in
+//     My History, Full History, and the management tables: real,
+//     credited service. Behaviors are unaffected: GrantsRole still
+//     grants (hidden, not stripped of function), and an auto-assign
+//     companion INHERITS the trigger's flag so a hidden appointment
+//     never leaks into the directory through a rule. Set on the
+//     Add/Edit assignment form; accepted nominations are never ad hoc
+//     (self-nominated is the opposite of appointed); the legacy import
+//     ignores it. Filtered server-side in currentAssignments.
+//   - GRANTS-ROLE (catalog-driven cross-module contract): a category
+//     may carry a GrantsRole attribute — "role" or "role:members" — and
+//     the module keeps that Auth role equal to the category's CURRENT-
+//     YEAR membership (a live projection other modules read via
+//     Auth.usersWithRole(), e.g. Academic Personnel reads
+//     personnel_committee for its assignable-drafter pool). ":members"
+//     excludes assignees whose Role is exactly "Chair" (the chair
+//     assigns rather than drafts); drop the modifier to include them —
+//     a data edit, no code. Rules: the granted role must already exist
+//     in Admin → Roles; super_admin can never be granted this way;
+//     RawName rows and inactive profiles never receive the role; the
+//     role is MACHINE-OWNED (a manual grant not backed by a current
+//     assignment is stripped at the next reconcile). Reconciles run
+//     after every assignment mutation (add/update/delete/import/accept/
+//     re-apply) and lazily at the first bootstrap after July 1
+//     (LAST_ROLE_SYNC_YEAR in ServiceSettings — no cron exists), all
+//     best-effort: a role-sync failure never fails the primary action.
+//     upsertUser REBUILDS the profile row, so the reconcile reads each
+//     full profile and writes every field back with the modified roles.
 //   - Cross-cutting concerns go through platform services: Tasks,
 //     Notify, Auth, DataService, Settings. No SpreadsheetApp here.
 //
@@ -247,6 +280,7 @@ const ServiceModule = (() => {
       sortWeight: _numOr(r.SortWeight, 100),
       nominationEligible: _isTrue(r.NominationEligible),
       autoAssigns: String(r.AutoAssigns || ''),
+      grantsRole: String(r.GrantsRole || ''),
       notes: String(r.Notes || ''),
       usageCount: usage ? (usage[r.Key] || 0) : undefined,
     };
@@ -315,6 +349,7 @@ const ServiceModule = (() => {
         Role: role,
         Year: triggerRec.Year,
         Quarter: triggerRec.Quarter,
+        IsAdHoc: _bool(_isTrue(triggerRec.IsAdHoc)),   // hidden appointments never leak via a rule
         Notes: 'Auto-assigned with ' + String(triggerCat.Label || ''),
       });
       results.push({ categoryLabel: label, role: role, created: true });
@@ -377,6 +412,7 @@ const ServiceModule = (() => {
           Role: role,
           Year: year,
           Quarter: String(r.Quarter || ''),
+          IsAdHoc: _bool(_isTrue(r.IsAdHoc)),
           Notes: 'Auto-assigned with ' + String(trigCat.Label || ''),
         });
         const p = String(r.PersonEmail || '').trim() ? Auth.getProfile(r.PersonEmail) : null;
@@ -389,7 +425,95 @@ const ServiceModule = (() => {
       });
     });
 
+    _syncGrantedRoles();
     return { year: year, scanned: snapshot.length, created: created, skippedUnknownTargets: skippedUnknown };
+  }
+
+
+  // ── Granted roles (catalog GrantsRole → Auth role projection) ──
+
+  const ROLE_SYNC_YEAR_KEY = 'LAST_ROLE_SYNC_YEAR';
+
+  /** "role" or "role:members" → { role, membersOnly } (null when blank). */
+  function _parseGrantsRole(raw) {
+    const s = String(raw || '').trim();
+    if (!s) return null;
+    const at = s.indexOf(':');
+    const role = (at === -1 ? s : s.slice(0, at)).trim().toLowerCase();
+    if (!role) return null;
+    const mod = at === -1 ? '' : s.slice(at + 1).trim().toLowerCase();
+    return { role: role, membersOnly: mod === 'members' };
+  }
+
+  /** ":members" excludes exactly this assignment Role (Vice Chair stays in). */
+  function _isChairRole(role) { return /^\s*chair\s*$/i.test(String(role || '')); }
+
+  /**
+   * Reconciles every GrantsRole projection: for each granted role, the
+   * holder set becomes exactly the CURRENT-YEAR assignees of the
+   * categories granting it (active profiles only; RawName rows have no
+   * account to grant; ":members" drops Chair-role assignees). Grants
+   * the missing, revokes the stale — including manual strays and
+   * holders gone inactive — touching only users whose membership
+   * changed. upsertUser rebuilds the row, so the FULL profile is passed
+   * back with the modified roles (names/IDs/AltNames/Notes preserved).
+   * Stamps LAST_ROLE_SYNC_YEAR so the bootstrap rollover guard knows
+   * the projection has been computed for this academic year.
+   */
+  function _reconcileGrantedRoles() {
+    const year = _currentYear();
+    const rules = [];
+    _catalogRows().forEach(c => {
+      const g = _parseGrantsRole(c.GrantsRole);
+      if (g && g.role !== 'super_admin') rules.push({ key: String(c.Key || '').trim(), role: g.role, membersOnly: g.membersOnly });
+    });
+    const summary = { granted: [], revoked: [] };
+    if (rules.length) {
+      const desiredByRole = {};   // role -> { email: true }
+      rules.forEach(rule => { desiredByRole[rule.role] = desiredByRole[rule.role] || {}; });
+      _assignmentRows()
+        .filter(r => String(r.Year || '').trim() === year)
+        .forEach(r => {
+          const catKey = String(r.CategoryKey || '').trim();
+          const email = _normEmail(r.PersonEmail);
+          if (!email) return;   // RawName-only records carry no account
+          rules.forEach(rule => {
+            if (rule.key !== catKey) return;
+            if (rule.membersOnly && _isChairRole(r.Role)) return;
+            desiredByRole[rule.role][email] = true;
+          });
+        });
+
+      const users = Auth.listUsers();
+      Object.keys(desiredByRole).forEach(role => {
+        const desired = desiredByRole[role];
+        users.forEach(u => {
+          const has = (u.roles || []).indexOf(role) !== -1;
+          const want = !!desired[_normEmail(u.email)] && u.active !== false;
+          if (want === has) return;
+          Auth.upsertUser({
+            email: u.email,
+            firstName: u.firstName, lastName: u.lastName,
+            altNames: u.altNames,
+            roles: want ? (u.roles || []).concat([role]) : (u.roles || []).filter(x => x !== role),
+            studentId: u.studentId, employeeId: u.employeeId,
+            active: u.active, notes: u.notes,
+          });
+          (want ? summary.granted : summary.revoked).push(u.email);
+        });
+      });
+    }
+    _setSetting(ROLE_SYNC_YEAR_KEY, year);
+    return summary;
+  }
+
+  /** Best-effort wrapper: a role-sync failure never fails the primary action. */
+  function _syncGrantedRoles() {
+    try { return _reconcileGrantedRoles(); }
+    catch (e) {
+      Logger.log('ServiceModule granted-role sync failed: ' + e);
+      return { granted: [], revoked: [], error: String(e) };
+    }
   }
 
 
@@ -426,6 +550,7 @@ const ServiceModule = (() => {
       role: String(r.Role || ''),
       year: String(r.Year || ''),
       quarter: String(r.Quarter || ''),
+      isAdHoc: _isTrue(r.IsAdHoc),
       notes: String(r.Notes || ''),
       createdAt: _dateStr(r.CreatedAt),
     };
@@ -453,6 +578,11 @@ const ServiceModule = (() => {
   /** One-round-trip module state: permissions + catalog + directory. */
   function bootstrap(payload, user, roles) {
     const me = Auth.getProfile(user);
+    // Lazy rollover guard: nothing fires AT July 1 (no cron), so the
+    // first bootstrap of a new academic year reconciles granted roles
+    // once — last year's committee stops holding personnel_committee
+    // the first time anyone opens the module after the year turns.
+    if (_getSetting(ROLE_SYNC_YEAR_KEY, '') !== _currentYear()) _syncGrantedRoles();
     return {
       me: { email: user, name: (me && me.name) || user },
       canManage: _isAdmin(roles),
@@ -472,7 +602,8 @@ const ServiceModule = (() => {
     const catMap = _catalogMap();
     const year = _currentYear();
     return _assignmentRows()
-      .filter(r => String(r.Year || '').trim() === year)
+      .filter(r => String(r.Year || '').trim() === year
+        && !_isTrue(r.IsAdHoc))   // ad hoc members: hidden from the public directory
       .map(r => _publicAssignment(r, catMap));
   }
 
@@ -929,6 +1060,7 @@ const ServiceModule = (() => {
       DecisionNote: String(payload.decisionNote || ''),
     });
     _renumberOpen(String(nom.PersonEmail), String(nom.Year));
+    _syncGrantedRoles();
     return { nominationId: id, status: 'ACCEPTED', assignmentCreated: created,
              autoAssigned: auto, autoResolvedNominations: autoResolved };
   }
@@ -1005,10 +1137,37 @@ const ServiceModule = (() => {
       fields.AutoAssigns = rules.map(r => r.key + (r.role ? ':' + r.role : '')).join(', ');
     }
 
+    // GrantsRole: "role" or "role:members" — the role must already exist
+    // in Admin → Roles (create it there first), and super_admin is never
+    // grantable through committee membership.
+    let grantsRoleTouched = false;
+    if (payload.grantsRole !== undefined) {
+      grantsRoleTouched = true;
+      const g = _parseGrantsRole(payload.grantsRole);
+      if (!g) {
+        fields.GrantsRole = '';
+      } else {
+        if (!/^[a-z][a-z0-9_]*$/.test(g.role)) {
+          throw new Error('Role names are lowercase letters, digits, and underscores (e.g. personnel_committee).');
+        }
+        if (g.role === 'super_admin') throw new Error('super_admin cannot be granted by a committee assignment.');
+        const known = Auth.listRoles().map(r => String(r).trim().toLowerCase());
+        if (known.indexOf(g.role) === -1) {
+          throw new Error('Unknown role "' + g.role + '" — create it first in Admin → Roles, then set it here.');
+        }
+        fields.GrantsRole = g.role + (g.membersOnly ? ':members' : '');
+      }
+    }
+
     if (existingKey) {
       if (!map[existingKey]) throw new Error('Unknown category: ' + existingKey);
       DataService.update(SHEET(), CATALOG_TAB(), 'Key', existingKey, fields);
-      return { key: existingKey, status: 'updated' };
+      const out = { key: existingKey, status: 'updated' };
+      if (grantsRoleTouched) {
+        const sync = _syncGrantedRoles();
+        out.roleSync = { granted: sync.granted.length, revoked: sync.revoked.length };
+      }
+      return out;
     }
 
     const key = _slug(label);
@@ -1017,7 +1176,12 @@ const ServiceModule = (() => {
 
     fields.Key = key;
     DataService.insert(SHEET(), CATALOG_TAB(), fields);
-    return { key: key, status: 'created' };
+    const out = { key: key, status: 'created' };
+    if (grantsRoleTouched) {
+      const sync = _syncGrantedRoles();
+      out.roleSync = { granted: sync.granted.length, revoked: sync.revoked.length };
+    }
+    return out;
   }
 
   /**
@@ -1069,6 +1233,7 @@ const ServiceModule = (() => {
     rec.AssignmentID = DataService.generateId('SVASN');
     DataService.insert(SHEET(), ASSIGN_TAB(), rec);
     const auto = _runAutoAssigns(rec, _catalogMap()[rec.CategoryKey]);
+    _syncGrantedRoles();
     const pub = _publicAssignment(rec, _catalogMap());
     pub.autoAssigned = auto;
     return pub;
@@ -1096,6 +1261,7 @@ const ServiceModule = (() => {
       role:        payload.role        !== undefined ? payload.role        : current.Role,
       year:        payload.year        !== undefined ? payload.year        : current.Year,
       quarter:     payload.quarter     !== undefined ? payload.quarter     : current.Quarter,
+      isAdHoc:     payload.isAdHoc     !== undefined ? payload.isAdHoc === true : _isTrue(current.IsAdHoc),
       notes:       payload.notes       !== undefined ? payload.notes       : current.Notes,
     };
     // Identity: if an email was supplied, it wins and clears RawName.
@@ -1111,10 +1277,11 @@ const ServiceModule = (() => {
     const fields = {
       PersonEmail: rec.PersonEmail, RawName: rec.RawName,
       CategoryKey: rec.CategoryKey, Role: rec.Role,
-      Year: rec.Year, Quarter: rec.Quarter,
+      Year: rec.Year, Quarter: rec.Quarter, IsAdHoc: rec.IsAdHoc,
     };
     if (payload.notes !== undefined) fields.Notes = rec.Notes;
     DataService.update(SHEET(), ASSIGN_TAB(), 'AssignmentID', id, fields);
+    _syncGrantedRoles();
 
     rec.AssignmentID = id;
     return _publicAssignment(rec, _catalogMap());
@@ -1126,6 +1293,7 @@ const ServiceModule = (() => {
     if (!id) throw new Error('Assignment not found.');
     const removed = DataService.remove(SHEET(), ASSIGN_TAB(), 'AssignmentID', id);
     if (!removed) throw new Error('Assignment not found.');
+    _syncGrantedRoles();
     return { assignmentId: id, deleted: true };
   }
 
@@ -1155,6 +1323,7 @@ const ServiceModule = (() => {
       Role: String(p.role || '').trim(),
       Year: year,
       Quarter: quarter,
+      IsAdHoc: _bool(p.isAdHoc === true),
       Notes: String(p.notes || ''),
     };
   }
@@ -1350,6 +1519,7 @@ const ServiceModule = (() => {
       if (personEmail) withProfile++; else rawOnly++;
     });
 
+    if (inserted > 0) _syncGrantedRoles();
     return {
       inserted: inserted,
       withProfile: withProfile,

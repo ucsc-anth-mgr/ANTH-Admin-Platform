@@ -29,6 +29,12 @@ const AdminModule = (() => {
   // ── Module Manager ─────────────────────────────────────────
   function listModules()             { return ModuleManager.list(); }
   function availableHandlers()       { return ModuleManager.availableHandlers(); }
+  // The FULL list of handler names registered in code — for validating a
+  // module row's Handler value. Distinct from availableHandlers(), which
+  // returns only the registered handlers NOT yet configured in the sheet
+  // (i.e. available to add). Validating against availableHandlers() falsely
+  // warns on every already-configured module; validation must use this.
+  function registeredHandlers()      { return getRegisteredHandlers(); }
   function upsertModule(p)           { return ModuleManager.upsert(p); }
   function setModuleEnabled(p)       { return ModuleManager.setEnabled(p.key, p.enabled); }
   function removeModule(p)           { return ModuleManager.remove(p.key); }
@@ -139,7 +145,7 @@ const AdminModule = (() => {
 
   return {
     listUsers, listRoles, upsertUser, recentAudit,
-    listModules, availableHandlers, upsertModule, setModuleEnabled, removeModule, iconChoices,
+    listModules, availableHandlers, registeredHandlers, upsertModule, setModuleEnabled, removeModule, iconChoices,
     listRolesDetailed, upsertRole, removeRole, roleUsage,
     listPendingRequests, listAllRequests, approveRequest, rejectRequest,
     listImportPolicy, upsertImportPolicy, removeImportPolicy,

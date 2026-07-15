@@ -20,9 +20,13 @@
       style="border:none;background:none;padding:8px 14px;border-bottom:2px solid transparent;cursor:pointer;font-weight:600;">
       <i class="ti ti-crystal-ball"></i> Anticipated Call
     </button>
+    <button class="btn btn-tab" id="tab-comms" onclick="PersonnelUI.showTab('comms')"
+      style="border:none;background:none;padding:8px 14px;border-bottom:2px solid transparent;cursor:pointer;font-weight:600;">
+      <i class="ti ti-mail"></i> Communications
+    </button>
     <button class="btn btn-tab" id="tab-settings" onclick="PersonnelUI.showTab('settings')"
       style="border:none;background:none;padding:8px 14px;border-bottom:2px solid transparent;cursor:pointer;font-weight:600;">
-      <i class="ti ti-settings"></i> Settings
+      <i class="ti ti-calendar-cog"></i> Calendar
     </button>
   </div>
 
@@ -176,6 +180,8 @@
 
     <!-- Case list -->
     <div id="cases-list">
+      <div id="workload-card" style="margin-bottom:14px;"></div>
+      <div id="assignments-card" style="margin-bottom:14px;"></div>
       <div class="card">
         <div style="display:flex;justify-content:space-between;align-items:center;">
           <div class="card-title" style="margin:0;"><i class="ti ti-clipboard-list"></i> Review cases</div>
@@ -200,6 +206,7 @@
           <div class="module-loading"><div class="spinner"></div><span>Loading cases…</span></div>
         </div>
       </div>
+      <div id="cases-deeplink"></div>
     </div>
 
     <!-- Add case (manual, for elected reviews) -->
@@ -355,6 +362,89 @@ Assistant Professor	Hernandez Garavito	Carla	5	o	6	2	17	Reappt with salary incre
     </div>
   </div>
 
+  <!-- ============================ COMMUNICATIONS TAB ============================ -->
+  <div id="view-comms" style="display:none;">
+
+    <div class="card">
+      <div class="card-title"><i class="ti ti-mail"></i> Draft a message to the committee</div>
+      <p class="text-muted text-sm" style="margin:-8px 0 12px;">
+        The module writes the first draft — assignments merged per member, the working schedule, or a
+        policy notice — and you edit before anything goes anywhere. Send through the portal, or copy
+        into your own mail client; either way it lands in the log below.
+      </p>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Message kind</label>
+          <select class="form-select" id="comm-kind">
+            <option value="assignments">Drafting assignments (one per member)</option>
+            <option value="schedule">Cycle schedule &amp; deadlines</option>
+            <option value="policy">Policy / process notice</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Academic year</label>
+          <input type="text" class="form-input" id="comm-year" placeholder="e.g. 2026-27">
+        </div>
+        <div class="form-group">
+          <label class="form-label">&nbsp;</label>
+          <button class="btn btn-primary" id="comm-gen-btn" onclick="PersonnelUI.generateDrafts()" style="width:100%;">
+            <i class="ti ti-pencil"></i> Generate drafts
+          </button>
+        </div>
+      </div>
+      <div id="comm-drafts"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><i class="ti ti-template"></i> Templates</div>
+      <p class="text-muted text-sm" style="margin:-8px 0 12px;">
+        The starting text for each message kind. Tokens fill per recipient:
+        <code>{Name}</code> <code>{FirstName}</code> <code>{Year}</code>
+        <code>{Assignments}</code> <code>{Schedule}</code> <code>{PolicyDocs}</code> <code>{PortalLink}</code>.
+      </p>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Template</label>
+          <select class="form-select" id="tmpl-kind" onchange="PersonnelUI.loadTemplateEditor()"></select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Subject</label>
+        <input type="text" class="form-input" id="tmpl-subject">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Body</label>
+        <textarea class="form-input" id="tmpl-body" rows="8" style="font-family:monospace;font-size:12.5px;"></textarea>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-primary" id="tmpl-save-btn" onclick="PersonnelUI.saveTemplate()"><i class="ti ti-check"></i> Save template</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><i class="ti ti-files"></i> Policy documents</div>
+      <p class="text-muted text-sm" style="margin:-8px 0 12px;">
+        The references drafts point committee members at — the CAP letter, the review criteria, and
+        anything else they should have in hand. Paste a name and its link; the list renders into any
+        template through the <code>{PolicyDocs}</code> token, showing just the <strong>names</strong> —
+        each becomes a live link in the email itself (and when a copied draft is pasted into a mail
+        client). The CAP letter changes annually — update the link here, and every future draft carries
+        the current one.
+      </p>
+      <div id="policy-docs-rows"></div>
+      <div class="form-actions" style="display:flex;gap:8px;">
+        <button class="btn btn-secondary btn-sm" onclick="PersonnelUI.addPolicyDocRow()"><i class="ti ti-plus"></i> Add a document</button>
+        <button class="btn btn-primary btn-sm" id="pd-save-btn" onclick="PersonnelUI.savePolicyDocs()"><i class="ti ti-check"></i> Save list</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><i class="ti ti-history"></i> Recent messages</div>
+      <div id="comm-log"><p class="text-muted text-sm">Loading…</p></div>
+    </div>
+
+  </div>
+
   <!-- ============================ SETTINGS TAB ============================ -->
   <div id="view-settings" style="display:none;">
 
@@ -461,9 +551,9 @@ window.PersonnelUI = (() => {
   // ── Tabs ───────────────────────────────────────────────────
   function showTab(which) {
     const views = { roster: 'view-roster', import: 'view-import', cases: 'view-cases',
-                    anticipated: 'view-anticipated', settings: 'view-settings' };
+                    anticipated: 'view-anticipated', comms: 'view-comms', settings: 'view-settings' };
     const tabs  = { roster: 'tab-roster', import: 'tab-import', cases: 'tab-cases',
-                    anticipated: 'tab-anticipated', settings: 'tab-settings' };
+                    anticipated: 'tab-anticipated', comms: 'tab-comms', settings: 'tab-settings' };
     const on  = '2px solid var(--ucsc-navy, #003C6C)';
     const off = '2px solid transparent';
     Object.keys(views).forEach(k => {
@@ -474,6 +564,7 @@ window.PersonnelUI = (() => {
     if (which === 'cases') { backToCases(); loadCases(); }
     if (which === 'anticipated') loadAnticipated();
     if (which === 'settings') loadSettings();
+    if (which === 'comms') loadComms();
   }
 
   // ── Roster load / render ───────────────────────────────────
@@ -745,6 +836,297 @@ window.PersonnelUI = (() => {
     document.getElementById('roster-list').style.display = 'block';
   }
 
+  // ── Communications ─────────────────────────────────────────
+  let _commTemplates = [];
+  let _commDrafts = [];       // the editable drafts on screen
+  let _commPolicyDocs = [];   // name+url list, for linkified clipboard copies
+
+  function loadComms() {
+    // Default the year like the Calendar tab does.
+    const y = document.getElementById('comm-year');
+    if (y && !y.value) {
+      const now = new Date();
+      const start = now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
+      y.value = start + '-' + String((start + 1) % 100).padStart(2, '0');
+    }
+    App.call('personnel', 'getCommTemplates', {}, res => {
+      _commTemplates = res.kinds || [];
+      const sel = document.getElementById('tmpl-kind');
+      sel.innerHTML = _commTemplates.map(t => `<option value="${t.kind}">${t.label}</option>`).join('');
+      loadTemplateEditor();
+    });
+    loadPolicyDocs();
+    loadCommLog();
+  }
+
+  function loadTemplateEditor() {
+    const kind = document.getElementById('tmpl-kind').value;
+    const t = _commTemplates.find(x => x.kind === kind);
+    if (!t) return;
+    document.getElementById('tmpl-subject').value = t.subject || '';
+    document.getElementById('tmpl-body').value = t.body || '';
+  }
+
+  function saveTemplate() {
+    const kind = document.getElementById('tmpl-kind').value;
+    FormHelper.setLoading('tmpl-save-btn', true);
+    App.call('personnel', 'saveCommTemplate', {
+      kind: kind,
+      subject: document.getElementById('tmpl-subject').value,
+      body: document.getElementById('tmpl-body').value,
+    }, res => {
+      FormHelper.setLoading('tmpl-save-btn', false);
+      Toast.show('Template saved.', 'success');
+      const t = _commTemplates.find(x => x.kind === kind);
+      if (t && res.template) { t.subject = res.template.subject; t.body = res.template.body; }
+    }, () => FormHelper.setLoading('tmpl-save-btn', false));
+  }
+
+  function generateDrafts() {
+    const kind = document.getElementById('comm-kind').value;
+    const year = document.getElementById('comm-year').value.trim();
+    if (!year) { Toast.show('Enter the academic year.', 'error'); return; }
+    const out = document.getElementById('comm-drafts');
+    out.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Writing drafts…</span></div>';
+    FormHelper.setLoading('comm-gen-btn', true);
+
+    App.call('personnel', 'previewCommunication', { kind: kind, academicYear: year }, res => {
+      FormHelper.setLoading('comm-gen-btn', false);
+      _commDrafts = res.drafts || [];
+      _commPolicyDocs = res.policyDocs || [];
+      if (!_commDrafts.length) {
+        out.innerHTML = `<div class="alert alert-info text-sm" style="margin-top:10px;">${res.hint || 'No drafts to write.'}</div>`;
+        return;
+      }
+      const cards = _commDrafts.map((d, i) => `
+        <div class="card" style="border:1px solid #e3e6ea;margin-top:12px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+            <div class="text-sm"><strong>To:</strong> ${d.name} &lt;${d.email}&gt;</div>
+            <div style="display:flex;gap:8px;">
+              <button class="btn btn-secondary btn-sm" onclick="PersonnelUI.copyDraft(${i})"><i class="ti ti-copy"></i> Copy</button>
+              <button class="btn btn-primary btn-sm" id="send-btn-${i}" onclick="PersonnelUI.sendDraft(${i})"><i class="ti ti-send"></i> Send</button>
+            </div>
+          </div>
+          <div class="form-group" style="margin-top:8px;">
+            <input type="text" class="form-input" id="draft-subject-${i}" value="${d.subject.replace(/"/g, '&quot;')}">
+          </div>
+          <div class="form-group">
+            <textarea class="form-input" id="draft-body-${i}" rows="9" style="font-size:13px;">${d.body}</textarea>
+          </div>
+          <div class="text-sm text-muted" id="draft-status-${i}"></div>
+        </div>`).join('');
+      out.innerHTML = `
+        ${res.hint ? `<div class="alert alert-info text-sm" style="margin-top:10px;">${res.hint}</div>` : ''}
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;">
+          <span class="text-sm text-muted">${_commDrafts.length} draft(s) — edit freely, then send or copy each.</span>
+          <button class="btn btn-primary btn-sm" id="send-all-btn" onclick="PersonnelUI.sendAllDrafts()">
+            <i class="ti ti-send"></i> Send all
+          </button>
+        </div>
+        ${cards}`;
+    }, () => {
+      FormHelper.setLoading('comm-gen-btn', false);
+      out.innerHTML = '<p class="text-muted text-sm">Could not write the drafts.</p>';
+    });
+  }
+
+  function _draftFromScreen(i) {
+    const d = _commDrafts[i];
+    return {
+      email: d.email,
+      subject: document.getElementById('draft-subject-' + i).value,
+      body: document.getElementById('draft-body-' + i).value,
+    };
+  }
+
+  function sendDraft(i) {
+    const kind = document.getElementById('comm-kind').value;
+    const year = document.getElementById('comm-year').value.trim();
+    FormHelper.setLoading('send-btn-' + i, true);
+    App.call('personnel', 'sendCommunications',
+      { kind: kind, academicYear: year, drafts: [_draftFromScreen(i)] }, res => {
+        FormHelper.setLoading('send-btn-' + i, false);
+        const ok = (res.sent || []).length === 1;
+        document.getElementById('draft-status-' + i).innerHTML = ok
+          ? '<span class="badge badge-success">sent</span>'
+          : `<span class="badge badge-danger">failed</span> ${(res.failed[0] && res.failed[0].reason) || ''}`;
+        if (ok) Toast.show('Sent.', 'success');
+        loadCommLog();
+      }, () => FormHelper.setLoading('send-btn-' + i, false));
+  }
+
+  function sendAllDrafts() {
+    const kind = document.getElementById('comm-kind').value;
+    const year = document.getElementById('comm-year').value.trim();
+    const drafts = _commDrafts.map((d, i) => _draftFromScreen(i));
+    FormHelper.setLoading('send-all-btn', true);
+    App.call('personnel', 'sendCommunications',
+      { kind: kind, academicYear: year, drafts: drafts }, res => {
+        FormHelper.setLoading('send-all-btn', false);
+        const s = (res.sent || []).length, f = (res.failed || []).length;
+        Toast.show(s + ' sent' + (f ? ', ' + f + ' failed' : '') + '.', f ? 'error' : 'success');
+        _commDrafts.forEach((d, i) => {
+          const el = document.getElementById('draft-status-' + i);
+          if (!el) return;
+          if ((res.sent || []).indexOf(d.email) !== -1) el.innerHTML = '<span class="badge badge-success">sent</span>';
+          else {
+            const fail = (res.failed || []).find(x => x.email === d.email);
+            if (fail) el.innerHTML = `<span class="badge badge-danger">failed</span> ${fail.reason || ''}`;
+          }
+        });
+        loadCommLog();
+      }, () => FormHelper.setLoading('send-all-btn', false));
+  }
+
+  function copyDraft(i) {
+    const kind = document.getElementById('comm-kind').value;
+    const year = document.getElementById('comm-year').value.trim();
+    const d = _draftFromScreen(i);
+    const text = 'To: ' + d.email + '\nSubject: ' + d.subject + '\n\n' + d.body;
+    const done = () => {
+      document.getElementById('draft-status-' + i).innerHTML = '<span class="badge">copied</span>';
+      Toast.show('Copied — paste into your mail client.', 'success');
+      App.call('personnel', 'logCopiedCommunication',
+        { kind: kind, academicYear: year, recipient: d.email, subject: d.subject, body: d.body },
+        () => loadCommLog(), () => {});
+    };
+    const fail = () => Toast.show('Copy failed — select the text by hand.', 'error');
+
+    // Rich copy: an HTML flavor alongside the plain text, so pasting into a
+    // mail client keeps the policy-document names as live links.
+    const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    let html = esc(d.body).replace(/\n/g, '<br>');
+    (_commPolicyDocs || []).forEach(doc => {
+      const plain = '\u2022 ' + esc(doc.name);
+      if (html.indexOf(plain) !== -1) {
+        html = html.split(plain).join(
+          '\u2022 <a href="' + esc(doc.url) + '">' + esc(doc.name) + '</a>');
+      }
+    });
+
+    // Whether the copy carried the HTML flavor (live links) or degraded to
+    // plain text — said out loud either way, so a linkless paste is never a
+    // mystery.
+    const doneRich = () => { done(); };
+    const donePlain = () => {
+      document.getElementById('draft-status-' + i).innerHTML =
+        '<span class="badge badge-warning">copied as plain text</span> <span class="text-sm text-muted">links could not be carried — this browser context refused rich copy</span>';
+      Toast.show('Copied as PLAIN TEXT — the policy-document links could not be included. Use Send instead for linked names.', 'error');
+      App.call('personnel', 'logCopiedCommunication',
+        { kind: kind, academicYear: year, recipient: d.email, subject: d.subject, body: d.body },
+        () => loadCommLog(), () => {});
+    };
+
+    if (navigator.clipboard && navigator.clipboard.write && typeof ClipboardItem !== 'undefined') {
+      const item = new ClipboardItem({
+        'text/plain': new Blob([text], { type: 'text/plain' }),
+        'text/html':  new Blob([html], { type: 'text/html' }),
+      });
+      navigator.clipboard.write([item]).then(doneRich, () => {
+        // Rich copy refused (sandboxed iframe / permissions) — degrade
+        // loudly, never silently.
+        navigator.clipboard.writeText(text).then(donePlain, fail);
+      });
+    } else if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(donePlain, fail);
+    } else {
+      Toast.show('Copy not available in this browser — select the text by hand.', 'error');
+    }
+  }
+
+  // ── Policy documents ────────────────────────────────────────
+  let _policyDocs = [];
+
+  function loadPolicyDocs() {
+    App.call('personnel', 'listPolicyDocs', {}, res => {
+      _policyDocs = res.docs || [];
+      _renderPolicyDocRows();
+    }, () => {});
+  }
+
+  function _renderPolicyDocRows() {
+    const box = document.getElementById('policy-docs-rows');
+    if (!box) return;
+    if (!_policyDocs.length) _policyDocs = [{ name: '', url: '' }];
+    // The inputs render EMPTY and get their values assigned through the DOM
+    // afterward — a URL is arbitrary text, and embedding it inside an HTML
+    // value="…" attribute is how it corrupts (attribute breakout leaves
+    // markup fragments in the field, which then re-save). DOM assignment
+    // needs no escaping and cannot be broken by any character.
+    box.innerHTML = _policyDocs.map((d, i) => `
+      <div class="form-row" style="align-items:flex-end;">
+        <div class="form-group" style="flex:0 0 240px;">
+          ${i === 0 ? '<label class="form-label">Name</label>' : ''}
+          <input type="text" class="form-input" id="pd-name-${i}" placeholder="e.g. CAP letter (2026)">
+        </div>
+        <div class="form-group" style="flex:1;">
+          ${i === 0 ? '<label class="form-label">Link</label>' : ''}
+          <input type="text" class="form-input" id="pd-url-${i}" placeholder="https://…">
+        </div>
+        <div class="form-group" style="flex:0 0 auto;">
+          <button class="btn btn-secondary btn-sm" title="Remove this document"
+                  onclick="PersonnelUI.removePolicyDocRow(${i})"><i class="ti ti-x"></i></button>
+        </div>
+      </div>`).join('');
+    _policyDocs.forEach((d, i) => {
+      const n = document.getElementById('pd-name-' + i);
+      const u = document.getElementById('pd-url-' + i);
+      if (n) n.value = d.name || '';
+      if (u) u.value = d.url || '';
+    });
+  }
+
+  function _readPolicyDocRows() {
+    return _policyDocs.map((d, i) => ({
+      name: (document.getElementById('pd-name-' + i) || { value: '' }).value.trim(),
+      url:  (document.getElementById('pd-url-' + i)  || { value: '' }).value.trim(),
+    }));
+  }
+
+  function addPolicyDocRow() {
+    _policyDocs = _readPolicyDocRows();
+    _policyDocs.push({ name: '', url: '' });
+    _renderPolicyDocRows();
+  }
+
+  function removePolicyDocRow(i) {
+    _policyDocs = _readPolicyDocRows();
+    _policyDocs.splice(i, 1);
+    _renderPolicyDocRows();
+  }
+
+  function savePolicyDocs() {
+    const docs = _readPolicyDocRows().filter(d => d.name || d.url);
+    FormHelper.setLoading('pd-save-btn', true);
+    App.call('personnel', 'savePolicyDocs', { docs: docs }, res => {
+      FormHelper.setLoading('pd-save-btn', false);
+      _policyDocs = res.docs || [];
+      _renderPolicyDocRows();
+      Toast.show('Policy documents saved — drafts will carry the current list.', 'success');
+    }, () => FormHelper.setLoading('pd-save-btn', false));
+  }
+
+  function loadCommLog() {
+    App.call('personnel', 'listCommunicationsLog', { limit: 20 }, res => {
+      const el = document.getElementById('comm-log');
+      if (!el) return;
+      const rows = res.entries || [];
+      if (!rows.length) { el.innerHTML = '<p class="text-muted text-sm">Nothing sent yet.</p>'; return; }
+      el.innerHTML = `<div class="table-wrap"><table class="data-table">
+        <thead><tr><th>When</th><th>To</th><th>Subject</th><th>Kind</th><th>How</th></tr></thead>
+        <tbody>${rows.map(r => `
+          <tr>
+            <td class="text-sm" style="white-space:nowrap;">${String(r.at).slice(0, 10)}</td>
+            <td class="text-sm">${r.recipient || ''}</td>
+            <td class="text-sm">${r.subject || ''}</td>
+            <td class="text-sm text-muted">${r.kind || ''}</td>
+            <td>${r.method === 'sent' ? '<span class="badge badge-navy">sent</span>' : '<span class="badge">copied</span>'}</td>
+          </tr>`).join('')}</tbody>
+      </table></div>`;
+    }, () => {});
+  }
+
   // ── Settings: cycle anchors + schedule spacing ─────────────
   let _cycle = null;
   let _pickingFor = null;   // 'division' | 'letters'
@@ -969,29 +1351,189 @@ window.PersonnelUI = (() => {
     out.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Working out the schedule…</span></div>';
 
     App.call('personnel', 'computeCycleSchedule', { academicYear: year }, res => {
+      _cycleSchedule = res;
       if (!res.schedules) {
         out.innerHTML = `<div class="alert alert-info text-sm">${(res.warnings || []).join(' ')}</div>`;
         return;
       }
       const mer = res.schedules.merit && res.schedules.merit.schedule;
       const maj = res.schedules.major && res.schedules.major.schedule;
-      let html = '<div class="card-title" style="font-size:15px;margin-top:4px;"><i class="ti ti-timeline"></i> This cycle\'s schedule</div>';
+      const props = res.proposedDates || {};
+      let html = `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px;">
+        <div class="card-title" style="font-size:15px;margin:0;"><i class="ti ti-timeline"></i> This cycle's schedule</div>
+        <div style="display:flex;gap:8px;">
+          <button class="btn btn-secondary btn-sm" id="cyc-export-btn" onclick="PersonnelUI.exportCycleSchedule()">
+            <i class="ti ti-table"></i> Export to Sheets
+          </button>
+          <button class="btn btn-secondary btn-sm" onclick="PersonnelUI.toggleCycleCalendar()">
+            <i class="ti ti-calendar-month"></i> ${_calendarView ? 'List view' : 'Calendar view'}
+          </button>
+        </div>
+      </div>
+      <p class="text-sm text-muted" style="margin:4px 0 10px;">
+        The computed dates are the baseline the scheduler works out; a <strong>proposed</strong> date is the
+        department's working plan for that step — it is what flows into drafting-task deadlines. Two things
+        are set by policy and can't be proposed against: the division deadline, and the candidate's review
+        of the file before submission. The rest is the department's to schedule — with one parameter: the
+        candidate's review of added material (external letters) must finish before the faculty vote.
+      </p>`;
       if (res.warnings && res.warnings.length) {
         html += `<div class="alert alert-info text-sm" style="margin-bottom:10px;">${res.warnings.join('<br>')}</div>`;
       }
-      if (mer) html += _timelineHtml('Merit &amp; salary-increase files', mer, false);
-      if (maj) html += _timelineHtml('Promotion &amp; mid-career files (external letters)', maj, !!(maj.forward));
+      if (_calendarView) {
+        html += _cycleCalendarHtml(res);
+      } else {
+        if (mer) html += _timelineHtml('Merit &amp; salary-increase files', mer, false,
+          { timelineKey: 'merit', proposals: props.merit || {}, editable: true });
+        if (maj) html += _timelineHtml('Promotion &amp; mid-career files (external letters)', maj, !!(maj.forward),
+          { timelineKey: 'major', proposals: props.major || {}, editable: true });
+      }
       out.innerHTML = html;
     }, () => { out.innerHTML = '<p class="text-muted text-sm">Could not compute the schedule.</p>'; });
   }
 
-  /** Render one timeline: the backward chain, plus the forward window on promotions. */
-  function _timelineHtml(label, sch, isPromotion) {
+  let _cycleSchedule = null;
+  let _calendarView = false;
+
+  function toggleCycleCalendar() {
+    _calendarView = !_calendarView;
+    previewCycleSchedule();
+  }
+
+  function exportCycleSchedule() {
+    const year = document.getElementById('cyc-year').value.trim();
+    if (!year) { Toast.show('Load a cycle first.', 'error'); return; }
+    FormHelper.setLoading('cyc-export-btn', true);
+    App.call('personnel', 'exportCycleScheduleToSheet', { academicYear: year }, res => {
+      FormHelper.setLoading('cyc-export-btn', false);
+      Toast.show('Exported — opening “' + res.name + '”…', 'success');
+      window.open(res.url, '_blank');
+    }, () => FormHelper.setLoading('cyc-export-btn', false));
+  }
+
+  /** Save (or clear) a proposed date for a step of a timeline, then recompute. */
+  function proposeCycleDate(timelineKey, step, date) {
+    const year = document.getElementById('cyc-year').value.trim();
+    if (!year) return;
+    App.call('personnel', 'proposeDate',
+      { academicYear: year, timeline: timelineKey, step: step, date: date || '' }, () => {
+        Toast.show(date ? 'Proposed date saved.' : 'Proposal cleared — back to the computed date.', 'success');
+        previewCycleSchedule();
+      });
+  }
+
+  // ── Cycle calendar view ─────────────────────────────────────
+  // Month grids spanning the cycle's dates, with each timeline's steps
+  // marked: computed in navy, proposed in gold. The visual answer to "what
+  // does this cycle's fall actually look like".
+  function _cycleCalendarHtml(res) {
+    const events = [];   // {date, label, kind: 'computed'|'proposed', timeline}
+    const stepLabels = {
+      draftsDue: 'Drafts', deliberateBy: 'Deliberate', vote: 'Vote',
+      letterFinal: 'Letter', lateReviewStart: 'Review opens',
+      lateReviewEnd: 'Review closes', submission: 'DIVISION DEADLINE',
+    };
+    const add = (timeline, sch, proposals) => {
+      if (!sch) return;
+      const b = sch.backward || {};
+      Object.keys(stepLabels).forEach(k => {
+        if (b[k]) events.push({ date: b[k], label: stepLabels[k], kind: 'computed', timeline: timeline });
+      });
+      const f = sch.forward;
+      if (f) {
+        if (f.lettersDue) events.push({ date: f.lettersDue, label: 'Letters due', kind: 'computed', timeline: timeline });
+        if (f.earlyReviewStart) events.push({ date: f.earlyReviewStart, label: 'Letters review opens', kind: 'computed', timeline: timeline });
+      }
+      Object.keys(proposals || {}).forEach(k => {
+        if (proposals[k]) events.push({ date: proposals[k], label: (stepLabels[k] || k) + ' (proposed)', kind: 'proposed', timeline: timeline });
+      });
+    };
+    const props = res.proposedDates || {};
+    add('Merit', res.schedules.merit && res.schedules.merit.schedule, props.merit);
+    add('Major', res.schedules.major && res.schedules.major.schedule, props.major);
+    if (!events.length) return '<p class="text-muted text-sm">Nothing to show yet.</p>';
+
+    // Month range spanning all events.
+    const dates = events.map(e => e.date).sort();
+    const first = dates[0].slice(0, 7), last = dates[dates.length - 1].slice(0, 7);
+    const byDay = {};
+    events.forEach(e => (byDay[e.date] = byDay[e.date] || []).push(e));
+
+    const monthName = ym => new Date(ym + '-15T12:00:00Z')
+      .toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+
+    let html = `<div class="text-sm" style="margin-bottom:8px;">
+      <span class="badge badge-navy">computed</span>
+      <span class="badge badge-gold">proposed</span>
+      <span class="text-muted" style="margin-left:8px;">M = merit files · P = promotion/mid-career files</span>
+    </div>`;
+
+    let ym = first;
+    let guard = 0;
+    while (ym <= last && guard++ < 18) {
+      const [y, m] = ym.split('-').map(Number);
+      const firstDow = new Date(Date.UTC(y, m - 1, 1)).getUTCDay();
+      const daysIn = new Date(Date.UTC(y, m, 0)).getUTCDate();
+
+      let cells = '';
+      for (let i = 0; i < firstDow; i++) cells += '<td></td>';
+      for (let d = 1; d <= daysIn; d++) {
+        const iso = ym + '-' + String(d).padStart(2, '0');
+        const evs = byDay[iso] || [];
+        const marks = evs.map(e => `
+          <div class="text-sm" style="margin-top:2px;padding:1px 4px;border-radius:3px;font-size:10.5px;line-height:1.25;
+            ${e.kind === 'proposed'
+              ? 'background:var(--ucsc-gold,#FDC700);color:#333;'
+              : 'background:var(--ucsc-navy,#003C6C);color:#fff;'}"
+            title="${e.timeline} — ${e.label}">
+            ${e.timeline === 'Merit' ? 'M' : 'P'}: ${e.label}
+          </div>`).join('');
+        cells += `<td style="vertical-align:top;height:52px;border:1px solid #eee;padding:2px 3px;">
+          <div class="text-sm text-muted" style="font-size:10px;">${d}</div>${marks}</td>`;
+        if ((firstDow + d) % 7 === 0 && d < daysIn) cells += '</tr><tr>';
+      }
+      html += `<div style="margin-bottom:14px;">
+        <div class="text-sm" style="font-weight:600;margin-bottom:4px;">${monthName(ym)}</div>
+        <table style="width:100%;border-collapse:collapse;table-layout:fixed;">
+          <thead><tr>${['S','M','T','W','T','F','S'].map(d => `<th class="text-sm text-muted" style="font-size:10px;font-weight:500;">${d}</th>`).join('')}</tr></thead>
+          <tbody><tr>${cells}</tr></tbody>
+        </table>
+      </div>`;
+      ym = m === 12 ? (y + 1) + '-01' : y + '-' + String(m + 1).padStart(2, '0');
+    }
+    return html;
+  }
+
+  /** Render one timeline: the backward chain, plus the forward window on
+   *  promotions. opts (optional): { timelineKey, proposals, editable } —
+   *  proposals add a "Proposed" column; editable makes it a date picker.
+   *  The division submission row is immutable: never proposable. */
+  function _timelineHtml(label, sch, isPromotion, opts) {
+    opts = opts || {};
+    const proposals = opts.proposals || null;
+    const showProposed = !!proposals || !!opts.editable;
     const b = sch.backward || {};
     const f = sch.forward || null;
-    const step = (when, what, note) => `
+
+    const proposedCell = (key) => {
+      if (!showProposed) return '';
+      if (!key) return '<td class="text-sm text-muted" style="white-space:nowrap;">— <span title="Set by policy — not the department\'s to move">fixed</span></td>';
+      const val = (proposals && proposals[key]) || '';
+      if (opts.editable) {
+        return `<td style="white-space:nowrap;">
+          <input type="date" class="form-input" style="padding:2px 6px;font-size:12.5px;max-width:150px;"
+                 value="${val}"
+                 onchange="PersonnelUI.proposeCycleDate('${opts.timelineKey}','${key}',this.value)">
+        </td>`;
+      }
+      return '<td class="text-sm" style="white-space:nowrap;">' +
+        (val ? '<strong>' + val + '</strong>' : '<span class="text-muted">—</span>') + '</td>';
+    };
+
+    const step = (when, what, note, key) => `
       <tr>
         <td class="text-sm" style="white-space:nowrap;"><strong>${when || '—'}</strong></td>
+        ${proposedCell(key)}
         <td class="text-sm">${what}</td>
         <td class="text-sm text-muted">${note || ''}</td>
       </tr>`;
@@ -1000,18 +1542,18 @@ window.PersonnelUI = (() => {
     if (isPromotion && f) {
       rows += step(f.lettersDue, 'External letters due', f.basis === 'actual'
         ? 'Letters actually arrived ' + f.lettersAdded
-        : 'Planned; a buffer absorbs late letters');
-      rows += step(f.earlyReviewStart, 'Candidate reviews the letters (opens)', '10 business days');
-      rows += step(f.earlyReviewEnd, 'Candidate review of letters closes', '');
-      rows += step(f.earliestDeliberate, 'Committee may begin deliberating', 'Earliest possible');
+        : 'Planned; a buffer absorbs late letters', null);
+      rows += step(f.earlyReviewStart, 'Candidate reviews the letters (opens)', '10 business days', null);
+      rows += step(f.earlyReviewEnd, 'Candidate review of letters closes', '', null);
+      rows += step(f.earliestDeliberate, 'Committee may begin deliberating', 'Earliest possible', null);
     }
-    rows += step(b.draftsDue, 'Drafts complete', 'Assessments written');
-    rows += step(b.deliberateBy, 'Deliberation underway by', '');
-    rows += step(b.vote, 'Faculty vote', '');
-    rows += step(b.letterFinal, 'Final letter complete, votes recorded', '');
-    rows += step(b.lateReviewStart, 'Candidate reviews the file (opens)', '10 business days');
-    rows += step(b.lateReviewEnd, 'Candidate review closes', '');
-    rows += step(b.submission, 'File due to the Division', 'The fixed deadline');
+    rows += step(b.draftsDue, 'Drafts complete', 'Assessments written', 'draftsDue');
+    rows += step(b.deliberateBy, 'Deliberation underway by', '', 'deliberateBy');
+    rows += step(b.vote, 'Faculty vote', '', 'vote');
+    rows += step(b.letterFinal, 'Final letter complete, votes recorded', '', 'letterFinal');
+    rows += step(b.lateReviewStart, 'Candidate reviews the file (opens)', 'Set by policy — 10 business days', '');
+    rows += step(b.lateReviewEnd, 'Candidate review closes', 'Set by policy', '');
+    rows += step(b.submission, 'File due to the Division', 'The Division\'s deadline', '');
 
     const infeasible = sch.feasible === false;
     const warn = (sch.warnings || []).length
@@ -1019,6 +1561,9 @@ window.PersonnelUI = (() => {
            <i class="ti ti-alert-triangle"></i> ${sch.warnings.join(' ')}
          </div>` : '';
 
+    const head = showProposed
+      ? '<thead><tr><th>Computed</th><th>Proposed</th><th></th><th></th></tr></thead>'
+      : '';
     return `
       <div style="margin-bottom:18px;">
         <div class="text-sm" style="font-weight:600;margin-bottom:6px;">
@@ -1027,7 +1572,7 @@ window.PersonnelUI = (() => {
                        : '<span class="badge badge-success" style="margin-left:6px;">fits</span>'}
         </div>
         ${warn}
-        <div class="table-wrap"><table class="data-table"><tbody>${rows}</tbody></table></div>
+        <div class="table-wrap"><table class="data-table">${head}<tbody>${rows}</tbody></table></div>
       </div>`;
   }
 
@@ -1151,6 +1696,9 @@ window.PersonnelUI = (() => {
   let _callRows = [];      // preview rows from the server (mutable per confirm)
 
   function loadCases() {
+    loadWorkload();
+    loadAssignments();
+    renderCasesDeepLink();
     // Load the type vocabulary once, then the cases.
     const afterTypes = () => {
       const wrap = document.getElementById('cases-table-wrap');
@@ -1179,6 +1727,8 @@ window.PersonnelUI = (() => {
   }
 
   function applyCaseFilter() {
+    loadWorkload();
+    loadAssignments();
     const year = document.getElementById('cases-year').value;
     const q = (document.getElementById('cases-search').value || '').trim().toLowerCase();
     let rows = _cases.slice();
@@ -1237,10 +1787,14 @@ window.PersonnelUI = (() => {
                  title="Effective date — the clock reset. Set this for in-progress and completed cases."
                  onchange="PersonnelUI.changeCaseEffective('${c.caseId}', this.value)">
         </td>
-        <td>
+        <td style="white-space:nowrap;">
           <button class="btn btn-secondary btn-sm" title="Work out this case's deadlines"
                   onclick="PersonnelUI.showCaseSchedule('${c.caseId}')">
             <i class="ti ti-timeline"></i>
+          </button>
+          <button class="btn btn-secondary btn-sm" title="Who is drafting this assessment"
+                  onclick="PersonnelUI.showCaseDrafts('${c.caseId}')">
+            <i class="ti ti-writing"></i>
           </button>
         </td>
       </tr>`).join('');
@@ -1248,7 +1802,7 @@ window.PersonnelUI = (() => {
       <div id="case-schedule-panel" style="margin-bottom:14px;"></div>
       <p class="text-sm text-muted" style="margin:4px 0 8px;">${rows.length} of ${_cases.length} case(s)</p>
       <div class="table-wrap"><table class="data-table">
-        <thead><tr><th>Candidate</th><th>Year</th><th>Review type</th><th>Rank / step</th><th>Status</th><th>Effective date</th><th>Schedule</th></tr></thead>
+        <thead><tr><th>Candidate</th><th>Year</th><th>Review type</th><th>Rank / step</th><th>Status</th><th>Effective date</th><th>Schedule / drafts</th></tr></thead>
         <tbody>${body}</tbody>
       </table></div>`;
   }
@@ -1301,7 +1855,8 @@ window.PersonnelUI = (() => {
           </div>
           <div style="margin-top:10px;">
             ${_timelineHtml(res.isPromotion ? 'Promotion (with external letters)' : 'Review timeline',
-                            res.schedule, res.isPromotion)}
+                            res.schedule, res.isPromotion,
+                            { proposals: res.proposedDates || {}, editable: false })}
           </div>
         </div>`;
     }, () => { panel.innerHTML = '<p class="text-muted text-sm">Could not work out the schedule.</p>'; });
@@ -1310,6 +1865,265 @@ window.PersonnelUI = (() => {
   function closeCaseSchedule() {
     const panel = document.getElementById('case-schedule-panel');
     if (panel) panel.innerHTML = '';
+  }
+
+  // ── Committee workload (balance at a glance) ───────────────
+  function loadWorkload() {
+    const card = document.getElementById('workload-card');
+    if (!card) return;
+    const yearSel = document.getElementById('cases-year');
+    const year = yearSel ? yearSel.value : '';
+    App.call('personnel', 'committeeWorkload', { academicYear: year }, res => {
+      _renderWorkload(res);
+    }, () => { card.innerHTML = ''; });
+  }
+
+  function _renderWorkload(res) {
+    const card = document.getElementById('workload-card');
+    const rows = res.members || [];
+    if (res.poolEmpty && !rows.length) { card.innerHTML = ''; return; }
+
+    const maxOpen = Math.max(1, ...rows.map(m => m.assigned));
+    const bar = n => {
+      const pct = Math.round((n / maxOpen) * 100);
+      return `<div style="background:var(--ucsc-navy,#003C6C);height:8px;border-radius:4px;width:${pct}%;min-width:${n ? 4 : 0}px;"></div>`;
+    };
+
+    const body = rows.map(m => `
+      <tr>
+        <td>${m.name}</td>
+        <td style="min-width:110px;"><div style="display:flex;align-items:center;gap:8px;">${bar(m.assigned)}<span>${m.assigned}</span></div></td>
+        <td>${m.drafted}</td>
+        <td><strong>${m.total}</strong></td>
+        <td>${m.major}</td>
+        <td>${m.minor}</td>
+        <td class="text-sm text-muted">${m.dueSoonest || '—'}</td>
+      </tr>`).join('');
+
+    card.innerHTML = `
+      <div class="card" style="border:1px solid #e3e6ea;">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+          <div class="card-title" style="margin:0;font-size:15px;">
+            <i class="ti ti-scale"></i> Committee workload <span class="text-muted text-sm">(${res.academicYear})</span>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;">
+            ${res.unassigned
+              ? `<span class="badge badge-warning">${res.unassigned} unassigned${res.unassignedMajor ? ' · ' + res.unassignedMajor + ' major' : ''}</span>`
+              : '<span class="badge badge-success">everything assigned</span>'}
+            <button class="btn btn-secondary btn-sm" id="wl-export-btn" onclick="PersonnelUI.exportWorkload()">
+              <i class="ti ti-table"></i> Export to Sheets
+            </button>
+          </div>
+        </div>
+        <div class="table-wrap" style="margin-top:10px;"><table class="data-table">
+          <thead><tr><th>Member</th><th>Open drafts</th><th>Drafted</th><th>Total</th>
+            <th title="Promotion and mid-career components">Major</th>
+            <th title="Merit and salary-increase components">Minor</th>
+            <th>Nearest deadline</th></tr></thead>
+          <tbody>${body}</tbody>
+        </table></div>
+      </div>`;
+  }
+
+  function exportWorkload() {
+    const yearSel = document.getElementById('cases-year');
+    const year = yearSel ? yearSel.value : '';
+    FormHelper.setLoading('wl-export-btn', true);
+    App.call('personnel', 'exportWorkloadToSheet', { academicYear: year }, res => {
+      FormHelper.setLoading('wl-export-btn', false);
+      Toast.show('Exported — opening “' + res.name + '”…', 'success');
+      window.open(res.url, '_blank');
+    }, () => FormHelper.setLoading('wl-export-btn', false));
+  }
+
+  // ── Candidate assignments roster (coverage at a glance) ────
+  function loadAssignments() {
+    const card = document.getElementById('assignments-card');
+    if (!card) return;
+    const yearSel = document.getElementById('cases-year');
+    const year = yearSel ? yearSel.value : '';
+    App.call('personnel', 'caseAssignments', { academicYear: year }, res => {
+      _renderAssignments(res);
+    }, () => { card.innerHTML = ''; });
+  }
+
+  function _renderAssignments(res) {
+    const card = document.getElementById('assignments-card');
+    const cases = res.cases || [];
+    if (!cases.length) { card.innerHTML = ''; return; }
+
+    const partHtml = c => {
+      if (c.noComponents) {
+        return '<span class="badge badge-danger">no components — rank not mapped</span>';
+      }
+      return c.components.map(x => {
+        const who = x.assignedTo
+          ? `<strong>${x.assignedName}</strong>${x.status === 'drafted' ? ' <i class="ti ti-check" title="Drafted" style="color:var(--success,#1a7f37);"></i>' : ''}`
+          : '<span class="badge badge-warning">unassigned</span>';
+        return `${x.label}: ${who}`;
+      }).join(' · ');
+    };
+
+    const rows = cases.map(c => `
+      <tr>
+        <td><strong>${c.candidate}</strong></td>
+        <td class="text-sm">${c.reviewType || ''}</td>
+        <td class="text-sm">${partHtml(c)}</td>
+        <td>
+          <button class="btn btn-secondary btn-sm" title="Open the drafting panel"
+                  onclick="PersonnelUI.showCaseDrafts('${c.caseId}')">
+            <i class="ti ti-writing"></i>
+          </button>
+        </td>
+      </tr>`).join('');
+
+    const allCovered = res.fullyAssigned === res.total;
+    card.innerHTML = `
+      <div class="card" style="border:1px solid #e3e6ea;">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+          <div class="card-title" style="margin:0;font-size:15px;">
+            <i class="ti ti-users-group"></i> Candidate assignments <span class="text-muted text-sm">(${res.academicYear})</span>
+          </div>
+          <span class="badge ${allCovered ? 'badge-success' : 'badge-warning'}">
+            ${res.fullyAssigned} of ${res.total} case(s) fully assigned
+          </span>
+        </div>
+        <p class="text-sm text-muted" style="margin:6px 0 10px;">
+          Cases with unassigned parts sort to the top. The workload card above answers whether the
+          load is balanced; this one answers whether every candidate is covered. Exporting the
+          workload produces one workbook with both.
+        </p>
+        <div class="table-wrap"><table class="data-table">
+          <thead><tr><th>Candidate</th><th>Review</th><th>Who is drafting what</th><th></th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table></div>
+      </div>`;
+  }
+
+  /** The share-this-view card at the bottom of the Cases tab. Rendered once —
+   *  it's static (the platform builds the URL from the public alias). */
+  function renderCasesDeepLink() {
+    const el = document.getElementById('cases-deeplink');
+    if (!el || el.innerHTML) return;   // once is enough
+    if (!App.deepLinkCard) return;     // older shell — degrade silently
+    el.innerHTML = App.deepLinkCard('personnel', {
+      focus: 'cases',
+      title: 'Direct link to review cases',
+      note: 'Share this link to bring someone straight to the personnel module. They will sign in first if needed.',
+      roles: ['super_admin'],
+    });
+  }
+
+  // ── Drafting assignments ───────────────────────────────────
+  let _committee = null;   // cached pool of assignable members
+
+  /** Who is drafting each part of this case's assessment. */
+  function showCaseDrafts(caseId) {
+    const panel = document.getElementById('case-schedule-panel');
+    if (!panel) return;
+    panel.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
+    panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+    const render = () => {
+      App.call('personnel', 'listCaseComponents', { caseId: caseId }, res => {
+        _renderDrafts(res);
+      }, () => { panel.innerHTML = '<p class="text-muted text-sm">Could not load the drafting assignments.</p>'; });
+    };
+
+    if (_committee) { render(); return; }
+    App.call('personnel', 'listCommitteeMembers', {}, res => { _committee = res; render(); }, render);
+  }
+
+  function _renderDrafts(res) {
+    const panel = document.getElementById('case-schedule-panel');
+    const members = (_committee && _committee.members) || [];
+    const noPool = !members.length;
+
+    const opts = (sel) => '<option value="">— nobody —</option>' +
+      members.map(m => `<option value="${m.email}" ${m.email === sel ? 'selected' : ''}>${m.name}</option>`).join('');
+
+    const badge = s => s === 'drafted'  ? '<span class="badge badge-success">drafted</span>'
+                     : s === 'assigned' ? '<span class="badge badge-navy">assigned</span>'
+                     : '<span class="badge">unassigned</span>';
+
+    const rows = (res.components || []).map(c => `
+      <tr>
+        <td><strong>${c.label}</strong></td>
+        <td>
+          <select class="form-select" style="min-width:180px;" ${noPool ? 'disabled' : ''}
+                  onchange="PersonnelUI.assignDraft('${c.componentId}', this.value, '${res.caseId}')">
+            ${opts(c.assignedTo)}
+          </select>
+        </td>
+        <td class="text-sm">${c.dueAt || (res.draftsDue ? `<span class="text-muted">${res.draftsDue}</span>` : '—')}</td>
+        <td>${badge(c.status)}</td>
+        <td style="white-space:nowrap;">
+          ${c.status === 'assigned'
+            ? `<button class="btn btn-secondary btn-sm" onclick="PersonnelUI.markDrafted('${c.componentId}', '${res.caseId}')"><i class="ti ti-check"></i> Mark drafted</button>`
+            : c.status === 'drafted'
+            ? `<span class="text-sm text-muted">${c.draftedAt || ''}</span>
+               <button class="btn btn-secondary btn-sm" title="Send it back for more work" onclick="PersonnelUI.reopenDraft('${c.componentId}', '${res.caseId}')"><i class="ti ti-rotate"></i></button>`
+            : ''}
+        </td>
+      </tr>`).join('');
+
+    const notes = [];
+    if (res.seriesWarning) notes.push(res.seriesWarning);
+    if (res.duplicateWarning) notes.push(res.duplicateWarning);
+    if (noPool) notes.push((_committee && _committee.hint) ||
+      'Nobody is on the Personnel Committee yet, so there is no one to assign.');
+    (res.scheduleWarnings || []).forEach(w => notes.push(w));
+
+    panel.innerHTML = `
+      <div class="card" style="border:1px solid #e3e6ea;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <div class="card-title" style="margin:0;font-size:15px;">
+            <i class="ti ti-writing"></i> Drafting — ${res.candidate} (${res.reviewType || ''}, ${res.academicYear || ''})
+          </div>
+          <button class="btn btn-secondary btn-sm" onclick="PersonnelUI.closeCaseSchedule()">Close</button>
+        </div>
+        <p class="text-sm text-muted" style="margin:8px 0 10px;">
+          ${res.series === 'ladder'
+            ? 'A ladder case is assessed on research and on teaching and service separately, so each is drafted by a different member.'
+            : 'This series is assessed as a whole, so there is a single assessment to draft.'}
+          ${res.draftsDue ? ` Drafts are due <strong>${res.draftsDue}</strong>, from the case's schedule — assigning puts that deadline in the member's queue.` : ''}
+        </p>
+        ${notes.length ? `<div class="alert alert-info text-sm" style="margin-bottom:10px;">${notes.join('<br>')}</div>` : ''}
+        <div class="table-wrap"><table class="data-table">
+          <thead><tr><th>Part of the assessment</th><th>Drafted by</th><th>Due</th><th>Status</th><th></th></tr></thead>
+          <tbody>${rows || '<tr><td colspan="5" class="text-muted text-sm">No components.</td></tr>'}</tbody>
+        </table></div>
+      </div>`;
+  }
+
+  function assignDraft(componentId, assignedTo, caseId) {
+    App.call('personnel', 'assignComponent',
+      { componentId: componentId, assignedTo: assignedTo }, res => {
+        Toast.show(res.status === 'assigned'
+          ? (res.warning || 'Assigned — it is in their queue' + (res.dueAt ? ', due ' + res.dueAt : '') + '.')
+          : 'Assignment cleared.', res.warning ? 'error' : 'success');
+        showCaseDrafts(caseId);
+        loadWorkload();
+        loadAssignments();
+      });
+  }
+
+  function markDrafted(componentId, caseId) {
+    App.call('personnel', 'markComponentDrafted', { componentId: componentId }, () => {
+      Toast.show('Marked drafted — it has left their queue.', 'success');
+      showCaseDrafts(caseId);
+      loadWorkload();
+      loadAssignments();
+    });
+  }
+
+  function reopenDraft(componentId, caseId) {
+    App.call('personnel', 'reopenComponent', { componentId: componentId }, () => {
+      Toast.show('Sent back — it is in their queue again.', 'success');
+      showCaseDrafts(caseId);
+      loadWorkload();
+      loadAssignments();
+    });
   }
 
   // ── Cases: add a case by hand (elected reviews) ────────────
@@ -1754,11 +2568,18 @@ window.PersonnelUI = (() => {
     showCallImport, backToCases, detectCall, commitCall,
     showAddCase, onAddCandidate, saveNewCase,
     showCaseSchedule, closeCaseSchedule,
+    showCaseDrafts, assignDraft, markDrafted, reopenDraft,
+    loadWorkload, exportWorkload,
+    loadAssignments, renderCasesDeepLink,
     setMatch, unmatch, setRowType, setRowStatus, setRowEffective,
     detectHistory, commitHistory,
     loadAnticipated, exportSheet, exportCsv,
     loadSettings, loadGaps, saveGaps, loadCycle, pickDeadline, cancelPick,
     searchDeadlines, chooseDeadline, previewCycleSchedule, setLettersDate,
+    proposeCycleDate, toggleCycleCalendar, exportCycleSchedule,
+    loadComms, loadTemplateEditor, saveTemplate, generateDrafts,
+    sendDraft, sendAllDrafts, copyDraft, loadCommLog,
+    addPolicyDocRow, removePolicyDocRow, savePolicyDocs,
   };
 
 })();

@@ -996,6 +996,17 @@ const PersonnelModule = (() => {
     }
     const id = DataService.generateId('CASE');
     DataService.insert(SHEET(), CASES_TAB(), Object.assign({ CaseID: id }, fields));
+
+    // A case is assessed in pieces, so give it its pieces straight away — a
+    // ladder case is drafted on research and on teaching/service separately,
+    // the other series as a whole. Never fatal: a case without components can
+    // still be created, and they're generated on demand later.
+    try {
+      _ensureComponents(Object.assign({ CaseID: id }, fields), user);
+    } catch (err) {
+      Logger.log('_upsertCase: could not generate components for ' + id + ': ' + err);
+    }
+
     return { action: 'created', caseId: id };
   }
 
@@ -2412,6 +2423,1214 @@ const PersonnelModule = (() => {
   }
 
 
+  // ============================================================
+  // Phase 6 — Drafting assignments
+  // ============================================================
+  // A case is split into the pieces of the assessment that get written, and
+  // each is assigned to a member of the Personnel Committee, who sees it in
+  // their task queue with the drafts-due date the scheduler works out.
+  //
+  // Committee membership is NOT ours: the Service module owns committee
+  // assignment and grants the personnel_committee role; we read the pool from
+  // the platform (Auth.usersWithRole) and never write identity. Delivery goes
+  // through the Tasks service — the task carries routing and a pointer back to
+  // the component, never the work itself, so the two can't drift apart.
+
+  function COMPONENTS_TAB()   { return CONFIG.TABS.COMPONENTS; }
+  function COMPONENT_TYPES()  { return (CONFIG.PERSONNEL && CONFIG.PERSONNEL.COMPONENT_TYPES) || {}; }
+  function COMPONENTS_BY_SERIES() {
+    return (CONFIG.PERSONNEL && CONFIG.PERSONNEL.COMPONENTS_BY_SERIES) || {
+      ladder: ['research', 'teaching_service'], teaching: ['combined'], lecturer: ['combined'],
+    };
+  }
+  function COMMITTEE_ROLE()   { return (CONFIG.PERSONNEL && CONFIG.PERSONNEL.COMMITTEE_ROLE) || 'personnel_committee'; }
+  function DRAFT_TASK_CFG()   {
+    return (CONFIG.PERSONNEL && CONFIG.PERSONNEL.DRAFT_TASK)
+      || { sourceType: 'draft_component', staleAfterDays: 14 };
+  }
+
+  /** The series a rank belongs to, via the rank map. */
+  function _seriesForRank(rank) {
+    const mapped = _mapRank(rank);
+    return mapped ? mapped.series : '';
+  }
+
+  /**
+   * Generate the components for a case, if it hasn't got them. Which pieces a
+   * case has depends on the candidate's series: the ladder is assessed on
+   * research and on teaching/service separately; the teaching and lecturer
+   * series are assessed as a whole. Idempotent — a component that already
+   * exists is left alone, so this is safe to call whenever.
+   *
+   * Serialized under a script lock: case creation and the first open of the
+   * drafting panel can run this nearly simultaneously, and without the lock
+   * both pass the "doesn't exist yet" check before either row lands —
+   * producing duplicate components (observed in the wild). If the lock can't
+   * be had, we skip generation rather than risk the race; the next caller
+   * will generate.
+   * @returns { created: [types], existing: [types], series }
+   */
+  function _ensureComponents(caseRow, user) {
+    const series = _seriesForRank(caseRow.SubjectRank);
+    const want = COMPONENTS_BY_SERIES()[series] || [];
+    const out = { created: [], existing: [], series: series };
+    if (!want.length) return out;
+
+    let lock = null;
+    try {
+      lock = LockService.getScriptLock();
+      if (!lock.tryLock(5000)) {
+        Logger.log('_ensureComponents: lock busy for ' + caseRow.CaseID + ' — skipping (next caller generates).');
+        return out;
+      }
+    } catch (err) {
+      lock = null;   // lock service unavailable — proceed unserialized
+    }
+
+    try {
+      const have = DataService.query(SHEET(), COMPONENTS_TAB(), 'CaseID', caseRow.CaseID);
+      const haveTypes = have.map(c => String(c.ComponentType));
+
+      want.forEach(type => {
+        if (haveTypes.indexOf(type) !== -1) { out.existing.push(type); return; }
+        DataService.insert(SHEET(), COMPONENTS_TAB(), {
+          ComponentID:   DataService.generateId('CMP'),
+          CaseID:        caseRow.CaseID,
+          ComponentType: type,
+          AssignedTo:    '',
+          Status:        'unassigned',
+        });
+        out.created.push(type);
+      });
+    } finally {
+      if (lock) { try { lock.releaseLock(); } catch (e) {} }
+    }
+    return out;
+  }
+
+  /**
+   * Self-heal duplicate components on a case: where several rows share the
+   * same (CaseID, ComponentType), keep the one carrying the most work and
+   * DELETE the surplus — but only surplus that is provably empty (unassigned,
+   * no assignee, no task, no draft), so nothing anyone did can be lost. A
+   * duplicate that has real state on both rows is left alone and reported
+   * instead: that needs a human, not a script.
+   * @returns { removed: n, conflicts: [types] }
+   */
+  function _dedupeComponents(caseId) {
+    const rows = DataService.query(SHEET(), COMPONENTS_TAB(), 'CaseID', caseId);
+    const byType = {};
+    rows.forEach(r => (byType[String(r.ComponentType)] = byType[String(r.ComponentType)] || []).push(r));
+
+    const removed = [], conflicts = [];
+    Object.keys(byType).forEach(type => {
+      const group = byType[type];
+      if (group.length < 2) return;
+
+      // Rank rows by how much real state they carry.
+      const weight = r =>
+        (String(r.Status) === 'drafted' ? 4 : 0) +
+        (_email(r.AssignedTo) ? 2 : 0) +
+        (String(r.TaskID || '') ? 1 : 0);
+      group.sort((a, b) => weight(b) - weight(a));
+
+      const keep = group[0];
+      group.slice(1).forEach(r => {
+        if (weight(r) === 0) {
+          removed.push(r.ComponentID);
+        } else {
+          // Both rows carry state — deleting either could lose work.
+          conflicts.push(type + ' (' + keep.ComponentID + ' vs ' + r.ComponentID + ')');
+        }
+      });
+    });
+
+    // Physical deletion, bottom-up so row indices stay valid.
+    if (removed.length) {
+      try {
+        const sheet = SpreadsheetApp.openById(SHEET()).getSheetByName(COMPONENTS_TAB());
+        const data = sheet.getDataRange().getValues();
+        const idCol = data[0].indexOf('ComponentID');
+        for (let i = data.length - 1; i >= 1; i--) {
+          if (removed.indexOf(data[i][idCol]) !== -1) sheet.deleteRow(i + 1);
+        }
+        Logger.log('_dedupeComponents: removed ' + removed.length + ' empty duplicate(s) on ' + caseId);
+      } catch (err) {
+        Logger.log('_dedupeComponents: deletion failed for ' + caseId + ': ' + err);
+        return { removed: 0, conflicts: conflicts };
+      }
+    }
+    return { removed: removed.length, conflicts: conflicts };
+  }
+
+  /**
+   * The people who may be assigned drafting work: holders of the
+   * personnel_committee role. The Service module maintains that role when it
+   * assigns the committee; we only read it.
+   */
+  function listCommitteeMembers(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    let members = [];
+    try {
+      members = Auth.usersWithRole(COMMITTEE_ROLE()) || [];
+    } catch (err) {
+      Logger.log('listCommitteeMembers: ' + err);
+    }
+    return {
+      role: COMMITTEE_ROLE(),
+      members: members,
+      empty: !members.length,
+      hint: members.length ? '' :
+        'Nobody holds the ' + COMMITTEE_ROLE() + ' role yet. The Personnel Committee is assigned in the Service module, which grants the role.',
+    };
+  }
+
+  /**
+   * A case's components, with assignee names resolved and the drafts-due date
+   * the schedule works out (so the UI can show what deadline an assignment
+   * would carry before anyone commits to it).
+   * @param {Object} payload - { caseId }
+   */
+  function listCaseComponents(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const id = String((payload || {}).caseId || '').trim();
+    if (!id) throw new Error('caseId is required.');
+
+    const found = DataService.query(SHEET(), CASES_TAB(), 'CaseID', id);
+    if (!found.length) throw new Error('Case not found: ' + id);
+    const c = found[0];
+
+    // Generate on demand — a case made before components existed still gets
+    // them the first time anyone looks.
+    const gen = _ensureComponents(c, user);
+
+    // Self-heal any duplicate rows (the pre-lock race left some behind).
+    const dedupe = _dedupeComponents(id);
+
+    const types = COMPONENT_TYPES();
+    const rows = DataService.query(SHEET(), COMPONENTS_TAB(), 'CaseID', id).map(r => {
+      const assignee = _email(r.AssignedTo);
+      const profile = assignee ? Auth.getProfile(assignee) : null;
+      return {
+        componentId:   r.ComponentID,
+        caseId:        r.CaseID,
+        componentType: r.ComponentType,
+        label:         (types[r.ComponentType] && types[r.ComponentType].label) || r.ComponentType,
+        assignedTo:    assignee,
+        assignedName:  profile ? (profile.nameLastFirst || profile.name) : assignee,
+        status:        r.Status || 'unassigned',
+        dueAt:         _histDate(r.DueAt) || String(r.DueAt || ''),
+        taskId:        r.TaskID || '',
+        draftedAt:     _histDate(r.DraftedAt) || String(r.DraftedAt || ''),
+        notes:         r.Notes || '',
+      };
+    });
+
+    // What deadline an assignment would carry, from the case's schedule.
+    let draftsDue = '', scheduleWarnings = [];
+    try {
+      const sch = computeScheduleForCase({ caseId: id }, user, roles);
+      draftsDue = sch.effectiveDraftsDue
+        || (sch.schedule && sch.schedule.backward && sch.schedule.backward.draftsDue) || '';
+      scheduleWarnings = sch.warnings || [];
+    } catch (err) {
+      scheduleWarnings = ['The drafting deadline could not be worked out: ' + err.message];
+    }
+
+    const profile = Auth.getProfile(_email(c.CandidateEmail));
+    return {
+      caseId: id,
+      candidate: profile ? (profile.nameLastFirst || profile.name) : c.CandidateEmail,
+      reviewType: c.ReviewType,
+      academicYear: c.AcademicYear,
+      series: gen.series,
+      components: rows,
+      draftsDue: draftsDue,
+      scheduleWarnings: scheduleWarnings,
+      seriesWarning: gen.series ? '' :
+        'The candidate\'s rank (' + (c.SubjectRank || '—') + ') doesn\'t map to a series, so no components could be generated.',
+      duplicateWarning: dedupe.conflicts.length
+        ? 'Duplicate components with real work on both copies: ' + dedupe.conflicts.join('; ') +
+          '. Resolve by hand in the Components tab — nothing was deleted.'
+        : '',
+    };
+  }
+
+  /**
+   * Assign a component to a committee member, and put it in their queue.
+   *
+   * The task carries the drafts-due date and points back at the component;
+   * reassigning resolves the old task and creates a new one, so nobody is left
+   * holding work that isn't theirs. Assigning to '' clears the assignment and
+   * resolves the task.
+   *
+   * @param {Object} payload - { componentId, assignedTo, dueAt? }
+   */
+  function assignComponent(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const p = payload || {};
+    const id = String(p.componentId || '').trim();
+    if (!id) throw new Error('componentId is required.');
+
+    const found = DataService.query(SHEET(), COMPONENTS_TAB(), 'ComponentID', id);
+    if (!found.length) throw new Error('Component not found: ' + id);
+    const comp = found[0];
+
+    const assignee = _email(p.assignedTo);
+    const cfg = DRAFT_TASK_CFG();
+
+    // Clear any existing task first — whether we're reassigning or unassigning,
+    // the old one is now wrong.
+    if (comp.TaskID) {
+      try { Tasks.resolve(comp.TaskID, { resolvedBy: user, note: 'Reassigned' }); }
+      catch (err) { Logger.log('assignComponent: could not resolve old task: ' + err); }
+    }
+
+    // Unassign.
+    if (!assignee) {
+      DataService.update(SHEET(), COMPONENTS_TAB(), 'ComponentID', id, {
+        AssignedTo: '', AssignedAt: '', AssignedBy: '',
+        Status: 'unassigned', TaskID: '', DueAt: '',
+      });
+      return { componentId: id, status: 'unassigned' };
+    }
+
+    // The pool is the committee — assigning outside it would be a mistake, not
+    // a choice.
+    const pool = (Auth.usersWithRole(COMMITTEE_ROLE()) || []).map(m => _email(m.email));
+    if (pool.indexOf(assignee) === -1) {
+      throw new Error('Only members of the Personnel Committee can be assigned drafting work. '
+        + (pool.length ? '' : 'Nobody holds the ' + COMMITTEE_ROLE() + ' role yet.'));
+    }
+
+    // The deadline: whatever the caller supplies, else the schedule's
+    // drafts-due date.
+    let dueAt = String(p.dueAt || '').trim();
+    if (!dueAt) {
+      try {
+        const sch = computeScheduleForCase({ caseId: comp.CaseID }, user, roles);
+        // The working date: a proposed drafts-due wins over the computed one.
+        dueAt = sch.effectiveDraftsDue
+          || (sch.schedule && sch.schedule.backward && sch.schedule.backward.draftsDue) || '';
+      } catch (err) {
+        Logger.log('assignComponent: no schedule for case ' + comp.CaseID + ': ' + err);
+      }
+    }
+
+    // What the assignee will see in their queue.
+    const caseRows = DataService.query(SHEET(), CASES_TAB(), 'CaseID', comp.CaseID);
+    const c = caseRows.length ? caseRows[0] : {};
+    const candidate = Auth.getProfile(_email(c.CandidateEmail));
+    const types = COMPONENT_TYPES();
+    const typeLabel = (types[comp.ComponentType] && types[comp.ComponentType].label) || comp.ComponentType;
+    const label = 'Draft the ' + typeLabel.toLowerCase() + ' assessment — '
+      + (candidate ? (candidate.nameLastFirst || candidate.name) : c.CandidateEmail)
+      + ' (' + (c.ReviewType || 'review') + ', ' + (c.AcademicYear || '') + ')';
+
+    let taskId = '';
+    try {
+      const t = Tasks.create({
+        module:     'personnel',
+        sourceType: cfg.sourceType,
+        sourceId:   id,                 // the component — resolving is unambiguous
+        label:      label,
+        assignedTo: assignee,
+        dueAt:      dueAt || undefined,
+        staleAfterDays: cfg.staleAfterDays,
+      });
+      taskId = t.taskId;
+    } catch (err) {
+      // The assignment is real even if the queue entry failed; say so rather
+      // than pretending the whole thing worked.
+      Logger.log('assignComponent: Tasks.create failed: ' + err);
+    }
+
+    DataService.update(SHEET(), COMPONENTS_TAB(), 'ComponentID', id, {
+      AssignedTo: assignee,
+      AssignedAt: Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd'),
+      AssignedBy: user,
+      Status:     'assigned',
+      DueAt:      dueAt,
+      TaskID:     taskId,
+    });
+
+    return {
+      componentId: id, status: 'assigned', assignedTo: assignee,
+      dueAt: dueAt, taskId: taskId,
+      warning: taskId ? '' : 'Assigned, but the task could not be added to their queue.',
+    };
+  }
+
+  /**
+   * Mark a component drafted — the work is done. Resolves the task, so it
+   * leaves the assignee's queue. The assignee themself may do this, as well as
+   * a super admin.
+   * @param {Object} payload - { componentId, notes? }
+   */
+  function markComponentDrafted(payload, user, roles) {
+    const p = payload || {};
+    const id = String(p.componentId || '').trim();
+    if (!id) throw new Error('componentId is required.');
+
+    const found = DataService.query(SHEET(), COMPONENTS_TAB(), 'ComponentID', id);
+    if (!found.length) throw new Error('Component not found: ' + id);
+    const comp = found[0];
+
+    // The person who owes the draft can mark it done; so can a super admin.
+    const isAssignee = _email(comp.AssignedTo) === _email(user);
+    if (!isAssignee && (roles || []).indexOf('super_admin') === -1) {
+      throw new Error('Only the assignee or a super admin can mark this drafted.');
+    }
+
+    const fields = {
+      Status:    'drafted',
+      DraftedAt: Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd'),
+      DraftedBy: user,
+    };
+    if (p.notes !== undefined) fields.Notes = String(p.notes || '').trim();
+    DataService.update(SHEET(), COMPONENTS_TAB(), 'ComponentID', id, fields);
+
+    // The work is done, so the task should go — the queue never outlives it.
+    try { Tasks.resolveForSource('personnel', id, { resolvedBy: user }); }
+    catch (err) { Logger.log('markComponentDrafted: could not resolve task: ' + err); }
+
+    return { componentId: id, status: 'drafted' };
+  }
+
+  /**
+   * Reopen a drafted component — the draft needs more work. Puts it back in
+   * the assignee's queue.
+   * @param {Object} payload - { componentId }
+   */
+  function reopenComponent(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const id = String((payload || {}).componentId || '').trim();
+    if (!id) throw new Error('componentId is required.');
+    const found = DataService.query(SHEET(), COMPONENTS_TAB(), 'ComponentID', id);
+    if (!found.length) throw new Error('Component not found: ' + id);
+    const comp = found[0];
+
+    if (!_email(comp.AssignedTo)) {
+      throw new Error('This component has no assignee to reopen it for.');
+    }
+    // Re-assigning to the same person rebuilds the task cleanly.
+    return assignComponent({ componentId: id, assignedTo: comp.AssignedTo, dueAt: comp.DueAt },
+                           user, roles);
+  }
+
+
+  /**
+   * The committee's drafting workload — one row per member, so the assigner
+   * can see at a glance whether the work is balanced. Every role-holder
+   * appears, including those with nothing assigned: an empty plate is what
+   * imbalance looks like. Major reviews (promotion, mid-career) are counted
+   * separately from minor ones — two merit drafts are not two promotion
+   * drafts.
+   * @param {Object} payload - { academicYear? — restrict to one cycle }
+   */
+  function committeeWorkload(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const year = String((payload || {}).academicYear || '').trim();
+
+    // Which cases are in scope, and which of them are major reviews.
+    const types = REVIEW_TYPES();
+    const caseById = {};
+    DataService.getAll(SHEET(), CASES_TAB()).forEach(c => {
+      if (year && String(c.AcademicYear).trim() !== year) return;
+      const t = types[String(c.ReviewType)] || {};
+      caseById[c.CaseID] = {
+        candidateEmail: _email(c.CandidateEmail),
+        reviewType: c.ReviewType,
+        major: !!t.major,
+        academicYear: c.AcademicYear,
+      };
+    });
+
+    // Tally the components of in-scope cases per assignee.
+    const perMember = {};   // email -> tallies
+    let unassigned = 0, unassignedMajor = 0;
+    const blank = () => ({ assigned: 0, drafted: 0, major: 0, minor: 0, dueSoonest: '' });
+
+    DataService.getAll(SHEET(), COMPONENTS_TAB()).forEach(comp => {
+      const c = caseById[comp.CaseID];
+      if (!c) return;                                  // out of scope
+      const who = _email(comp.AssignedTo);
+      const status = String(comp.Status || 'unassigned');
+
+      if (!who || status === 'unassigned') {
+        unassigned++;
+        if (c.major) unassignedMajor++;
+        return;
+      }
+      const m = (perMember[who] = perMember[who] || blank());
+      if (status === 'drafted') m.drafted++; else m.assigned++;
+      if (c.major) m.major++; else m.minor++;
+      const due = _histDate(comp.DueAt) || '';
+      // The nearest deadline still OWED — drafted work has no pull left.
+      if (due && status !== 'drafted' && (!m.dueSoonest || due < m.dueSoonest)) {
+        m.dueSoonest = due;
+      }
+    });
+
+    // Every role-holder appears, workload or not.
+    let pool = [];
+    try { pool = Auth.usersWithRole(COMMITTEE_ROLE()) || []; }
+    catch (err) { Logger.log('committeeWorkload: ' + err); }
+    const inPool = {};
+    pool.forEach(m => { inPool[_email(m.email)] = m.name; });
+
+    // Someone with assignments who has LEFT the committee still owes them —
+    // show them, marked, rather than letting their load vanish.
+    Object.keys(perMember).forEach(email => {
+      if (!inPool[email]) {
+        const p = Auth.getProfile(email);
+        inPool[email] = (p ? (p.nameLastFirst || p.name) : email) + ' (no longer on the committee)';
+      }
+    });
+
+    const rows = Object.keys(inPool).map(email => {
+      const m = perMember[email] || blank();
+      return {
+        email: email,
+        name: inPool[email],
+        assigned: m.assigned,
+        drafted: m.drafted,
+        total: m.assigned + m.drafted,
+        major: m.major,
+        minor: m.minor,
+        dueSoonest: m.dueSoonest,
+      };
+    });
+    // Heaviest open load first — the balance question reads top-to-bottom.
+    rows.sort((a, b) => (b.assigned - a.assigned) || (b.total - a.total)
+      || String(a.name).localeCompare(String(b.name)));
+
+    return {
+      academicYear: year || 'all years',
+      members: rows,
+      unassigned: unassigned,
+      unassignedMajor: unassignedMajor,
+      poolEmpty: !pool.length,
+    };
+  }
+
+  /**
+   * The assignment roster, case by case — the complement of the workload's
+   * member-by-member view. One row per in-scope case, with who is drafting
+   * each part, so the assigner can see at a glance whether every candidate is
+   * fully covered. Cases with unassigned parts sort to the top: they are what
+   * needs attention.
+   * @param {Object} payload - { academicYear? — restrict to one cycle }
+   */
+  function caseAssignments(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const year = String((payload || {}).academicYear || '').trim();
+    const types = COMPONENT_TYPES();
+
+    // Components grouped by case. Duplicates from the pre-lock race are
+    // collapsed IN MEMORY here (keep the row carrying the most work) so the
+    // roster never shows a ghost 'unassigned' beside a real assignment; the
+    // physical rows are healed when the case's drafting panel next opens.
+    const byCase = {};
+    DataService.getAll(SHEET(), COMPONENTS_TAB()).forEach(comp => {
+      (byCase[comp.CaseID] = byCase[comp.CaseID] || []).push(comp);
+    });
+    const stateWeight = r =>
+      (String(r.Status) === 'drafted' ? 4 : 0) +
+      (_email(r.AssignedTo) ? 2 : 0) +
+      (String(r.TaskID || '') ? 1 : 0);
+    Object.keys(byCase).forEach(cid => {
+      const best = {};
+      byCase[cid].forEach(r => {
+        const t = String(r.ComponentType);
+        if (!best[t] || stateWeight(r) > stateWeight(best[t])) best[t] = r;
+      });
+      byCase[cid] = Object.keys(best).map(t => best[t]);
+    });
+
+    // Names for assignees, resolved once each.
+    const nameCache = {};
+    const nameOf = email => {
+      if (!email) return '';
+      if (nameCache[email] === undefined) {
+        const p = Auth.getProfile(email);
+        nameCache[email] = p ? (p.nameLastFirst || p.name) : email;
+      }
+      return nameCache[email];
+    };
+
+    const rows = [];
+    DataService.getAll(SHEET(), CASES_TAB()).forEach(c => {
+      if (year && String(c.AcademicYear).trim() !== year) return;
+      // Terminal cases don't need drafters; keep the roster about live work.
+      const status = String(c.Status || 'open');
+      if (status === 'closed' || status === 'deferred' || status === 'completed') return;
+
+      const comps = (byCase[c.CaseID] || []).map(comp => ({
+        componentId: comp.ComponentID,
+        type: comp.ComponentType,
+        label: (types[comp.ComponentType] && types[comp.ComponentType].label) || comp.ComponentType,
+        assignedTo: _email(comp.AssignedTo),
+        assignedName: nameOf(_email(comp.AssignedTo)),
+        status: String(comp.Status || 'unassigned'),
+      }));
+      comps.sort((a, b) => String(a.type).localeCompare(String(b.type)));
+
+      const unassignedCount = comps.filter(x => !x.assignedTo || x.status === 'unassigned').length;
+      const candidate = nameOf(_email(c.CandidateEmail)) || c.CandidateEmail;
+
+      rows.push({
+        caseId: c.CaseID,
+        candidate: candidate,
+        reviewType: c.ReviewType,
+        academicYear: c.AcademicYear,
+        caseStatus: status,
+        components: comps,
+        // A case with no components at all (unmapped rank) is also "not
+        // covered" — surface it, don't hide it.
+        noComponents: !comps.length,
+        unassignedCount: comps.length ? unassignedCount : 1,
+        fullyAssigned: comps.length > 0 && unassignedCount === 0,
+        allDrafted: comps.length > 0 && comps.every(x => x.status === 'drafted'),
+      });
+    });
+
+    // Needs-attention first, then by candidate.
+    rows.sort((a, b) => (b.unassignedCount - a.unassignedCount)
+      || String(a.candidate).localeCompare(String(b.candidate)));
+
+    return {
+      academicYear: year || 'all years',
+      cases: rows,
+      total: rows.length,
+      fullyAssigned: rows.filter(r => r.fullyAssigned).length,
+    };
+  }
+
+  /**
+   * Export the committee workload report to a Google Sheet — one workbook,
+   * two sheets: "Workload" (member by member) and "Assignments" (case by
+   * case), so a single shareable artifact answers both balance questions.
+   * Lands in EXPORT_FOLDER_ID when set.
+   * @param {Object} payload - { academicYear? }
+   */
+  function exportWorkloadToSheet(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const rep = committeeWorkload(payload || {}, user, roles);
+    if (!rep.members.length) throw new Error('Nothing to export — the committee is empty.');
+
+    const stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+    const name = 'Committee workload — ' + rep.academicYear + ' (exported ' + stamp + ')';
+    const ss = SpreadsheetApp.create(name);
+    const sheet = ss.getSheets()[0];
+    sheet.setName('Workload');
+
+    sheet.getRange(1, 1).setValue('Personnel Committee drafting workload — ' + rep.academicYear)
+      .setFontWeight('bold').setFontSize(13);
+    sheet.getRange(2, 1).setValue(
+      rep.unassigned + ' component(s) still unassigned' +
+      (rep.unassignedMajor ? ' (' + rep.unassignedMajor + ' from major reviews)' : ''))
+      .setFontColor('#666666');
+
+    const header = ['Member', 'Open drafts', 'Drafted', 'Total', 'Major reviews', 'Minor reviews', 'Nearest deadline'];
+    const headerRow = 4;
+    sheet.getRange(headerRow, 1, 1, header.length).setValues([header])
+      .setFontWeight('bold').setBackground('#003C6C').setFontColor('#FFFFFF');
+    const data = rep.members.map(m =>
+      [m.name, m.assigned, m.drafted, m.total, m.major, m.minor, m.dueSoonest || '']);
+    sheet.getRange(headerRow + 1, 1, data.length, header.length).setValues(data);
+    sheet.setFrozenRows(headerRow);
+    for (let c = 1; c <= header.length; c++) sheet.autoResizeColumn(c);
+
+    // Second sheet: the roster, case by case, so the same workbook answers
+    // "is the load balanced?" AND "is every candidate covered?".
+    const roster = caseAssignments(payload || {}, user, roles);
+    const aSheet = ss.insertSheet('Assignments');
+    aSheet.getRange(1, 1).setValue('Drafting assignments by candidate — ' + roster.academicYear)
+      .setFontWeight('bold').setFontSize(13);
+    aSheet.getRange(2, 1).setValue(roster.fullyAssigned + ' of ' + roster.total + ' case(s) fully assigned')
+      .setFontColor('#666666');
+
+    const aHeader = ['Candidate', 'Review type', 'Part of the assessment', 'Drafted by', 'Status'];
+    const aHeaderRow = 4;
+    aSheet.getRange(aHeaderRow, 1, 1, aHeader.length).setValues([aHeader])
+      .setFontWeight('bold').setBackground('#003C6C').setFontColor('#FFFFFF');
+
+    const aData = [];
+    const separatorRows = [];   // sheet-relative offsets to shade
+    roster.cases.forEach(r => {
+      if (r.noComponents) {
+        aData.push([r.candidate, r.reviewType, '(no components — rank not mapped)', '', '']);
+      } else {
+        r.components.forEach((comp, i) => {
+          aData.push([
+            i === 0 ? r.candidate : '',          // candidate once per case
+            i === 0 ? r.reviewType : '',
+            comp.label,
+            comp.assignedName || 'UNASSIGNED',
+            comp.status,
+          ]);
+        });
+      }
+      // A shaded blank row after each case, so every candidate reads as a
+      // block when scanned.
+      separatorRows.push(aData.length);
+      aData.push(['', '', '', '', '']);
+    });
+    if (aData.length) {
+      aSheet.getRange(aHeaderRow + 1, 1, aData.length, aHeader.length).setValues(aData);
+      // Shade the separators.
+      separatorRows.forEach(i => {
+        aSheet.getRange(aHeaderRow + 1 + i, 1, 1, aHeader.length).setBackground('#EFEFEF');
+      });
+      // Make the gaps loud in the export too.
+      for (let i = 0; i < aData.length; i++) {
+        if (aData[i][3] === 'UNASSIGNED') {
+          aSheet.getRange(aHeaderRow + 1 + i, 4).setFontColor('#B3261E').setFontWeight('bold');
+        }
+      }
+    }
+    aSheet.setFrozenRows(aHeaderRow);
+    for (let c = 1; c <= aHeader.length; c++) aSheet.autoResizeColumn(c);
+
+    const folderId = (CONFIG.PERSONNEL && CONFIG.PERSONNEL.EXPORT_FOLDER_ID) || '';
+    if (folderId) {
+      try {
+        const file = DriveApp.getFileById(ss.getId());
+        DriveApp.getFolderById(folderId).addFile(file);
+        DriveApp.getRootFolder().removeFile(file);
+      } catch (err) { Logger.log('Workload export folder move failed: ' + err); }
+    }
+    return { url: ss.getUrl(), name: name, rowCount: data.length };
+  }
+
+
+  /**
+   * The steps a date may be proposed against — the department's own process
+   * dates. Two things are deliberately absent because they are SET BY POLICY,
+   * not by the department:
+   *   · the division submission deadline (the Division's date), and
+   *   · the candidate's review of the file before submission (the mandatory
+   *     window, derived from the submission date — it moves only if the
+   *     Division's date moves).
+   * The flexible dates still carry one policy parameter, enforced in
+   * proposeDate(): the candidate's review of added material (external
+   * letters) must COMPLETE before the faculty vote.
+   */
+  const PROPOSABLE_STEPS = ['draftsDue', 'deliberateBy', 'vote', 'letterFinal'];
+
+  /**
+   * Propose (or clear) a working date for one step of a cycle's timeline.
+   * The computed date remains the visible baseline; the proposal is what the
+   * department actually schedules around — most consequentially, a proposed
+   * draftsDue flows into the task deadline when a component is assigned.
+   * @param {Object} payload - { academicYear, timeline: 'merit'|'major',
+   *                             step, date ('' clears the proposal) }
+   */
+  function proposeDate(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const p = payload || {};
+    const year = String(p.academicYear || '').trim();
+    if (!year) throw new Error('academicYear is required.');
+    const timeline = String(p.timeline || '').trim();
+    if (timeline !== 'merit' && timeline !== 'major') {
+      throw new Error('timeline must be "merit" or "major".');
+    }
+    const step = String(p.step || '').trim();
+    if (PROPOSABLE_STEPS.indexOf(step) === -1) {
+      if (step === 'submission') {
+        throw new Error('The division submission deadline is immutable — it cannot be proposed against.');
+      }
+      if (step === 'lateReviewStart' || step === 'lateReviewEnd') {
+        throw new Error('The candidate\'s review of the file before submission is set by policy — it moves only if the Division\'s deadline moves.');
+      }
+      throw new Error('Unknown step: ' + step);
+    }
+    const date = String(p.date || '').trim();
+    if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      throw new Error('Dates are yyyy-mm-dd.');
+    }
+
+    // Policy parameter: the candidate reviews material added to the file
+    // (external letters) BEFORE the faculty acts on it. On the major
+    // timeline, a vote — and the deliberation leading to it — cannot precede
+    // the end of that review window.
+    if (date && timeline === 'major' && (step === 'vote' || step === 'deliberateBy')) {
+      try {
+        const sch = computeCycleSchedule({ academicYear: year }, user, roles);
+        const maj = sch.schedules && sch.schedules.major && sch.schedules.major.schedule;
+        const f = maj && maj.forward;
+        if (f && f.earlyReviewEnd && date <= f.earlyReviewEnd) {
+          throw new Error('The candidate reviews the external letters through ' + f.earlyReviewEnd +
+            ' — by policy the ' + (step === 'vote' ? 'faculty vote' : 'deliberation') +
+            ' cannot precede the end of that review. Propose a later date.');
+        }
+      } catch (err) {
+        // Re-throw the policy rejection; anything else (schedule couldn't be
+        // computed) should not block a proposal.
+        if (String(err.message || '').indexOf('cannot precede') !== -1) throw err;
+        Logger.log('proposeDate: policy check skipped: ' + err);
+      }
+    }
+
+    const rows = DataService.query(SHEET(), CYCLES_TAB(), 'AcademicYear', year);
+    if (!rows.length) throw new Error('No cycle on file for ' + year + ' — load it in the Calendar tab first.');
+    const row = rows[0];
+
+    let proposed = {};
+    try { proposed = JSON.parse(row.ProposedDates || '{}') || {}; } catch (e) {}
+    proposed[timeline] = proposed[timeline] || {};
+    if (date) proposed[timeline][step] = date;
+    else delete proposed[timeline][step];
+    if (!Object.keys(proposed[timeline]).length) delete proposed[timeline];
+
+    DataService.update(SHEET(), CYCLES_TAB(), 'CycleID', row.CycleID, {
+      ProposedDates: Object.keys(proposed).length ? JSON.stringify(proposed) : '',
+    });
+    return { academicYear: year, timeline: timeline, step: step,
+             date: date, proposedDates: proposed };
+  }
+
+
+  /**
+   * Export the cycle's schedule to a Google Sheet — both timelines, each with
+   * the computed baseline and the proposed working dates side by side, in the
+   * same order as the on-screen table. Policy-fixed rows are marked. Lands in
+   * EXPORT_FOLDER_ID when set.
+   * @param {Object} payload - { academicYear }
+   */
+  function exportCycleScheduleToSheet(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const year = String((payload || {}).academicYear || '').trim();
+    if (!year) throw new Error('academicYear is required.');
+    const rep = computeCycleSchedule({ academicYear: year }, user, roles);
+    if (!rep.schedules) throw new Error('Nothing to export — no schedule could be computed: '
+      + (rep.warnings || []).join(' '));
+
+    const stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+    const name = 'Cycle schedule — ' + year + ' (exported ' + stamp + ')';
+    const ss = SpreadsheetApp.create(name);
+    const sheet = ss.getSheets()[0];
+    sheet.setName('Schedule');
+
+    sheet.getRange(1, 1).setValue('Review cycle schedule — ' + year)
+      .setFontWeight('bold').setFontSize(13);
+    sheet.getRange(2, 1).setValue(
+      'Computed dates are the scheduler\'s baseline; proposed dates are the department\'s working plan. ' +
+      'Rows marked "set by policy" are not the department\'s to move.')
+      .setFontColor('#666666').setFontStyle('italic');
+
+    const POLICY = '— set by policy';
+    // One section per timeline, mirroring the on-screen row order.
+    const sectionRows = (label, sch, proposals, isPromotion) => {
+      const b = sch.backward || {};
+      const f = sch.forward || null;
+      const p = proposals || {};
+      const rows = [];
+      if (isPromotion && f) {
+        rows.push(['External letters due', f.lettersDue || '', '',
+          f.basis === 'actual' ? 'Letters actually arrived ' + (f.lettersAdded || '') : 'Planned; buffer absorbs late letters']);
+        rows.push(['Candidate reviews the letters (opens)', f.earlyReviewStart || '', '', 'Set by policy — 10 business days']);
+        rows.push(['Candidate review of letters closes', f.earlyReviewEnd || '', '', 'Set by policy']);
+        rows.push(['Committee may begin deliberating', f.earliestDeliberate || '', '', 'Earliest possible']);
+      }
+      rows.push(['Drafts complete',                       b.draftsDue || '',       p.draftsDue || '',   'Assessments written']);
+      rows.push(['Deliberation underway by',              b.deliberateBy || '',    p.deliberateBy || '', '']);
+      rows.push(['Faculty vote',                          b.vote || '',            p.vote || '',        '']);
+      rows.push(['Final letter complete, votes recorded', b.letterFinal || '',     p.letterFinal || '', '']);
+      rows.push(['Candidate reviews the file (opens)',    b.lateReviewStart || '', POLICY,              'Set by policy — 10 business days']);
+      rows.push(['Candidate review closes',               b.lateReviewEnd || '',   POLICY,              'Set by policy']);
+      rows.push(['File due to the Division',              b.submission || '',      POLICY,              'The Division\'s deadline — immutable']);
+      return { label: label, feasible: sch.feasible !== false, warnings: sch.warnings || [], rows: rows };
+    };
+
+    const sections = [];
+    const props = rep.proposedDates || {};
+    const mer = rep.schedules.merit && rep.schedules.merit.schedule;
+    const maj = rep.schedules.major && rep.schedules.major.schedule;
+    if (mer) sections.push(sectionRows('Merit & salary-increase files', mer, props.merit, false));
+    if (maj) sections.push(sectionRows('Promotion & mid-career files (external letters)', maj, props.major, !!maj.forward));
+
+    let row = 4;
+    const header = ['Step', 'Computed', 'Proposed', 'Notes'];
+    sections.forEach(sec => {
+      sheet.getRange(row, 1).setValue(sec.label + (sec.feasible ? '' : ' — DOES NOT FIT'))
+        .setFontWeight('bold').setFontSize(11.5)
+        .setFontColor(sec.feasible ? '#003C6C' : '#B3261E');
+      row++;
+      if (sec.warnings.length) {
+        sheet.getRange(row, 1).setValue(sec.warnings.join(' ')).setFontColor('#8a6d00').setFontStyle('italic');
+        row++;
+      }
+      sheet.getRange(row, 1, 1, header.length).setValues([header])
+        .setFontWeight('bold').setBackground('#003C6C').setFontColor('#FFFFFF');
+      row++;
+      sheet.getRange(row, 1, sec.rows.length, header.length).setValues(sec.rows);
+      // Gold-tint the proposed cells that carry real proposals.
+      sec.rows.forEach((r, i) => {
+        if (r[2] && r[2] !== POLICY) {
+          sheet.getRange(row + i, 3).setBackground('#FFF4CC').setFontWeight('bold');
+        } else if (r[2] === POLICY) {
+          sheet.getRange(row + i, 3).setFontColor('#999999').setFontStyle('italic');
+        }
+      });
+      row += sec.rows.length + 1;   // blank row between sections
+    });
+
+    for (let c = 1; c <= header.length; c++) sheet.autoResizeColumn(c);
+
+    const folderId = (CONFIG.PERSONNEL && CONFIG.PERSONNEL.EXPORT_FOLDER_ID) || '';
+    if (folderId) {
+      try {
+        const file = DriveApp.getFileById(ss.getId());
+        DriveApp.getFolderById(folderId).addFile(file);
+        DriveApp.getRootFolder().removeFile(file);
+      } catch (err) { Logger.log('Cycle schedule export folder move failed: ' + err); }
+    }
+    return { url: ss.getUrl(), name: name };
+  }
+
+
+  // ============================================================
+  // Phase 7 — Communications (drafting workbench)
+  // ============================================================
+  // Drafts the module can write better than a human starting from blank:
+  // assignment notices merged per committee member, the cycle schedule, and
+  // policy notices. Every draft is EDITED BY A HUMAN before it goes anywhere
+  // — this is a workbench, not an autoresponder. Delivery is either through
+  // the platform's Notify service or copied into the sender's own client;
+  // both paths land in the CommunicationsLog, so "did we tell them?" stays
+  // answerable.
+
+  function COMM_LOG_TAB() { return CONFIG.TABS.COMMUNICATIONS_LOG; }
+  const COMM_KINDS = ['assignments', 'schedule', 'policy'];
+
+  /** The template for a kind: the CONFIG default overlaid with any Settings-tab override. */
+  function _commTemplate(kind) {
+    const defaults = ((CONFIG.PERSONNEL && CONFIG.PERSONNEL.COMM_TEMPLATES) || {})[kind] || {};
+    const out = { label: defaults.label || kind, subject: defaults.subject || '', body: defaults.body || '' };
+    try {
+      DataService.getAll(SHEET(), SETTINGS_TAB()).forEach(r => {
+        const k = String(r.Key || '').trim();
+        if (k === 'COMM_' + kind + '_SUBJECT' && String(r.Value || '').trim()) out.subject = String(r.Value);
+        if (k === 'COMM_' + kind + '_BODY'    && String(r.Value || '').trim()) out.body = String(r.Value);
+      });
+    } catch (err) { Logger.log('_commTemplate: ' + err); }
+    return out;
+  }
+
+  /** The templates, for the editor UI. */
+  function getCommTemplates(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    return {
+      kinds: COMM_KINDS.map(k => Object.assign({ kind: k }, _commTemplate(k))),
+      tokens: '{Name} {FirstName} {Year} {Assignments} {Schedule} {PolicyDocs} {PortalLink}',
+    };
+  }
+
+  // ── Policy documents (the references drafts point at) ──────
+  // A UI-managed list of name + URL — the CAP letter, the review criteria,
+  // and whatever else the committee should have in hand. Stored as JSON in
+  // the module's Settings sheet so the annual CAP-letter swap is a paste in
+  // the UI, never a code change. Rendered into drafts via {PolicyDocs}.
+
+  const POLICY_DOCS_KEY = 'POLICY_DOCS';
+
+  function _policyDocs() {
+    try {
+      const row = DataService.getAll(SHEET(), SETTINGS_TAB())
+        .find(r => String(r.Key || '').trim() === POLICY_DOCS_KEY);
+      if (!row || !row.Value) return [];
+      const list = JSON.parse(row.Value);
+      return Array.isArray(list)
+        ? list.filter(d => d && String(d.name || '').trim() && String(d.url || '').trim())
+        : [];
+    } catch (err) {
+      Logger.log('_policyDocs: ' + err);
+      return [];
+    }
+  }
+
+  /** The {PolicyDocs} block: the document NAMES, one per line. The links are
+   *  not shown as text — they are embedded as hyperlinks on the names in the
+   *  HTML email at send time (and in the HTML clipboard copy). The plain-text
+   *  fallback body carries names only, by design. */
+  function _policyDocsBlock() {
+    const docs = _policyDocs();
+    if (!docs.length) return '';
+    return 'Policy references:\n' +
+      docs.map(d => '\u2022 ' + d.name).join('\n');
+  }
+
+  /** HTML-escape matching Notify.htmlWrap's escaping, so a doc name can be
+   *  found inside wrapped HTML and linkified. */
+  function _commEscape(s) {
+    return String(s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  /** Turn each '\u2022 Name' in wrapped HTML into '\u2022 <a href>Name</a>'. */
+  function _linkifyPolicyDocs(html, docs) {
+    let out = String(html || '');
+    (docs || []).forEach(d => {
+      const esc = _commEscape(d.name);
+      const plain = '\u2022 ' + esc;
+      const linked = '\u2022 <a href="' + _commEscape(d.url) +
+        '" style="color:#003C6C;">' + esc + '</a>';
+      if (out.indexOf(plain) !== -1) out = out.split(plain).join(linked);
+    });
+    return out;
+  }
+
+  /** The policy-documents list, for the management card. */
+  function listPolicyDocs(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    return { docs: _policyDocs() };
+  }
+
+  /**
+   * Replace the policy-documents list. Whole-list save: the card edits the
+   * full set and writes it back — simpler than row-level CRUD for a list
+   * this small, and there is no partial-update ambiguity.
+   * @param {Object} payload - { docs: [{name, url}] }
+   */
+  function savePolicyDocs(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const docs = (Array.isArray((payload || {}).docs) ? payload.docs : [])
+      .map(d => ({ name: String((d || {}).name || '').trim(), url: String((d || {}).url || '').trim() }))
+      .filter(d => d.name && d.url);
+    docs.forEach(d => {
+      if (!/^https?:\/\//i.test(d.url)) {
+        throw new Error('"' + d.name + '" needs a full link starting with http(s):// — got "' + d.url + '".');
+      }
+    });
+    const value = docs.length ? JSON.stringify(docs) : '';
+    const existing = DataService.getAll(SHEET(), SETTINGS_TAB())
+      .find(r => String(r.Key || '').trim() === POLICY_DOCS_KEY);
+    if (existing) DataService.update(SHEET(), SETTINGS_TAB(), 'Key', POLICY_DOCS_KEY, { Value: value });
+    else DataService.insert(SHEET(), SETTINGS_TAB(), { Key: POLICY_DOCS_KEY, Value: value });
+    return { docs: docs };
+  }
+
+  /** Save a template override to the Settings tab. Blank reverts to the default. */
+  function saveCommTemplate(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const p = payload || {};
+    const kind = String(p.kind || '').trim();
+    if (COMM_KINDS.indexOf(kind) === -1) throw new Error('Unknown message kind: ' + kind);
+    const put = (key, value) => {
+      const existing = DataService.getAll(SHEET(), SETTINGS_TAB())
+        .find(r => String(r.Key || '').trim() === key);
+      if (existing) DataService.update(SHEET(), SETTINGS_TAB(), 'Key', key, { Value: String(value || '') });
+      else DataService.insert(SHEET(), SETTINGS_TAB(), { Key: key, Value: String(value || '') });
+    };
+    if (p.subject !== undefined) put('COMM_' + kind + '_SUBJECT', p.subject);
+    if (p.body !== undefined)    put('COMM_' + kind + '_BODY', p.body);
+    return { kind: kind, template: _commTemplate(kind) };
+  }
+
+  /** The member's open drafting assignments, as the {Assignments} block. */
+  function _assignmentsBlockFor(email, year, user, roles) {
+    const types = COMPONENT_TYPES();
+    const caseById = {};
+    DataService.getAll(SHEET(), CASES_TAB()).forEach(c => {
+      if (year && String(c.AcademicYear).trim() !== year) return;
+      caseById[c.CaseID] = c;
+    });
+    const lines = [];
+    DataService.getAll(SHEET(), COMPONENTS_TAB()).forEach(comp => {
+      const c = caseById[comp.CaseID];
+      if (!c) return;
+      if (_email(comp.AssignedTo) !== email) return;
+      if (String(comp.Status) !== 'assigned') return;   // open work only
+      const candidate = Auth.getProfile(_email(c.CandidateEmail));
+      const who = candidate ? (candidate.nameLastFirst || candidate.name) : c.CandidateEmail;
+      const label = (types[comp.ComponentType] && types[comp.ComponentType].label) || comp.ComponentType;
+      const due = _histDate(comp.DueAt) || '';
+      lines.push('• ' + label + ' — ' + who + ' (' + (c.ReviewType || 'review') + ')'
+        + (due ? ' — due ' + due : ''));
+    });
+    return lines.join('\n');
+  }
+
+  /** The cycle's working schedule as the {Schedule} block — proposed dates first. */
+  function _scheduleBlockFor(year, user, roles) {
+    const rep = computeCycleSchedule({ academicYear: year }, user, roles);
+    if (!rep.schedules) return '(No schedule could be computed for ' + year + '.)';
+    const props = rep.proposedDates || {};
+    const section = (label, sch, p) => {
+      if (!sch) return '';
+      const b = sch.backward || {};
+      const eff = (step) => (p && p[step]) || b[step] || '—';
+      const l = [label + ':'];
+      l.push('  Drafts complete:        ' + eff('draftsDue'));
+      l.push('  Deliberation underway:  ' + eff('deliberateBy'));
+      l.push('  Faculty vote:           ' + eff('vote'));
+      l.push('  Final letter:           ' + eff('letterFinal'));
+      l.push('  Candidate review opens: ' + (b.lateReviewStart || '—') + '  (set by policy)');
+      l.push('  Due to the Division:    ' + (b.submission || '—') + '  (the Division\'s deadline)');
+      return l.join('\n');
+    };
+    const parts = [];
+    if (rep.schedules.merit && rep.schedules.merit.schedule) {
+      parts.push(section('Merit & salary-increase files', rep.schedules.merit.schedule, props.merit));
+    }
+    if (rep.schedules.major && rep.schedules.major.schedule) {
+      const maj = rep.schedules.major.schedule;
+      let s = section('Promotion & mid-career files', maj, props.major);
+      if (maj.forward && maj.forward.lettersDue) {
+        s += '\n  External letters due:   ' + maj.forward.lettersDue +
+             '\n  Candidate reviews letters through: ' + (maj.forward.earlyReviewEnd || '—') + '  (set by policy)';
+      }
+      parts.push(s);
+    }
+    return parts.join('\n\n');
+  }
+
+  /**
+   * Generate one editable draft per committee member for a message kind.
+   * Nothing is sent — the drafts come back for a human to edit.
+   * @param {Object} payload - { kind, academicYear }
+   */
+  function previewCommunication(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const p = payload || {};
+    const kind = String(p.kind || '').trim();
+    if (COMM_KINDS.indexOf(kind) === -1) throw new Error('Unknown message kind: ' + kind);
+    const year = String(p.academicYear || '').trim();
+    if (!year) throw new Error('academicYear is required.');
+
+    let members = [];
+    try { members = Auth.usersWithRole(COMMITTEE_ROLE()) || []; }
+    catch (err) { Logger.log('previewCommunication: ' + err); }
+    if (!members.length) {
+      return { kind: kind, academicYear: year, drafts: [],
+               hint: 'Nobody holds the ' + COMMITTEE_ROLE() + ' role — there is no committee to write to.' };
+    }
+
+    const tmpl = _commTemplate(kind);
+    const portalLink = (typeof Links !== 'undefined' && Links.deepLink)
+      ? (Links.deepLink('personnel') || '') : '';
+    // Blocks shared by every recipient are built once.
+    const scheduleBlock = kind === 'schedule' ? _scheduleBlockFor(year, user, roles) : '';
+    const policyDocsBlock = _policyDocsBlock();
+
+    const drafts = [];
+    const skipped = [];
+    members.forEach(m => {
+      const email = _email(m.email);
+      const profile = Auth.getProfile(email);
+      const name = profile ? (profile.name || m.name) : m.name;
+      const firstName = profile ? (profile.firstName || name) : name;
+
+      let assignmentsBlock = '';
+      if (kind === 'assignments') {
+        assignmentsBlock = _assignmentsBlockFor(email, year, user, roles);
+        if (!assignmentsBlock) { skipped.push(name); return; }   // nothing to notify
+      }
+
+      const fill = s => String(s || '')
+        .replace(/\{Name\}/g, name || email)
+        .replace(/\{FirstName\}/g, firstName || name || email)
+        .replace(/\{Year\}/g, year)
+        .replace(/\{Assignments\}/g, assignmentsBlock)
+        .replace(/\{Schedule\}/g, scheduleBlock)
+        .replace(/\{PolicyDocs\}/g, policyDocsBlock)
+        .replace(/\{PortalLink\}/g, portalLink);
+
+      drafts.push({ email: email, name: name, subject: fill(tmpl.subject), body: fill(tmpl.body) });
+    });
+
+    return {
+      kind: kind, academicYear: year, drafts: drafts,
+      policyDocs: _policyDocs(),
+      skipped: skipped,
+      hint: skipped.length
+        ? 'No draft for ' + skipped.join(', ') + ' — no open assignments to notify.' : '',
+    };
+  }
+
+  /** Append one row to the communications log. */
+  function _logComm(kind, year, recipient, subject, body, method, user) {
+    try {
+      DataService.insert(SHEET(), COMM_LOG_TAB(), {
+        LogID: DataService.generateId('COM'),
+        Kind: kind, AcademicYear: year,
+        Recipient: recipient, Subject: subject, Body: body,
+        Method: method,
+      });
+    } catch (err) { Logger.log('_logComm: ' + err); }
+  }
+
+  /**
+   * Send edited drafts through the portal (Notify), logging each. Sends are
+   * per-recipient — one failure doesn't stop the rest — and the result says
+   * exactly who got mail and who didn't.
+   * @param {Object} payload - { kind, academicYear, drafts: [{email, subject, body}] }
+   */
+  function sendCommunications(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const p = payload || {};
+    const kind = String(p.kind || '').trim();
+    if (COMM_KINDS.indexOf(kind) === -1) throw new Error('Unknown message kind: ' + kind);
+    const year = String(p.academicYear || '').trim();
+    const drafts = Array.isArray(p.drafts) ? p.drafts : [];
+    if (!drafts.length) throw new Error('Nothing to send.');
+
+    let replyTo = '';
+    try { replyTo = Settings.replyTo('personnel'); }
+    catch (err) { replyTo = (CONFIG && CONFIG.DEFAULT_REPLY_TO) || ''; }
+
+    const sent = [], failed = [];
+    drafts.forEach(d => {
+      const email = _email(d.email);
+      const subject = String(d.subject || '').trim();
+      const body = String(d.body || '').trim();
+      if (!email || !subject || !body) {
+        failed.push({ email: email || '(blank)', reason: 'missing recipient, subject, or body' });
+        return;
+      }
+      const res = Notify.send({
+        to: email,
+        subject: subject,
+        body: body,   // plain-text fallback: document names without links
+        htmlBody: _linkifyPolicyDocs(Notify.htmlWrap(body), _policyDocs()),
+        replyTo: replyTo,
+      });
+      if (res && res.sent) {
+        sent.push(email);
+        _logComm(kind, year, email, subject, body, 'sent', user);
+      } else {
+        failed.push({ email: email, reason: (res && res.reason) || 'send failed' });
+      }
+    });
+    return { sent: sent, failed: failed };
+  }
+
+  /** Log a draft the user copied into their own mail client. */
+  function logCopiedCommunication(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const p = payload || {};
+    _logComm(String(p.kind || ''), String(p.academicYear || ''), _email(p.recipient),
+             String(p.subject || ''), String(p.body || ''), 'copied', user);
+    return { logged: true };
+  }
+
+  /** The most recent log entries, newest first. */
+  function listCommunicationsLog(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const limit = Math.min(Number((payload || {}).limit) || 20, 100);
+    const rows = DataService.getAll(SHEET(), COMM_LOG_TAB()).map(r => ({
+      kind: r.Kind, academicYear: r.AcademicYear, recipient: r.Recipient,
+      subject: r.Subject, method: r.Method,
+      at: String(r.CreatedAt || ''), by: r.CreatedBy || '',
+    }));
+    rows.sort((a, b) => String(b.at).localeCompare(String(a.at)));
+    return { entries: rows.slice(0, limit), total: rows.length };
+  }
+
+
   // ── Cycle deadline auto-matching ───────────────────────────
   // APO's calendar titles are structured and carry the cycle year, so the
   // division deadlines can simply be found rather than hunted for by hand.
@@ -2645,6 +3864,14 @@ const PersonnelModule = (() => {
     const letId   = row ? String(row.LettersDueDeadlineID || '') : '';
     const letters = _resolveLettersDue(row, year);
 
+    // The department's working schedule: proposed dates keyed by timeline
+    // then step. Malformed JSON degrades to "no proposals", never an error.
+    let proposed = {};
+    if (row && row.ProposedDates) {
+      try { proposed = JSON.parse(row.ProposedDates) || {}; }
+      catch (err) { Logger.log('getCycle: bad ProposedDates JSON for ' + year + ': ' + err); }
+    }
+
     return {
       academicYear: year,
       exists: !!row,
@@ -2657,6 +3884,7 @@ const PersonnelModule = (() => {
       // the standing Nov 1 default — so the promotion timeline works without
       // anyone having to set anything.
       lettersDue: letters,
+      proposedDates: proposed,
       autoMatched: row ? String(row.AutoMatched || '').toUpperCase() === 'TRUE' : false,
       autoApplied: Object.keys(auto.applied),
       autoNotes: auto.notes,
@@ -2771,11 +3999,13 @@ const PersonnelModule = (() => {
       warnings.push('No major-files deadline (promotion / mid-career / external letters) is set — that timeline cannot be planned.');
     }
 
+    const proposed = cycle.proposedDates || {};
     return {
       academicYear: cycle.academicYear,
       cycle: cycle,
       gaps: SCHEDULE_GAPS(),
       schedules: (merit || major) ? { merit: merit, major: major } : null,
+      proposedDates: { merit: proposed.merit || {}, major: proposed.major || {} },
       warnings: warnings,
     };
   }
@@ -2810,7 +4040,7 @@ const PersonnelModule = (() => {
       const which = map[reviewType] === 'major' ? 'major-files (promotion / mid-career)' : 'merit-files';
       return { caseId: id, academicYear: year, reviewType: reviewType, schedule: null,
                warnings: ['No ' + which + ' division deadline is set for ' + year +
-                          ' — set the cycle deadlines in Settings.'] };
+                          ' — set the cycle deadlines in the Calendar tab.'] };
     }
 
     // Only promotions carry external letters, so only they get the early
@@ -2824,6 +4054,16 @@ const PersonnelModule = (() => {
       actualLettersAddedDate: p.actualLettersAddedDate || '',
     }, user, roles);
 
+    // Which timeline's proposals apply to this case — the same split that
+    // chooses its division anchor.
+    const propMap = (CONFIG.PERSONNEL && CONFIG.PERSONNEL.DIVISION_DEADLINE_BY_TYPE) || {};
+    const timelineKey = propMap[reviewType] === 'major' ? 'major' : 'merit';
+    const proposals = ((cycle.proposedDates || {})[timelineKey]) || {};
+
+    // The working drafts-due: the proposal when one exists, else computed.
+    const computedDrafts = (res.schedule && res.schedule.backward && res.schedule.backward.draftsDue) || '';
+    const effectiveDraftsDue = proposals.draftsDue || computedDrafts;
+
     const profile = Auth.getProfile(_email(c.CandidateEmail));
     return {
       caseId: id,
@@ -2833,6 +4073,9 @@ const PersonnelModule = (() => {
       isPromotion: isPromotion,
       schedule: res.schedule,
       resolved: res.resolved,
+      timeline: timelineKey,
+      proposedDates: proposals,
+      effectiveDraftsDue: effectiveDraftsDue,
       warnings: (res.schedule && res.schedule.warnings) || [],
     };
   }
@@ -2866,6 +4109,15 @@ const PersonnelModule = (() => {
     updateCase,
     createCase,
     checkCaseEligibility,
+    // Drafting assignments
+    listCommitteeMembers,
+    listCaseComponents,
+    assignComponent,
+    markComponentDrafted,
+    reopenComponent,
+    committeeWorkload,
+    exportWorkloadToSheet,
+    caseAssignments,
     // Scheduler
     findCalendarDeadlines,
     computeCaseSchedule,
@@ -2875,6 +4127,17 @@ const PersonnelModule = (() => {
     listCycles,
     setCycleAnchors,
     computeCycleSchedule,
+    proposeDate,
+    exportCycleScheduleToSheet,
+    // Communications
+    getCommTemplates,
+    saveCommTemplate,
+    previewCommunication,
+    sendCommunications,
+    logCopiedCommunication,
+    listCommunicationsLog,
+    listPolicyDocs,
+    savePolicyDocs,
     computeScheduleForCase,
     // Review history
     detectHistoryColumns,

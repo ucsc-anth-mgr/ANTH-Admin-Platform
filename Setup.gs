@@ -331,6 +331,86 @@ const SETUP_SCHEMA = {
     seed: [],
   },
 
+  SERVICE_CATALOG: {
+    tab: 'ServiceCatalog',
+    // Department Service — the catalog of service positions/committees.
+    // Replaces the legacy app's Settings sheet AND its hardcoded category
+    // lists: display behavior is driven by attributes (IsQuarterly,
+    // DefaultRole, IsLeadership, SortWeight; NominationEligible is used by
+    // the Phase 2 self-nomination cycle). Key is a permanent slug —
+    // assignment rows reference it — while Label stays editable. Categories
+    // in use are deactivated, never deleted. No seed: the legacy import
+    // auto-creates entries, and staff add/tune them via the module UI.
+    headers: ['Key', 'Label', 'Active', 'IsQuarterly', 'DefaultRole',
+              'IsLeadership', 'SortWeight', 'NominationEligible', 'IsAdHoc',
+              'AutoAssigns', 'GrantsRole', 'Notes',
+              'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
+  SERVICE_ASSIGNMENTS: {
+    tab: 'ServiceAssignments',
+    // Department Service — one row per service assignment (person ×
+    // category × role × academic year × quarter). Identity is NOT copied:
+    // PersonEmail is the routing key and names are read from Auth at
+    // display time. RawName is kept ONLY for historical people with no
+    // portal profile (21 years of legacy data includes retired/departed
+    // faculty); matching a record to a profile clears it — never both.
+    // Year is "YYYY-YY"; Quarter is blank, 'AY', or slash-joined quarters
+    // (e.g. "Fall/Winter"). Odd legacy Quarter values are shunted into
+    // Notes at import. Meta columns filled by DataService.
+    headers: ['AssignmentID', 'PersonEmail', 'RawName', 'CategoryKey',
+              'Role', 'Year', 'Quarter', 'Notes',
+              'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
+  SERVICE_CORRECTIONS: {
+    tab: 'ServiceCorrections',
+    // Department Service — correction requests against the service record.
+    // This row is the AUTHORITATIVE record; the staff-pool Task created
+    // alongside it is a pointer (Tasks stores routing, never business
+    // data). Replaces the legacy write-only Corrections sheet: requests
+    // now surface on staff dashboards and are resolved explicitly.
+    // CategoryLabel is the requester's free text; CategoryKey is filled
+    // only when it resolves to a catalog entry. Resolving a request is
+    // separate from making the actual record fix (a deliberate
+    // add/edit/delete of an assignment). Meta columns via DataService.
+    headers: ['CorrectionID', 'PersonEmail', 'Year', 'CategoryKey',
+              'CategoryLabel', 'Role', 'Quarter', 'Note', 'Status',
+              'ResolvedBy', 'ResolvedAt', 'ResolutionNote',
+              'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
+  SERVICE_NOMINATIONS: {
+    tab: 'ServiceNominations',
+    // Department Service — ranked self-nomination preferences for a target
+    // academic year. All-authenticated (PersonEmail only; no RawName path).
+    // Priority is the person's own ranking (1 = first choice) among their
+    // OPEN nominations for that year; it informs the super admin's
+    // assignment decisions but is NOT a guarantee. Status: OPEN →
+    // WITHDRAWN (by the nominator while the window is open) or ACCEPTED /
+    // DECLINED (super admin; accepting creates the proposed next-year
+    // assignment). DecisionNote is internal — never shown to the
+    // nominator. Meta columns filled by DataService.
+    headers: ['NominationID', 'PersonEmail', 'Year', 'CategoryKey', 'Role',
+              'Quarter', 'Priority', 'Note', 'Status',
+              'DecidedBy', 'DecidedAt', 'DecisionNote',
+              'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
+  SERVICE_SETTINGS: {
+    tab: 'ServiceSettings',
+    // Department Service — UI-managed operational settings (key/value),
+    // mirroring ThesisSettings / TranscriptSettings. NOMINATIONS_OPEN is
+    // the staff-facing window toggle (super_admin-controlled in this
+    // module); NOMINATION_YEAR is the target academic year locked in when
+    // the window is opened, so a window that straddles July 1 keeps
+    // targeting the year it was opened for.
+    headers: ['Key', 'Value'],
+    seed: [
+      ['NOMINATIONS_OPEN', 'FALSE'],
+    ],
+  },
+
   PERSON_ATTRIBUTES: {
     tab: 'PersonAttributes',
     // Academic Personnel module — tall, namespaced person-attribute table.
@@ -428,8 +508,16 @@ const SETUP_SCHEMA = {
     // AutoMatched — 'TRUE' when the division anchors were filled in by the
     //   automatic title match rather than chosen by hand. A hand-picked anchor
     //   is never overwritten by a later auto-match.
+    //
+    // ProposedDates — JSON: the department's WORKING schedule, proposed by a
+    //   super admin against the computed baseline, keyed by timeline then
+    //   step, e.g. {"merit":{"vote":"2026-11-04"},"major":{...}}. The
+    //   computed dates remain the visible baseline; a proposed date is what
+    //   flows into drafting-task deadlines. The division submission deadline
+    //   is immutable — never proposed against, never stored here.
     headers: ['CycleID', 'AcademicYear', 'MeritDeadlineID', 'MajorDeadlineID',
               'LettersDueDeadlineID', 'LettersDueDate', 'AutoMatched',
+              'ProposedDates',
               'Notes', 'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
     seed: [],
   },
@@ -441,6 +529,44 @@ const SETUP_SCHEMA = {
     // process without a code change. A missing key falls back to the CONFIG
     // default, so an empty tab behaves exactly as before.
     headers: ['Key', 'Value', 'Notes', 'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
+  COMPONENTS: {
+    tab: 'Components',
+    // Academic Personnel — the drafting units of a case. A ladder case is
+    // assessed on research and on teaching/service separately, so it has two;
+    // teaching-professor and lecturer cases are assessed as a whole, so they
+    // have one. Components are generated with the case, from the candidate's
+    // series (CONFIG.PERSONNEL.COMPONENTS_BY_SERIES).
+    //
+    // Identity is (CaseID, ComponentType). AssignedTo is a committee member's
+    // email — the pool comes from the personnel_committee role, which the
+    // Service module maintains and we read through Auth. TaskID is the queue
+    // entry created for the assignee; it is resolved when the draft is marked
+    // done, so the task never outlives the work.
+    //
+    //   Status — 'unassigned' → 'assigned' → 'drafted'.
+    //   DueAt  — copied from the schedule's drafts-due date when assigned, so
+    //            the assignee's task carries a real deadline.
+    headers: ['ComponentID', 'CaseID', 'ComponentType',
+              'AssignedTo', 'AssignedAt', 'AssignedBy',
+              'Status', 'DueAt', 'TaskID',
+              'DraftedAt', 'DraftedBy', 'Notes',
+              'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
+  COMMUNICATIONS_LOG: {
+    tab: 'CommunicationsLog',
+    // Academic Personnel — one row per communication that left the module,
+    // whether SENT through the portal or COPIED into the sender's own mail
+    // client. The answer, six months on, to "did we tell the committee about
+    // the deadline change?". Body is stored in full — a small department's
+    // volume makes that cheap, and a log without the words is half a log.
+    //   Kind   — assignments / schedule / policy.
+    //   Method — 'sent' (via Notify) or 'copied' (into the user's client;
+    //            logged on copy, so it records intent-to-send).
+    headers: ['LogID', 'Kind', 'AcademicYear', 'Recipient', 'Subject', 'Body',
+              'Method', 'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
     seed: [],
   },
   REVIEW_HISTORY: {
@@ -485,6 +611,7 @@ function setUp() {
   const classScheduleSS = _resolveSpreadsheet(CONFIG.SHEETS.CLASS_SCHEDULE, 'Portal Class Schedule',         'CLASS_SCHEDULE');
   const indStudiesSS = _resolveSpreadsheet(CONFIG.SHEETS.INDIVIDUAL_STUDIES, 'Portal Individual Studies',     'INDIVIDUAL_STUDIES');
   const personnelSS = _resolveSpreadsheet(CONFIG.SHEETS.PERSONNEL,  'Portal Academic Personnel',             'PERSONNEL');
+  const serviceSS = _resolveSpreadsheet(CONFIG.SHEETS.SERVICE,      'Portal Department Service',             'SERVICE');
 
   // Config spreadsheet gets Users, Roles, Modules, Requests tabs
   _setupTab(usersSS, SETUP_SCHEMA.USERS);
@@ -530,9 +657,19 @@ function setUp() {
   _setupTab(personnelSS, SETUP_SCHEMA.PERSON_ATTRIBUTES);
   _setupTab(personnelSS, SETUP_SCHEMA.CASES);
   _setupTab(personnelSS, SETUP_SCHEMA.REVIEW_HISTORY);
+  _setupTab(personnelSS, SETUP_SCHEMA.COMPONENTS);
   _setupTab(personnelSS, SETUP_SCHEMA.CYCLES);
   _setupTab(personnelSS, SETUP_SCHEMA.PERSONNEL_SETTINGS);
+  _setupTab(personnelSS, SETUP_SCHEMA.COMMUNICATIONS_LOG);
   _tidyDefaultSheet(personnelSS);
+
+  // Department Service module spreadsheet gets its five tabs
+  _setupTab(serviceSS, SETUP_SCHEMA.SERVICE_CATALOG);
+  _setupTab(serviceSS, SETUP_SCHEMA.SERVICE_ASSIGNMENTS);
+  _setupTab(serviceSS, SETUP_SCHEMA.SERVICE_CORRECTIONS);
+  _setupTab(serviceSS, SETUP_SCHEMA.SERVICE_NOMINATIONS);
+  _setupTab(serviceSS, SETUP_SCHEMA.SERVICE_SETTINGS);
+  _tidyDefaultSheet(serviceSS);
 
   // Submissions spreadsheet: tabs are created per form type on demand,
   // so we just ensure the spreadsheet exists and remove the default
@@ -702,7 +839,11 @@ function checkSetup() {
     ['TRANSCRIPT',   CONFIG.SHEETS.TRANSCRIPT,   [SETUP_SCHEMA.ARTICULATIONS.tab, SETUP_SCHEMA.ARTICULATION_REVIEW.tab, SETUP_SCHEMA.TRANSCRIPTS.tab, SETUP_SCHEMA.TRANSCRIPT_SETTINGS.tab]],
     ['CLASS_SCHEDULE', CONFIG.SHEETS.CLASS_SCHEDULE, [SETUP_SCHEMA.CLASS_SCHEDULE.tab, SETUP_SCHEMA.CLASS_SCHEDULE_IMPORTS.tab]],
     ['INDIVIDUAL_STUDIES', CONFIG.SHEETS.INDIVIDUAL_STUDIES, [SETUP_SCHEMA.INDIVIDUAL_STUDIES.tab, SETUP_SCHEMA.INDIVIDUAL_STUDIES_TEMPLATES.tab]],
-    ['PERSONNEL',    CONFIG.SHEETS.PERSONNEL,    [SETUP_SCHEMA.PERSON_ATTRIBUTES.tab, SETUP_SCHEMA.CASES.tab, SETUP_SCHEMA.REVIEW_HISTORY.tab, SETUP_SCHEMA.CYCLES.tab, SETUP_SCHEMA.PERSONNEL_SETTINGS.tab]],
+    ['PERSONNEL',    CONFIG.SHEETS.PERSONNEL,    [SETUP_SCHEMA.PERSON_ATTRIBUTES.tab, SETUP_SCHEMA.CASES.tab, SETUP_SCHEMA.REVIEW_HISTORY.tab, SETUP_SCHEMA.COMPONENTS.tab, SETUP_SCHEMA.CYCLES.tab, SETUP_SCHEMA.PERSONNEL_SETTINGS.tab, SETUP_SCHEMA.COMMUNICATIONS_LOG.tab]],
+    ['SERVICE',      CONFIG.SHEETS.SERVICE,
+     [SETUP_SCHEMA.SERVICE_CATALOG.tab, SETUP_SCHEMA.SERVICE_ASSIGNMENTS.tab,
+      SETUP_SCHEMA.SERVICE_CORRECTIONS.tab, SETUP_SCHEMA.SERVICE_NOMINATIONS.tab,
+      SETUP_SCHEMA.SERVICE_SETTINGS.tab]],
   ];
   Logger.log('=== Config check ===');
   checks.forEach(([key, id, tabs]) => {
@@ -751,8 +892,15 @@ function _schemaPlacement() {
     { sheetKey: 'PERSONNEL',    def: SETUP_SCHEMA.PERSON_ATTRIBUTES },
     { sheetKey: 'PERSONNEL',    def: SETUP_SCHEMA.CASES },
     { sheetKey: 'PERSONNEL',    def: SETUP_SCHEMA.REVIEW_HISTORY },
+    { sheetKey: 'PERSONNEL',    def: SETUP_SCHEMA.COMPONENTS },
     { sheetKey: 'PERSONNEL',    def: SETUP_SCHEMA.CYCLES },
     { sheetKey: 'PERSONNEL',    def: SETUP_SCHEMA.PERSONNEL_SETTINGS },
+    { sheetKey: 'PERSONNEL',    def: SETUP_SCHEMA.COMMUNICATIONS_LOG },
+    { sheetKey: 'SERVICE',      def: SETUP_SCHEMA.SERVICE_CATALOG },
+    { sheetKey: 'SERVICE',      def: SETUP_SCHEMA.SERVICE_ASSIGNMENTS },
+    { sheetKey: 'SERVICE',      def: SETUP_SCHEMA.SERVICE_CORRECTIONS },
+    { sheetKey: 'SERVICE',      def: SETUP_SCHEMA.SERVICE_NOMINATIONS },
+    { sheetKey: 'SERVICE',      def: SETUP_SCHEMA.SERVICE_SETTINGS },
   ];
 }
 

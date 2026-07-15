@@ -51,8 +51,13 @@ const CONFIG = {
     // Academic Personnel module — its OWN spreadsheet (per-module storage
     // tier). Tabs: PersonAttributes (person-attribute extension table),
     // Cases (review cases from the Call), ReviewHistory (the APO action
-    // ledger + case completions), Cycles (scheduler anchors), Settings.
+    // ledger + case completions), Components (drafting units), Cycles
+    // (scheduler anchors), Settings.
     PERSONNEL:     '1MEE2WYjHddPfEVo7SEOU7tbNp1CFbUM90sFIFkbdPh0',
+    // Service module — its OWN spreadsheet (per-module storage tier).
+    // Owns committee assignment; grants/revokes the personnel_committee
+    // role, which the Academic Personnel module reads via Auth.
+    SERVICE:       '18VWph7a3gVZwWve0pq_Lhm8olQuf2yI_yZQHWkot3lU',
     // Platform-wide calendar with deadlines.
     CALENDAR:      '1WvFofmDCWm1QbxBjtMtUSAtLoURc-PJFUt2lg7pu_rI',
   },
@@ -111,6 +116,8 @@ const CONFIG = {
     REVIEW_HISTORY:    'ReviewHistory',
     CYCLES:            'Cycles',
     PERSONNEL_SETTINGS:'Settings',
+    COMPONENTS:        'Components',
+    COMMUNICATIONS_LOG:'CommunicationsLog',
   },
 
   // ── Storage convention (three tiers) ───────────────────────
@@ -333,10 +340,13 @@ const CONFIG = {
     //   MA   — mandatory review (reserved; not in current data)
     REVIEW_ACTION_CODES: ['IAP', 'MI', 'PR', 'SI', 'REMI', 'RESI', 'MD', 'MA'],
 
-    // Drive folder id for exports (Anticipated Call → Google Sheets). Leave
-    // blank to create exports in the user's Drive root. Set this to a folder
-    // id to keep exports organized in one place.
-    EXPORT_FOLDER_ID: '',
+    // Drive folder where the module's Google Sheets exports are filed —
+    // the Anticipated Call, the committee workload/assignments workbook,
+    // and the cycle schedule. Blank would drop them in the creator's My
+    // Drive root; this is the Academic Personnel module's own Drive
+    // folder, keeping its exports separate from the platform's
+    // spreadsheets (which setUp() files under SETUP_FOLDER_ID).
+    EXPORT_FOLDER_ID: '1Pj57fGjeleohOB08ujmaCkTAeFC8Qed0',
 
     // ── Eligibility clock ──────────────────────────────────────
     // ADVANCEMENT_CODES: actions constituting a POSITIVE ADVANCEMENT, which
@@ -363,6 +373,84 @@ const CONFIG = {
       salary_increase_only: 'SI',
       promotion:            'PR',
       midcareer:            'MD',
+    },
+
+    // ── Review components (the drafting units) ─────────────────
+    // A case is split into the pieces of the assessment that get drafted, and
+    // each piece is assigned to a committee member. What the pieces are
+    // depends on the candidate's series: the ladder is reviewed on research
+    // and on teaching/service separately, while the teaching-professor and
+    // lecturer series are assessed as a single whole.
+    COMPONENT_TYPES: {
+      research:         { label: 'Research' },
+      teaching_service: { label: 'Teaching & Service' },
+      combined:         { label: 'Combined assessment' },
+    },
+
+    // series -> the components a case in that series generates. Components are
+    // created with the case; changing this affects only cases made afterward.
+    COMPONENTS_BY_SERIES: {
+      ladder:   ['research', 'teaching_service'],
+      teaching: ['combined'],
+      lecturer: ['combined'],
+    },
+
+    // The role whose holders may be assigned drafting work. Maintained by the
+    // Service module (it owns committee assignment) and read here through the
+    // platform — Auth.usersWithRole(). Personnel never writes it.
+    COMMITTEE_ROLE: 'personnel_committee',
+
+    // How a drafting assignment appears in the assignee's task queue.
+    //   staleAfterDays — flag a draft as neglected after this long untouched.
+    DRAFT_TASK: {
+      sourceType:     'draft_component',
+      staleAfterDays: 14,
+    },
+
+    // ── Communications (drafting workbench) ────────────────────
+    // Default templates for the Communications tab. These are DEFAULTS —
+    // values saved in the module's Settings tab (Communications → templates)
+    // override them, so wording is tunable in the UI without a code change.
+    // Tokens are filled per recipient at draft time:
+    //   {Name} {FirstName} — the recipient
+    //   {Year}             — the academic year
+    //   {Assignments}      — the member's open drafting assignments w/ dues
+    //   {Schedule}         — the cycle's working schedule (proposed-first)
+    //   {PolicyDocs}       — the policy-reference links (CAP letter, review
+    //                        criteria …) managed in Communications
+    //   {PortalLink}       — deep link into the personnel module
+    // Every draft is editable before sending — templates are starting
+    // points, never auto-sent.
+    COMM_TEMPLATES: {
+      assignments: {
+        label: 'Drafting assignments',
+        subject: 'Your Personnel Committee drafting assignments — {Year}',
+        body: 'Dear {FirstName},\n\n'
+          + 'Thank you for serving on the Personnel Committee. Your drafting assignments for {Year}:\n\n'
+          + '{Assignments}\n\n'
+          + '{PolicyDocs}\n\n'
+          + 'Each assignment also appears in your portal task list with its due date:\n{PortalLink}\n\n'
+          + 'Please let me know of any conflicts.\n\nBest regards',
+      },
+      schedule: {
+        label: 'Cycle schedule & deadlines',
+        subject: 'Personnel review schedule — {Year}',
+        body: 'Dear {FirstName},\n\n'
+          + 'The working schedule for this year\'s personnel reviews:\n\n'
+          + '{Schedule}\n\n'
+          + 'The candidate review windows and the division deadlines are set by policy; the internal dates '
+          + 'are the department\'s working plan.\n\n'
+          + 'Portal: {PortalLink}\n\nBest regards',
+      },
+      policy: {
+        label: 'Policy / process notice',
+        subject: 'Personnel review process — a reminder',
+        body: 'Dear {FirstName},\n\n'
+          + '(Write the policy or process notice here — for example, the candidate\'s right to review '
+          + 'material added to the file before the faculty vote.)\n\n'
+          + '{PolicyDocs}\n\n'
+          + 'Portal: {PortalLink}\n\nBest regards',
+      },
     },
 
     // ── In-session scheduling ──────────────────────────────────
