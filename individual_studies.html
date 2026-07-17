@@ -1,1915 +1,1854 @@
-<!-- individual_studies.html — Undergraduate Individual Studies module UI -->
-<!-- Server-rendered: currentUser and userRoles are available as template vars -->
+// ============================================================
+// IndividualStudiesModule.gs — Undergraduate Individual Studies (server)
+// ============================================================
+// A two-hop workflow module for the UCSC Anthropology petition for
+// undergraduate individual studies (ANTH 197/197F/198/198F/198G/199/199F).
+// One petition per (student, term, instructor, course):
+//
+//   SUBMITTED ─ sponsor ─┬─ Approve ──────────► PENDING_ADVISOR
+//                        └─ Return ───────────► RETURNED
+//   PENDING_ADVISOR ─ advisor ─┬─ Complete ───► COMPLETE   (terminal; PDF generated)
+//                              └─ Return ──────► SUBMITTED  (to sponsor; decision cleared)
+//   RETURNED ─ student resubmits ─────────────► SUBMITTED  (same record)
+//
+// Returns to the STUDENT happen only at the sponsor stage; the advisor
+// returns to the SPONSOR, never directly to the student. Mirrors the
+// Thesis module's correction-loop shape, minus the honors/reader branch.
+//
+// DESIGN NOTES (platform contracts honored here):
+//   - Identity is NOT copied onto the record. StudentEmail / SponsorEmail
+//     are routing keys; names and Student ID are read from Auth at display
+//     time. Petition-specific facts not on the profile (college,
+//     major status, class level) ARE stored on the record — they are not
+//     platform identity.
+//   - One study per petition; a student may file several. Duplicate guard
+//     is the four-part key (student, term, instructor, course): an exact
+//     collision is blocked.
+//   - Class numbers come from the ClassSchedule SERVICE (findPreassigned /
+//     availablePool / reassignable). The advisor confirms an auto-prefilled
+//     pre-assignment, or assigns from the pool, or reassigns a
+//     non-sponsoring instructor's number (with confirmation).
+//   - The >7-credit "Major Department Approval" is the advisor's: the credit
+//     total is computed ACROSS the student's individual-studies petitions
+//     for the term, surfaced at the advisor stage.
+//   - The canonical PDF is generated ONCE, at COMPLETE, via ReportService
+//     (campus-form layout, name/email/timestamp in lieu of signatures). No
+//     upload anywhere. The student is granted document-level view on the
+//     archived file; folder-level faculty/advisor access is managed in Drive
+//     outside the module.
+//   - Cross-cutting concerns go through platform services: Tasks, Notify,
+//     EventBus, Auth, DataService, ReportService. No SpreadsheetApp here.
+//   - Every privileged action allows super_admin.
+//
+// REGISTRATION (Code.gs): add IndividualStudiesModule to getModuleHandler()
+//   and getRegisteredHandlers(), and add the Modules-sheet row (Admin →
+//   Modules). Keep both commented until this file ships.
+// ============================================================
 
-<div id="is-module">
+const IndividualStudiesModule = (() => {
 
-  <!-- Tab bar — tabs shown/hidden by role -->
-  <div class="module-tabs">
-    <? var isRoles = JSON.parse(userRoles); ?>
-    <? if (isRoles.includes('undergraduate_student') || isRoles.includes('undergraduate_non_major') || isRoles.includes('super_admin')) { ?>
-    <button class="module-tab" data-tab="new" onclick="IndividualStudiesUI.switchTab('new')">
-      <i class="ti ti-file-plus"></i> New Petition
-    </button><button class="module-tab" data-tab="mine" onclick="IndividualStudiesUI.switchTab('mine')">
-      <i class="ti ti-list"></i> My Petitions
-    </button> 
-    <? } ?>
-    <? if (isRoles.includes('individual_studies_sponsor') || isRoles.includes('super_admin')) { ?>
-    <button class="module-tab" data-tab="review" onclick="IndividualStudiesUI.switchTab('review')">
-      <i class="ti ti-gavel"></i> Review Queue
-    </button>
-    <button class="module-tab" data-tab="sponsored" onclick="IndividualStudiesUI.switchTab('sponsored')">
-      <i class="ti ti-user-check"></i> Sponsored
-    </button>
-    <button class="module-tab" data-tab="templates" onclick="IndividualStudiesUI.switchTab('templates')">
-      <i class="ti ti-template"></i> My Templates
-    </button>
-    <? } ?>
-    <? if (isRoles.includes('staff_undergrad') || isRoles.includes('super_admin')) { ?>
-    <button class="module-tab" data-tab="advisor" onclick="IndividualStudiesUI.switchTab('advisor')">
-      <i class="ti ti-clipboard-check"></i> Advisor Queue
-    </button>
-    <button class="module-tab" data-tab="settings" onclick="IndividualStudiesUI.switchTab('settings')">
-      <i class="ti ti-settings"></i> Settings
-    </button>
-    <button class="module-tab" data-tab="schedule" onclick="IndividualStudiesUI.switchTab('schedule')">
-      <i class="ti ti-table-import"></i> Class Schedule
-    </button>
-    <? } ?>
-  </div>
+  const MODULE = 'individual_studies';
+  const TAB    = function () { return CONFIG.TABS.INDIVIDUAL_STUDIES || 'Petitions'; };
+  const SHEET  = function () { return CONFIG.SHEETS.INDIVIDUAL_STUDIES; };
+  const TPL_TAB = function () { return CONFIG.TABS.INDIVIDUAL_STUDIES_TEMPLATES || 'Templates'; };
+  const SETTINGS_TAB = function () { return CONFIG.TABS.INDIVIDUAL_STUDIES_SETTINGS || 'PetitionSettings'; };
 
-  <!-- ── Tab: My Petitions ───────────────────────────── -->
-  <div id="is-tab-mine" class="tab-panel" style="display:none;">
-    <div class="card" style="margin-top:20px;">
-      <div class="card-title" style="justify-content:space-between;">
-        <span><i class="ti ti-list"></i> My Petitions</span>
-        <button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.loadMine()" aria-label="Refresh"><i class="ti ti-refresh"></i></button>
-      </div>
-      <div id="is-mine-list"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
-    </div>
-  </div>
+  // ============================================================
+  // Tab manifest — consumed by TabRegistry (Admin → Modules → Tabs)
+  // ============================================================
+  // Default roles mirror today's tab-bar role gates; super_admin is implicit
+  // on every tab (super sees all enabled tabs). `floor` is the Phase-2 hard
+  // minimum — declared now, enforced later. `actions` documents which
+  // dispatchables each tab drives; in Phase 1 they are NOT enforced from here
+  // — every action keeps its own permission checks in this module regardless
+  // of tab visibility (a visible tab is not a grant).
+  //
+  // Two notes specific to this module:
+  //   • Unlike Transcript, there is NO plain-staff back door: _assertAdvisor
+  //     admits only staff_undergrad and super_admin, so widening advisor/
+  //     settings/schedule to `staff` in the Tabs editor would show tabs whose
+  //     every action throws. Widen to staff_undergrad instead.
+  //   • Modal actions (get, withdraw, requestRoomAccess, saveAsTemplate,
+  //     deletePetition) fire from the detail modal reachable from any list;
+  //     each is listed under its most natural tab. Phase 2 should treat an
+  //     action as permitted if ANY visible tab owns it.
+  const TABS = [
+    { key: 'new', label: 'New Petition', icon: 'ti-file-plus',
+      roles: ['undergraduate_student', 'undergraduate_non_major'],
+      actions: ['formData', 'submit', 'templatesForSponsor'] },
+    { key: 'mine', label: 'My Petitions', icon: 'ti-list',
+      roles: ['undergraduate_student', 'undergraduate_non_major'],
+      actions: ['mine', 'get', 'withdraw'] },
+    { key: 'review', label: 'Review Queue', icon: 'ti-gavel',
+      roles: ['individual_studies_sponsor'],
+      actions: ['sponsorQueue', 'sponsorApprove', 'sponsorReturn', 'requestRoomAccess'] },
+    { key: 'sponsored', label: 'Sponsored', icon: 'ti-user-check',
+      roles: ['individual_studies_sponsor'],
+      actions: ['sponsored', 'saveAsTemplate'] },
+    { key: 'templates', label: 'My Templates', icon: 'ti-template',
+      roles: ['individual_studies_sponsor'],
+      actions: ['myTemplates', 'saveTemplate', 'setDefaultTemplate', 'deleteTemplate'] },
+    { key: 'advisor', label: 'Advisor Queue', icon: 'ti-clipboard-check',
+      roles: ['staff_undergrad'], floor: 'staff_undergrad',
+      actions: ['advisorQueue', 'advisorContext', 'advisorComplete', 'advisorReturn'] },
+    { key: 'settings', label: 'Settings', icon: 'ti-settings',
+      roles: ['staff_undergrad'], floor: 'staff_undergrad',
+      actions: ['allPetitions', 'remindResponsible', 'getSettings', 'saveSettings', 'deletePetition'] },
+    { key: 'schedule', label: 'Class Schedule', icon: 'ti-table-import',
+      roles: ['staff_undergrad'], floor: 'staff_undergrad',
+      actions: ['importPreview', 'importResolve', 'importCommit', 'importHistory'] },
+  ];
 
-  <!-- ── Tab: New Petition ───────────────────────────── -->
-  <div id="is-tab-new" class="tab-panel" style="display:none;">
-    <div class="card" style="margin-top:20px;">
-      <div class="card-title"><i class="ti ti-file-plus"></i> New Individual Studies Petition</div>
-
-      <!-- Course interceptor: choosing a redirect course (e.g. 195S) swaps in this panel -->
-      <div id="is-redirect-panel" style="display:none;" class="card">
-        <div class="card-title" style="font-size:14px;"><i class="ti ti-info-circle"></i> Handled elsewhere</div>
-        <p id="is-redirect-msg" class="text-muted" style="font-size:13.5px;margin-top:0;"></p>
-        <div id="is-redirect-action"></div>
-      </div>
-
-      <div id="is-form-wrap">
-        <div id="is-form">
-
-          <!-- Term first: the term drives which courses (and their credits) are available -->
-          <div class="form-row">
-            <div class="form-group">
-              <label class="form-label" for="is-term">Term <span class="required">*</span></label>
-              <select class="form-select" id="is-term" name="termCode" onchange="IndividualStudiesUI.onTermChange(this.value)">
-                <option value="">— Select a term —</option>
-              </select>
-              <div class="form-hint">Only terms with an imported class schedule are listed.</div>
-            </div>
-            <div class="form-group">
-              <label class="form-label" for="is-course">Course <span class="required">*</span></label>
-              <select class="form-select" id="is-course" name="course" onchange="IndividualStudiesUI.onCourseChange(this.value)" disabled>
-                <option value="">— Select a term first —</option>
-              </select>
-              <div class="form-hint" id="is-course-hint">Credits are set by the course.</div>
-              <a id="is-course-catalog" href="#" target="_blank" rel="noopener" style="display:none;font-size:12.5px;margin-top:2px;">
-                <i class="ti ti-info-circle"></i> View course description in the catalog
-              </a>
-            </div>
-          </div>
-
-          <div class="form-row">
-            <div class="form-group">
-              <label class="form-label" for="is-sponsor">Faculty sponsor <span class="required">*</span></label>
-              <select class="form-select" id="is-sponsor" name="sponsorEmail" onchange="IndividualStudiesUI.onSponsorChange(this.value)">
-                <option value="">— Select a sponsor —</option>
-              </select>
-              <div class="form-group" id="is-tpl-pick-group" style="display:none;margin-top:8px;margin-bottom:0;">
-                <label class="form-label" for="is-tpl-pick">Start from a template</label>
-                <select class="form-select" id="is-tpl-pick" onchange="IndividualStudiesUI.onTemplatePick(this.value)">
-                  <option value="">— None (start blank) —</option>
-                </select>
-                <div class="form-hint">Optional — pick one to pre-fill the fields below; you can edit anything before submitting.</div>
-              </div>
-            </div>
-            <div class="form-group">
-              <label class="form-label" for="is-grade">Grade option <span class="required">*</span></label>
-              <select class="form-select" id="is-grade" name="gradeOption">
-                <option value="">—</option>
-                <option value="Letter">Letter</option>
-                <option value="Pass/No Pass">Pass / No Pass</option>
-              </select>
-            </div>
-          </div>
-
-          <div class="form-row">
-            <div class="form-group">
-              <label class="form-label" for="is-college">College</label>
-              <select class="form-select" id="is-college" name="college">
-                <option value="">— Select your college —</option>
-                <option value="Cowell">Cowell</option>
-                <option value="Stevenson">Stevenson</option>
-                <option value="Crown">Crown</option>
-                <option value="Merrill">Merrill</option>
-                <option value="Porter">Porter</option>
-                <option value="Kresge">Kresge</option>
-                <option value="Oakes">Oakes</option>
-                <option value="Rachel Carson">Rachel Carson</option>
-                <option value="College Nine">College Nine</option>
-                <option value="John R. Lewis">John R. Lewis</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label class="form-label" for="is-classlevel">Class level</label>
-              <select class="form-select" id="is-classlevel" name="classLevel">
-                <option value="">—</option>
-                <option value="FR">Freshman</option>
-                <option value="SO">Sophomore</option>
-                <option value="JR">Junior</option>
-                <option value="SR">Senior</option>
-              </select>
-            </div>
-          </div>
-
-          <div class="form-group">
-            <label class="form-label" for="is-major">Major status</label>
-            <select class="form-select" id="is-major" name="majorStatus">
-              <option value="">— Select your status —</option>
-              <option value="Declared Major">Declared Major</option>
-              <option value="Proposed Major">Proposed Major</option>
-              <option value="Minor">Minor</option>
-              <option value="Non-Major">Non-Major</option>
-            </select>
-          </div>
-
-          <div class="form-group">
-            <label class="form-label" for="is-site">Study site address</label>
-            <input class="form-input" id="is-site" name="studySiteAddress" placeholder="Where the work takes place">
-          </div>
-
-          <div class="form-group">
-            <label class="form-label" for="is-title">Course title <span class="text-muted">(optional)</span></label>
-            <input class="form-input" id="is-title" name="title" placeholder="A short title for the study">
-          </div>
-          <div class="form-group">
-            <label class="form-label" for="is-desc">Description of proposed course <span class="required">*</span></label>
-            <textarea class="form-textarea" id="is-desc" name="courseDescription" rows="3"></textarea>
-          </div>
-          <div class="form-group">
-            <label class="form-label" for="is-evidence">Evidence of preparation</label>
-            <textarea class="form-textarea" id="is-evidence" name="evidenceOfPreparation" rows="2"
-              placeholder="Prior courses, readings completed, persons contacted"></textarea>
-          </div>
-          <div class="form-group">
-            <label class="form-label" for="is-work">Description of work to be submitted <span class="required">*</span></label>
-            <textarea class="form-textarea" id="is-work" name="workToBeSubmitted" rows="3"></textarea>
-          </div>
-
-          <!-- Syllabus sits right after the work description -->
-          <div class="form-group">
-            <label class="form-label" for="is-syllabus">Syllabus <span class="text-muted">(optional)</span></label>
-            <input class="form-input" type="file" id="is-syllabus" accept=".pdf,application/pdf" onchange="IndividualStudiesUI.onSyllabusChange(event)">
-            <div class="form-hint">Optional supporting document; it will be linked on the completed petition.</div>
-            <div id="is-syllabus-current" class="text-sm text-muted" style="display:none;margin-top:4px;"></div>
-          </div>
-
-          <div class="form-group">
-            <label class="form-label">Hours per week (Senate Regulation 760)</label>
-            <p class="form-hint" id="is-hours-policy" style="margin-top:0;">
-              Select a term and course to see the required weekly hours.
-            </p>
-            <div class="form-row">
-              <div class="form-group">
-                <label class="form-label" for="is-hours-sponsor">With faculty sponsor</label>
-                <input class="form-input" id="is-hours-sponsor" name="hoursWithSponsor" inputmode="numeric"
-                  oninput="IndividualStudiesUI.onHoursChange()">
-              </div>
-              <div class="form-group">
-                <label class="form-label" for="is-hours-indep">Independent <span class="text-muted">(auto)</span></label>
-                <input class="form-input" id="is-hours-indep" name="hoursIndependent" inputmode="numeric" readonly
-                  style="background:var(--color-surface-2,#f4f5f7);">
-              </div>
-            </div>
-            <p class="form-hint" id="is-hours-derived" style="display:none;"></p>
-          </div>
-
-          <div class="form-actions">
-            <button class="btn btn-primary" id="is-submit-btn" onclick="IndividualStudiesUI.submit()">
-              <i class="ti ti-send"></i> Submit petition
-            </button>
-            <button class="btn btn-secondary" onclick="IndividualStudiesUI.resetForm()">Clear</button>
-            <button class="btn btn-secondary" id="is-cancel-resubmit" style="display:none;" onclick="IndividualStudiesUI.cancelResubmit()">Cancel resubmission</button>
-          </div>
-
-          <div id="is-resubmit-banner" class="text-sm text-muted" style="display:none;margin-top:8px;"></div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- ── Tab: Review Queue (sponsor) ─────────────────── -->
-  <div id="is-tab-review" class="tab-panel" style="display:none;">
-    <div class="card" style="margin-top:20px;">
-      <div class="card-title" style="justify-content:space-between;">
-        <span><i class="ti ti-gavel"></i> Petitions awaiting your review</span>
-        <button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.loadReview()" aria-label="Refresh"><i class="ti ti-refresh"></i></button>
-      </div>
-      <div id="is-review-list"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
-    </div>
-  </div>
-
-  <!-- ── Tab: Sponsored (sponsor) ────────────────────── -->
-  <div id="is-tab-sponsored" class="tab-panel" style="display:none;">
-    <div class="card" style="margin-top:20px;">
-      <div class="card-title" style="justify-content:space-between;">
-        <span><i class="ti ti-user-check"></i> Studies I've sponsored</span>
-        <button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.loadSponsored()" aria-label="Refresh"><i class="ti ti-refresh"></i></button>
-      </div>
-      <div class="form-row" style="align-items:flex-end;">
-        <div class="form-group" style="flex:2;">
-          <label class="form-label" for="is-sp-search">Search</label>
-          <input class="form-input" id="is-sp-search" placeholder="Student, course, or term" oninput="IndividualStudiesUI.renderSponsored()">
-        </div>
-        <div class="form-group">
-          <label class="form-label" for="is-sp-stage">Stage</label>
-          <select class="form-select" id="is-sp-stage" onchange="IndividualStudiesUI.renderSponsored()">
-            <option value="">All stages</option>
-            <option value="SUBMITTED">Awaiting sponsor</option>
-            <option value="PENDING_ADVISOR">Awaiting class number</option>
-            <option value="RETURNED">Returned</option>
-            <option value="COMPLETE">Complete</option>
-          </select>
-        </div>
-      </div>
-      <div id="is-sponsored-list"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
-    </div>
-  </div>
-
-  <!-- ── Tab: My Templates (sponsor + super_admin) ───── -->
-  <div id="is-tab-templates" class="tab-panel" style="display:none;">
-    <div class="card" style="margin-top:20px;">
-      <div class="card-title" style="justify-content:space-between;">
-        <span><i class="ti ti-template"></i> My templates</span>
-        <button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.loadTemplates()" aria-label="Refresh"><i class="ti ti-refresh"></i></button>
-      </div>
-      <p class="text-muted" style="font-size:13px;margin-top:0;">
-        Templates pre-fill the petition form for students who choose you as sponsor. The one marked
-        default applies automatically; students can still edit before submitting.
-      </p>
-      <div id="is-tpl-list"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
-      <div class="form-actions" style="margin-top:12px;">
-        <button class="btn btn-primary" onclick="IndividualStudiesUI.newTemplate()"><i class="ti ti-plus"></i> New template</button>
-      </div>
-    </div>
-
-    <div class="card" id="is-tpl-form-card" style="display:none;">
-      <div class="card-title" id="is-tpl-form-title"><i class="ti ti-edit"></i> New template</div>
-      <input type="hidden" id="is-tpl-id">
-
-      <!-- super_admin only: assign to an instructor -->
-      <div class="form-group" id="is-tpl-sponsor-group" style="display:none;">
-        <label class="form-label" for="is-tpl-sponsor">Owner (instructor)</label>
-        <select class="form-select" id="is-tpl-sponsor"><option value="">— Select instructor —</option></select>
-        <div class="form-hint">As a super admin you can create a template on an instructor's behalf.</div>
-      </div>
-
-      <div class="form-row">
-        <div class="form-group" style="flex:2;">
-          <label class="form-label" for="is-tpl-name">Template name <span class="required">*</span></label>
-          <input class="form-input" id="is-tpl-name" placeholder="e.g. Zooarch Lab Internship">
-        </div>
-        <div class="form-group">
-          <label class="form-label" for="is-tpl-course">Course</label>
-          <input class="form-input" id="is-tpl-course" placeholder="e.g. ANTH 197F">
-        </div>
-      </div>
-      <div class="form-group">
-        <label style="display:inline-flex;align-items:center;gap:8px;font-weight:normal;cursor:pointer;">
-          <input type="checkbox" id="is-tpl-default"> Make this my default template
-        </label>
-      </div>
-      <div class="form-group">
-        <label class="form-label" for="is-tpl-title">Course title</label>
-        <input class="form-input" id="is-tpl-title">
-      </div>
-      <div class="form-group">
-        <label class="form-label" for="is-tpl-desc">Description of proposed course</label>
-        <textarea class="form-textarea" id="is-tpl-desc" rows="2"></textarea>
-      </div>
-      <div class="form-group">
-        <label class="form-label" for="is-tpl-evidence">Evidence of preparation</label>
-        <textarea class="form-textarea" id="is-tpl-evidence" rows="2"></textarea>
-      </div>
-      <div class="form-group">
-        <label class="form-label" for="is-tpl-work">Description of work to be submitted</label>
-        <textarea class="form-textarea" id="is-tpl-work" rows="2"></textarea>
-      </div>
-      <div class="form-row">
-        <div class="form-group">
-          <label class="form-label" for="is-tpl-grade">Grade option</label>
-          <select class="form-select" id="is-tpl-grade">
-            <option value="">—</option>
-            <option value="Letter">Letter</option>
-            <option value="Pass/No Pass">Pass / No Pass</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label class="form-label" for="is-tpl-hours">Hours/week with sponsor</label>
-          <input class="form-input" id="is-tpl-hours" inputmode="numeric">
-        </div>
-      </div>
-      <div class="form-group">
-        <label style="display:inline-flex;align-items:center;gap:8px;font-weight:normal;cursor:pointer;">
-          <input type="checkbox" id="is-tpl-report" onchange="IndividualStudiesUI.onTplReportToggle()"> A written report is required before credit
-        </label>
-      </div>
-      <div class="form-group" id="is-tpl-report-due-group" style="display:none;">
-        <label class="form-label" for="is-tpl-report-due">Last day to receive the report</label>
-        <input class="form-input" id="is-tpl-report-due" placeholder="e.g. last day of instruction">
-      </div>
-      <div class="form-group">
-        <label class="form-label" for="is-tpl-room">Room / lab space (for access requests)</label>
-        <input class="form-input" id="is-tpl-room" placeholder="Leave blank if none">
-      </div>
-      <div class="form-actions">
-        <button class="btn btn-primary" id="is-tpl-save-btn" onclick="IndividualStudiesUI.saveTemplate()"><i class="ti ti-check"></i> Save template</button>
-        <button class="btn btn-secondary" onclick="IndividualStudiesUI.cancelTemplate()">Cancel</button>
-      </div>
-    </div>
-  </div>
-
-  <div id="is-tab-advisor" class="tab-panel" style="display:none;">
-    <div class="card" style="margin-top:20px;">
-      <div class="card-title" style="justify-content:space-between;">
-        <span><i class="ti ti-clipboard-check"></i> Petitions awaiting class numbers</span>
-        <button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.loadAdvisor()" aria-label="Refresh"><i class="ti ti-refresh"></i></button>
-      </div>
-      <p class="text-muted" style="font-size:13px;margin-top:0;">
-        For each: confirm the pre-assigned class number or assign one, authorize any over-limit credit load, and complete.
-      </p>
-      <div id="is-advisor-list"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
-    </div>
-  </div>
-
-  <!-- ── Tab: All Petitions (advisor + super_admin) ──── -->
-  <div id="is-tab-settings" class="tab-panel" style="display:none;">
-    <div class="card" style="margin-top:20px;">
-      <div class="card-title" style="justify-content:space-between;">
-        <span><i class="ti ti-list-search"></i> All petitions</span>
-        <button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.loadAll()" aria-label="Refresh"><i class="ti ti-refresh"></i></button>
-      </div>
-      <div class="form-row" style="align-items:flex-end;">
-        <div class="form-group" style="flex:2;">
-          <label class="form-label" for="is-all-search">Search</label>
-          <input class="form-input" id="is-all-search" placeholder="Student, course, term, or sponsor" oninput="IndividualStudiesUI.renderAll()">
-        </div>
-        <div class="form-group">
-          <label class="form-label" for="is-all-stage">Stage</label>
-          <select class="form-select" id="is-all-stage" onchange="IndividualStudiesUI.renderAll()">
-            <option value="">All stages</option>
-            <option value="SUBMITTED">Awaiting sponsor</option>
-            <option value="PENDING_ADVISOR">Awaiting class number</option>
-            <option value="RETURNED">Returned</option>
-            <option value="COMPLETE">Complete</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label class="form-label" for="is-all-term">Term</label>
-          <select class="form-select" id="is-all-term" onchange="IndividualStudiesUI.renderAll()">
-            <option value="">All terms</option>
-          </select>
-        </div>
-      </div>
-      <div id="is-all-list"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
-    </div>
-
-    <!-- ── Student notifications (editable message templates) ── -->
-    <div class="card">
-      <div class="card-title"><i class="ti ti-mail"></i> Student notifications</div>
-      <p class="text-sm text-muted" style="margin-bottom:14px;">
-        The message emailed to a student when their petition is returned for revision
-        or completed. Tokens <code>{FirstName}</code> and <code>{Course}</code> are filled
-        in automatically. The essentials are always appended below the message and cannot
-        be edited away: the class number and enrollment instructions, your note to the
-        student, and the PDF link (completion); the sponsor's return note and the
-        resubmission link (returned).
-      </p>
-      <div id="is-notify-settings">
-        <div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>
-      </div>
-    </div>
-
-    <!-- ── Direct link to the student petition form ── -->
-    <div id="is-deeplink-card"></div>
-  </div>
-
-  <!-- ── Tab: Class Schedule (advisor import) ────────── -->
-  <div id="is-tab-schedule" class="tab-panel" style="display:none;">
-    <div class="card" style="margin-top:20px;">
-      <div class="card-title"><i class="ti ti-table-import"></i> Import class schedule</div>
-      <p class="text-muted" style="font-size:13px;margin-top:0;">
-        Upload the registrar's "Schedule of Classes — Independent Studies" export (CSV) for a term.
-        Instructors are matched to profiles; unmatched rows can be bound here, which adds the spelling
-        to that person's alternate names for next time. Committing replaces the whole term's table.
-      </p>
-      <div class="form-group">
-        <label class="form-label" for="is-csv">Schedule CSV</label>
-        <input class="form-input" type="file" id="is-csv" accept=".csv,text/csv" onchange="IndividualStudiesUI.onCsvChange(event)">
-        <div class="form-error" id="is-csv-error"></div>
-      </div>
-      <div class="form-actions">
-        <button class="btn btn-primary" id="is-preview-btn" onclick="IndividualStudiesUI.previewImport()">
-          <i class="ti ti-eye"></i> Preview
-        </button>
-      </div>
-      <div id="is-import-preview" style="margin-top:14px;"></div>
-    </div>
-
-    <div class="card">
-      <div class="card-title" style="justify-content:space-between;">
-        <span><i class="ti ti-history"></i> Import history</span>
-        <button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.loadImportHistory()" aria-label="Refresh"><i class="ti ti-refresh"></i></button>
-      </div>
-      <div id="is-import-history"><div class="empty-state">No imports yet.</div></div>
-    </div>
-  </div>
-
-  <!-- Detail / action modal -->
-  <div id="is-modal" class="is-modal" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="is-modal-title">
-    <div class="is-modal-card card">
-      <div class="card-title" style="justify-content:space-between;">
-        <span id="is-modal-title">Petition</span>
-        <button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.closeModal()" aria-label="Close dialog"><i class="ti ti-x"></i></button>
-      </div>
-      <div id="is-modal-body"></div>
-    </div>
-  </div>
-
-  <!-- Busy overlay -->
-  <div id="is-busy" class="is-busy" style="display:none;">
-    <div class="is-busy-box" role="status" aria-live="polite">
-      <div class="spinner"></div>
-      <span id="is-busy-msg">Working…</span>
-    </div>
-  </div>
-
-</div>
-
-<style>
-  .is-modal {
-    position: fixed; inset: 0; background: rgba(0,0,0,0.4);
-    display: flex; align-items: flex-start; justify-content: center;
-    padding: 40px 16px; z-index: 1000; overflow-y: auto;
-  }
-  .is-modal-card { max-width: 660px; width: 100%; margin: 0; }
-  .is-detail-grid { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; font-size: 13.5px; margin: 4px 0 16px; }
-  .is-detail-grid dt { color: var(--color-muted); }
-  .is-detail-grid dd { margin: 0; }
-  .is-busy {
-    position: fixed; inset: 0; background: rgba(255,255,255,0.75);
-    display: flex; align-items: center; justify-content: center; z-index: 1100;
-  }
-  .is-busy-box {
-    display: flex; align-items: center; gap: 12px;
-    background: var(--color-surface); border: 1px solid var(--color-border);
-    border-radius: var(--radius); box-shadow: var(--shadow-pop);
-    padding: 16px 22px; font-size: 14px;
-  }
-  .is-credit-warn {
-    background: #fff7e6; border: 1px solid #f0c36d; border-radius: var(--radius);
-    padding: 10px 12px; font-size: 13px; margin: 8px 0;
-  }
-  .is-classnum-opt {
-    border: 1px solid var(--color-border); border-radius: var(--radius);
-    padding: 8px 10px; margin: 6px 0; font-size: 13px;
-  }
-  /* Section list: unassigned (Staff) rows highlighted as the ready-to-take pool */
-  .is-section { display:flex; align-items:center; justify-content:space-between; gap:10px;
-    border:1px solid var(--color-border); border-radius: var(--radius); padding:7px 10px; margin:5px 0; font-size:13px; }
-  .is-section.is-unassigned { background:#eaf7ee; border-color:#9ed3b0; }
-  .is-section .is-section-meta { color: var(--color-muted); font-size:12px; }
-</style>
-
-<script>
-window.IndividualStudiesUI = (() => {
-
-  const _roles = <?!= userRoles ?>;
-  const _me    = <?!= JSON.stringify(currentUser) ?>;
-  const _isStudent = _roles.indexOf('undergraduate_student') !== -1 || _roles.indexOf('undergraduate_non_major') !== -1;
-  const _isSponsor = _roles.indexOf('individual_studies_sponsor') !== -1;
-  const _isAdvisor = _roles.indexOf('staff_undergrad') !== -1;
-  const _isSuper   = _roles.indexOf('super_admin') !== -1;
-
-  const STAGE_META = {
-    SUBMITTED:       { cls: 'badge-navy',    label: 'Awaiting sponsor' },
-    PENDING_ADVISOR: { cls: 'badge-warning', label: 'Awaiting class number' },
-    RETURNED:        { cls: 'badge-danger',  label: 'Returned for revision' },
-    COMPLETE:        { cls: 'badge-success', label: 'Complete' },
+  // Student-notification message templates (UI-managed in the Settings tab,
+  // stored key/value in PetitionSettings — mirrors TranscriptSettings).
+  // The template is the MESSAGE ONLY; the structural, load-bearing lines
+  // (class number + enrollment instructions, advisor note, PDF link, return
+  // note, portal links) are appended in code and cannot be edited away.
+  // Tokens {FirstName} and {Course} are filled at send time. These defaults
+  // reproduce the module's original wording and also serve as the fallback
+  // when the settings tab doesn't exist yet or a value is blank.
+  const NOTIFY_DEFAULTS = {
+    NOTIFY_COMPLETE: 'Your {Course} individual-studies petition is complete.',
+    NOTIFY_RETURNED: 'Your {Course} petition was returned for revision.',
   };
 
-  let _formData = null;       // bootstrap (terms[with courses], sponsors, redirect)
-  let _allRows = [];          // cached allPetitions for client filter/sort
-  let _sponsoredRows = [];    // cached sponsored for client filter/sort
-  let _sortAll = { key: 'created', dir: 'desc' };
-  let _sortSponsored = { key: 'created', dir: 'desc' };
-  let _termsByCode = {};      // termCode -> { label, courses:[{course,credits}] }
-  let _resubmitId = null;
-  let _syllabus = null;       // { syllabusBase64, syllabusName, syllabusMimeType } for the next submit
-  let _sponsorTemplates = []; // templates for the currently-selected sponsor
-  let _carriedReport = null;  // { required, dueText } carried silently from a template (student never sees it)
-  let _csvPayload = null;     // { csvBase64 }
-  let _preview = null;        // parsed import preview being resolved
-  let _lastFocus = null;
-  let _lastDetailRec = null;  // record currently shown in the detail modal (for prefills)
+  const STAGE = {
+    SUBMITTED:       'SUBMITTED',
+    PENDING_ADVISOR: 'PENDING_ADVISOR',
+    RETURNED:        'RETURNED',
+    COMPLETE:        'COMPLETE',
+  };
 
-  function esc(s) {
-    return String(s == null ? '' : s)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  // The undergraduate advisor role — the shared-pool assignee for the
+  // advisor stage and the major-approval owner. Role-derived, not a fixed
+  // address (zero, one, or several holders).
+  const ADVISOR_ROLE = 'staff_undergrad';
+
+  // A sponsor can request room/lab-space access for any petition (at approval
+  // or later from the detail view); facilities staff are tasked + emailed so
+  // they can program access. Role-resolved, not a fixed address.
+  const FACILITIES_ROLE = 'staff_facilities';
+
+  // Identity role whose active holders may sponsor an individual study.
+  // Assigned per-instructor in Admin -> Users (faculty status alone does
+  // not qualify), mirroring the thesis module's role-based eligibility.
+  const SPONSOR_ROLE = 'individual_studies_sponsor';
+
+  // Roles that may enter the module as petition-filing students.
+  const STUDENT_ROLES = ['undergraduate_student', 'undergraduate_non_major'];
+
+  // Undergraduate individual-studies courses this module handles. 195S is
+  // deliberately excluded (it belongs to the Thesis module). Units are not
+  // hard-coded — the course's credit value is read from the petition.
+  const COURSES = ['ANTH 197', 'ANTH 197F', 'ANTH 198', 'ANTH 198F', 'ANTH 198G', 'ANTH 199', 'ANTH 199F'];
+
+  // Course handled elsewhere — used by the UI interceptor (see formData).
+  const REDIRECT_COURSES = {
+    'ANTH 195S': { module: 'thesis', label: 'Senior Thesis (ANTH 195S) is handled in the Thesis module.' },
+  };
+
+  const GRADE_OPTIONS = ['Letter', 'Pass/No Pass'];
+
+  // The campus rule: more than 7 special-study credits in a term needs
+  // department (advisor) authorization.
+  const SPECIAL_STUDY_CREDIT_CAP = 7;
+
+  const SOURCE_TYPE = 'individual_studies_petition';
+
+  // Senate Regulation 760: 1 credit = 30 hours of work over the term. Weekly
+  // load = (30 x credits) / weeks. Regular quarters run 10 weeks; summer is
+  // compressed to 5. The total is fixed by policy — students and sponsors
+  // only set the split (with-sponsor vs. independent); independent is the
+  // remainder. Summer is detected from the term code's quarter digit.
+  const SR760_HOURS_PER_CREDIT = 30;
+  function _termWeeks(termCode) {
+    try { return ClassSchedule.decodeTermCode(termCode).quarter === 'Summer' ? 5 : 10; }
+    catch (e) { return 10; }
   }
-
-  function _busy(msg) {
-    const m = document.getElementById('is-busy-msg');
-    if (m) m.textContent = msg || 'Working…';
-    const el = document.getElementById('is-busy');
-    if (el) el.style.display = 'flex';
+  function _weeklyHoursTotal(credits, termCode) {
+    const c = Number(credits);
+    if (!isFinite(c) || c <= 0) return 0;
+    const weeks = _termWeeks(termCode);
+    return Math.round((SR760_HOURS_PER_CREDIT * c) / weeks);   // 3*cr normal, 6*cr summer
   }
-  function _idle() {
-    const el = document.getElementById('is-busy');
-    if (el) el.style.display = 'none';
-  }
-
-  // ── Init: pick default tab by role, wire deep-link ──
-  function init() {
-    // Deep-link target from the shell (?page=individual_studies&focus=…):
-    //   'form' → the student's New Petition form (standardized token, used
-    //            by the Settings tab's shareable link)
-    //   other  → a petition id; opens its detail modal below
-    const f = window.__focus;
-    const target = f && f.sourceId ? String(f.sourceId) : '';
-
-    if (_isStudent) {
-      _busy('Loading petition form…');
-      _loadFormData(function () {
-        loadMine(function (rows) {
-          _idle();
-          if (target === 'form') switchTab('new');
-          else switchTab(rows && rows.length ? 'mine' : 'new');
-        });
-      });
-    } else if (_isSponsor) {
-      switchTab('review');
-    } else if (_isAdvisor) {
-      switchTab('advisor');
-    } else if (_isSuper) {
-      switchTab('advisor');
+  /**
+   * Validates and normalizes the hours split against the SR 760 total.
+   * Returns { withSponsor, independent } where independent = total - withSponsor.
+   * Throws if with-sponsor is negative or exceeds the policy total.
+   */
+  function _resolveHoursSplit(withSponsorRaw, credits, termCode) {
+    const total = _weeklyHoursTotal(credits, termCode);
+    const ws = Number(String(withSponsorRaw == null ? '' : withSponsorRaw).trim() || 0);
+    if (!isFinite(ws) || ws < 0) throw new Error('Enter a valid number of hours with the sponsor.');
+    if (ws > total) {
+      throw new Error('Hours with the sponsor (' + ws + ') cannot exceed the ' + total +
+        ' hours/week total required for ' + credits + ' credits (Senate Regulation 760).');
     }
+    return { withSponsor: ws, independent: total - ws, total: total };
+  }
 
-    if (target && target !== 'form') {
-      _busy('Loading petition…');
-      App.call('individual_studies', 'get', { petitionId: target }, function (rec) {
-        _idle();
-        _openDetail(rec);
-      }, function () { _idle(); });
+  // Room-access tasks use a distinct source type + id suffix so the normal
+  // workflow's Tasks.resolveForSource(petitionId) calls never resolve them.
+  const ROOM_ACCESS_SOURCE_TYPE = 'individual_studies_room_access';
+  function _roomAccessSourceId(petitionId) { return String(petitionId) + ':room'; }
+
+
+  // ============================================================
+  // STUDENT ACTIONS
+  // ============================================================
+
+  /**
+   * Bootstrap data for the New Petition form. Term-first and schedule-
+   * driven: the only terms offered are those with an imported schedule, and
+   * each term's courses (with their credit values) come from that schedule —
+   * a student can only file for a term/course the registrar has published
+   * and the advisor has imported. Also returns eligible sponsors, grade
+   * options, the student's identity prefill, and the 195S redirect config.
+   *
+   * Shape:
+   *   terms:   [{ term: '2258', label: 'Fall 2025', quarter, year,
+   *               courses: [{ course:'ANTH 198', credits:5 }, ...] }]
+   */
+  function formData(payload, user, roles) {
+    const profile = Auth.getProfile(user) || {};
+    let terms = [];
+    try {
+      terms = ClassSchedule.availableTerms().map(t => {
+        const courses = ClassSchedule.coursesForTerm(t.term, { allowlist: COURSES })
+          // Drop courses with no resolvable credit value (nothing to file against).
+          .filter(c => c.credits !== null && c.credits !== undefined)
+          // Attach the catalog URL, derived from the course number.
+          .map(c => Object.assign({}, c, { catalogUrl: _catalogUrl(c.course) }));
+        return {
+          term: t.term, label: t.label, quarter: t.quarter, year: t.year,
+          weeks: _termWeeks(t.term), isSummer: _termWeeks(t.term) === 5,
+          hoursPerCredit: SR760_HOURS_PER_CREDIT,
+          courses: courses,
+        };
+      // Only offer terms that actually have at least one undergrad course.
+      }).filter(t => t.courses.length);
+    } catch (e) {
+      Logger.log('IndividualStudiesModule.formData: schedule lookup failed: ' + e);
+      terms = [];
     }
-  }
-
-  // ── Tabs ──────────────────────────────────────────
-  function switchTab(tab) {
-    document.querySelectorAll('#is-module .tab-panel').forEach(function (p) { p.style.display = 'none'; });
-    document.querySelectorAll('#is-module .module-tab').forEach(function (b) {
-      const on = b.dataset.tab === tab;
-      b.classList.toggle('active', on);
-      b.setAttribute('aria-selected', on ? 'true' : 'false');
-    });
-    const panel = document.getElementById('is-tab-' + tab);
-    if (panel) panel.style.display = 'block';
-
-    if (tab === 'mine')      loadMine();
-    if (tab === 'new')       _ensureFormData();
-    if (tab === 'review')    loadReview();
-    if (tab === 'sponsored') loadSponsored();
-    if (tab === 'advisor')   loadAdvisor();
-    if (tab === 'settings')  { loadAll(); loadNotifySettings(); _renderDeepLinkCard(); }
-    if (tab === 'templates') loadTemplates();
-    if (tab === 'schedule')  loadImportHistory();
-  }
-
-  // ── Form bootstrap ────────────────────────────────
-  function _loadFormData(cb) {
-    App.call('individual_studies', 'formData', {}, function (data) {
-      _formData = data;
-      _termsByCode = {};
-      (data.terms || []).forEach(function (t) { _termsByCode[t.term] = t; });
-      _populateForm(data);
-      if (cb) cb();
-    }, function () { if (cb) cb(); });
-  }
-  function _ensureFormData(cb) {
-    if (_formData) { if (cb) cb(); return; }
-    _busy('Loading petition form…');
-    _loadFormData(function () { _idle(); if (cb) cb(); });
-  }
-  function _populateForm(data) {
-    // Term dropdown (only imported terms are present)
-    const termSel = document.getElementById('is-term');
-    if (termSel) {
-      let opts = '<option value="">— Select a term —</option>';
-      (data.terms || []).forEach(function (t) { opts += '<option value="' + esc(t.term) + '">' + esc(t.label) + '</option>'; });
-      termSel.innerHTML = opts;
-    }
-    // Sponsor dropdown
-    const sponsorSel = document.getElementById('is-sponsor');
-    if (sponsorSel) {
-      let opts = '<option value="">— Select a sponsor —</option>';
-      (data.sponsors || []).forEach(function (s) { opts += '<option value="' + esc(s.email) + '">' + esc(s.name) + '</option>'; });
-      sponsorSel.innerHTML = opts;
-    }
-    // Course starts disabled until a term is chosen
-    _resetCourseSelect('— Select a term first —');
-  }
-
-  function _resetCourseSelect(placeholder) {
-    const courseSel = document.getElementById('is-course');
-    if (!courseSel) return;
-    courseSel.innerHTML = '<option value="">' + esc(placeholder || '— Select a course —') + '</option>';
-    courseSel.disabled = true;
-    const hint = document.getElementById('is-course-hint');
-    if (hint) hint.textContent = 'Credits are set by the course.';
-    const link = document.getElementById('is-course-catalog');
-    if (link) link.style.display = 'none';
-    _hideRedirect();
-  }
-
-  // Term chosen → populate that term's courses (with credits from the schedule)
-  function onTermChange(termCode) {
-    const t = _termsByCode[termCode];
-    const courseSel = document.getElementById('is-course');
-    if (!courseSel) return;
-    _hideRedirect();
-    if (!t) { _resetCourseSelect('— Select a term first —'); return; }
-
-    let opts = '<option value="">— Select a course —</option>';
-    (t.courses || []).forEach(function (c) {
-      opts += '<option value="' + esc(c.course) + '" data-credits="' + esc(c.credits) + '"'
-            + ' data-title="' + esc(c.title || '') + '" data-url="' + esc(c.catalogUrl || '') + '">'
-            + esc(c.course) + (c.title ? ' — ' + esc(c.title) : '')
-            + ' — ' + esc(c.credits) + ' credit' + (Number(c.credits) === 1 ? '' : 's') + '</option>';
-    });
-    // Redirect courses (e.g. 195S) appear as interceptor options regardless of term.
-    Object.keys((data => data || {})(_formData && _formData.redirectCourses)).forEach(function (rc) {
-      opts += '<option value="__redirect__' + esc(rc) + '">' + esc(rc) + ' (handled elsewhere)</option>';
-    });
-    courseSel.innerHTML = opts;
-    courseSel.disabled = false;
-    _updateHoursPolicy();
-  }
-
-  // When the student picks a sponsor, fetch that sponsor's templates; show
-  // the picker if any exist, and auto-apply the default.
-  function onSponsorChange(sponsorEmail) {
-    const group = document.getElementById('is-tpl-pick-group');
-    const pick = document.getElementById('is-tpl-pick');
-    _sponsorTemplates = [];
-    _carriedReport = null;
-    if (pick) pick.innerHTML = '<option value="">— None (start blank) —</option>';
-    if (group) group.style.display = 'none';
-    if (!sponsorEmail) return;
-
-    // Brief server round-trip; overlay so impatient students see progress.
-    _busy('Checking for sponsor templates…');
-    App.call('individual_studies', 'templatesForSponsor', { sponsorEmail: sponsorEmail }, function (rows) {
-      _idle();
-      _sponsorTemplates = rows || [];
-      if (!_sponsorTemplates.length) return;
-      let opts = '<option value="">— None (start blank) —</option>';
-      _sponsorTemplates.forEach(function (t) {
-        opts += '<option value="' + esc(t.templateId) + '">' + esc(t.name) + (t.isDefault ? ' (default)' : '') + '</option>';
-      });
-      if (pick) pick.innerHTML = opts;
-      if (group) group.style.display = 'block';
-      // Opt-in: nothing applies until the student picks a template. The
-      // default is labeled in the list but not auto-applied, so students
-      // doing something different keep a blank form.
-    }, function () { _idle(); /* templates are optional; ignore errors */ });
-  }
-
-  function onTemplatePick(templateId) {
-    if (!templateId) { _carriedReport = null; return; }
-    const t = _sponsorTemplates.find(function (x) { return x.templateId === templateId; });
-    if (t) _applyTemplate(t);
-  }
-
-  // Fills the editable form fields from a template. The course is set if it's
-  // available in the selected term (credits/title resolve from the schedule);
-  // the report flag is carried silently for the sponsor, never shown here.
-  function _applyTemplate(t) {
-    if (t.title) _setVal('is-title', t.title);
-    if (t.courseDescription) _setVal('is-desc', t.courseDescription);
-    if (t.evidenceOfPreparation) _setVal('is-evidence', t.evidenceOfPreparation);
-    if (t.workToBeSubmitted) _setVal('is-work', t.workToBeSubmitted);
-    if (t.gradeOption) _setVal('is-grade', t.gradeOption);
-    // The room/lab space doubles as the study site for lab-style studies.
-    if (t.roomAccessRoom) _setVal('is-site', t.roomAccessRoom);
-
-    // Course: only apply if it's offered in the selected term, so credits and
-    // the SR 760 hours total resolve correctly.
-    if (t.course) {
-      const courseSel = document.getElementById('is-course');
-      const has = courseSel && Array.prototype.some.call(courseSel.options, function (o) { return o.value === t.course; });
-      if (has) {
-        courseSel.value = t.course;
-        onCourseChange(t.course);
-      } else if (document.getElementById('is-term').value) {
-        Toast.show(t.course + ' isn’t offered in the selected term — pick a course manually.', 'info');
-      }
-    }
-    // Hours: set the with-sponsor portion, then derive the split.
-    if (t.hoursWithSponsor) { _setVal('is-hours-sponsor', t.hoursWithSponsor); onHoursChange(); }
-
-    // Report flag rides silently to the sponsor (student never sees it).
-    _carriedReport = t.reportRequired ? { required: true, dueText: t.reportDueText || '' } : null;
-  }
-
-  function onCourseChange(value) {
-    if (value && value.indexOf('__redirect__') === 0) {
-      const course = value.replace('__redirect__', '');
-      const cfg = (_formData && _formData.redirectCourses && _formData.redirectCourses[course]) || {};
-      document.getElementById('is-redirect-msg').textContent =
-        cfg.label || (course + ' is handled in another module.');
-      document.getElementById('is-redirect-action').innerHTML =
-        '<p class="text-sm text-muted" style="margin:0;">Senior thesis enrollment will be handled in the Thesis module.</p>';
-      document.getElementById('is-redirect-panel').style.display = 'block';
-      document.getElementById('is-form-wrap').style.display = 'none';
-      return;
-    }
-    _hideRedirect();
-    // Reflect the course's title + credits in the hint, and surface the
-    // catalog-description link for the selected course.
-    const hint = document.getElementById('is-course-hint');
-    const sel = document.getElementById('is-course');
-    const link = document.getElementById('is-course-catalog');
-    const opt = (sel && sel.selectedIndex >= 0) ? sel.options[sel.selectedIndex] : null;
-    const cr = opt ? opt.getAttribute('data-credits') : '';
-    const title = opt ? opt.getAttribute('data-title') : '';
-    const url = opt ? opt.getAttribute('data-url') : '';
-    if (hint) {
-      hint.textContent = cr
-        ? (value + (title ? ' (' + title + ')' : '') + ' is ' + cr + ' credit' + (Number(cr) === 1 ? '' : 's') + '.')
-        : 'Credits are set by the course.';
-    }
-    if (link) {
-      if (value && url) { link.href = url; link.style.display = 'inline-block'; }
-      else { link.style.display = 'none'; }
-    }
-    _updateHoursPolicy();
-  }
-
-  function _hideRedirect() {
-    const p = document.getElementById('is-redirect-panel');
-    const w = document.getElementById('is-form-wrap');
-    if (p) p.style.display = 'none';
-    if (w) w.style.display = 'block';
-  }
-
-  // ── SR 760 hours policy ───────────────────────────
-  // Total weekly hours = (30 x credits) / weeks; 10-week quarters, 5-week
-  // summer. Student/sponsor set only the with-sponsor portion; the rest is
-  // independent. Returns 0 if course/term not both chosen yet.
-  function _selectedCredits() {
-    const sel = document.getElementById('is-course');
-    const opt = (sel && sel.selectedIndex >= 0) ? sel.options[sel.selectedIndex] : null;
-    const cr = opt ? Number(opt.getAttribute('data-credits')) : 0;
-    return isFinite(cr) ? cr : 0;
-  }
-  function _selectedTermWeeks() {
-    const t = _termsByCode[document.getElementById('is-term').value];
-    return (t && t.weeks) ? t.weeks : 0;
-  }
-  function _weeklyHoursTotal() {
-    const cr = _selectedCredits(), weeks = _selectedTermWeeks();
-    if (!cr || !weeks) return 0;
-    return Math.round((30 * cr) / weeks);
-  }
-  function _updateHoursPolicy() {
-    const total = _weeklyHoursTotal();
-    const cr = _selectedCredits(), weeks = _selectedTermWeeks();
-    const policy = document.getElementById('is-hours-policy');
-    if (policy) {
-      if (total) {
-        policy.textContent = 'Per Senate Regulation 760, 1 credit = 30 hours of work over the term. '
-          + 'This ' + cr + '-credit course = ' + total + ' hours/week over a ' + weeks + '-week '
-          + (weeks === 5 ? 'summer session' : 'quarter') + ' (' + (30 * cr) + ' hours total). '
-          + 'Enter the hours with your sponsor; the remainder is independent. '
-          + 'Your syllabus should estimate how these hours are distributed.';
-      } else {
-        policy.textContent = 'Select a term and course to see the required weekly hours.';
-      }
-    }
-    onHoursChange();
-  }
-  function onHoursChange() {
-    const total = _weeklyHoursTotal();
-    const wsEl = document.getElementById('is-hours-sponsor');
-    const indEl = document.getElementById('is-hours-indep');
-    const derived = document.getElementById('is-hours-derived');
-    if (!total) { if (indEl) indEl.value = ''; if (derived) derived.style.display = 'none'; return; }
-    let ws = Number((wsEl && wsEl.value).toString().trim() || 0);
-    if (!isFinite(ws) || ws < 0) ws = 0;
-    if (ws > total) ws = total;
-    const ind = total - ws;
-    if (indEl) indEl.value = String(ind);
-    if (derived) {
-      derived.style.display = 'block';
-      derived.textContent = ws + ' with sponsor + ' + ind + ' independent = ' + total + ' hours/week.';
-    }
-  }
-
-  // Sponsor-side hours: same SR 760 rule, total derived from the petition's
-  // credits + term (summer = quarter digit 4 in the term code → 5 weeks).
-  function onSponsorReportToggle() {
-    const on = document.getElementById('is-sp-report').checked;
-    const g = document.getElementById('is-sp-report-due-group');
-    if (g) g.style.display = on ? 'block' : 'none';
-  }
-  function _termWeeksFromCode(termCode) {
-    const q = String(termCode || '').trim().slice(-1);
-    return q === '4' ? 5 : 10;
-  }
-  function onSponsorHoursChange(termCode, credits) {
-    const weeks = _termWeeksFromCode(termCode);
-    const total = (credits && weeks) ? Math.round((30 * Number(credits)) / weeks) : 0;
-    const hint = document.getElementById('is-sp-hours-hint');
-    const el = document.getElementById('is-sp-hours');
-    if (!total) { if (hint) hint.textContent = ''; return; }
-    let ws = Number((el && el.value).toString().trim() || 0);
-    if (!isFinite(ws) || ws < 0) ws = 0;
-    if (ws > total) { ws = total; if (el) el.value = String(total); }
-    if (hint) hint.textContent = ws + ' with sponsor + ' + (total - ws) + ' independent = ' + total + ' hrs/week (SR 760).';
-  }
-  // ── Syllabus (optional) — read file to base64 for the next submit ──
-  function onSyllabusChange(e) {
-    _syllabus = null;
-    const file = e.target.files && e.target.files[0];
-    const cur = document.getElementById('is-syllabus-current');
-    if (!file) { if (cur) cur.style.display = 'none'; return; }
-    const reader = new FileReader();
-    reader.onload = function () {
-      const b64 = String(reader.result).split(',')[1] || '';
-      _syllabus = { syllabusBase64: b64, syllabusName: file.name, syllabusMimeType: file.type || 'application/pdf' };
-      if (cur) { cur.textContent = 'Attached: ' + file.name; cur.style.display = 'block'; }
-    };
-    reader.onerror = function () { Toast.show('Could not read that file.', 'error'); };
-    reader.readAsDataURL(file);
-  }
-
-  // ── Submit / resubmit ─────────────────────────────
-  function submit() {
-    const termCode = document.getElementById('is-term').value;
-    const course = document.getElementById('is-course').value;
-    if (!termCode) { Toast.show('Choose a term.', 'error'); return; }
-    if (!course || course.indexOf('__redirect__') === 0) { Toast.show('Choose a course.', 'error'); return; }
-
-    const payload = {
-      termCode: termCode,
-      course: course,
-      sponsorEmail: document.getElementById('is-sponsor').value,
-      gradeOption: document.getElementById('is-grade').value,
-      college: document.getElementById('is-college').value.trim(),
-      classLevel: document.getElementById('is-classlevel').value,
-      majorStatus: document.getElementById('is-major').value.trim(),
-      studySiteAddress: document.getElementById('is-site').value.trim(),
-      title: document.getElementById('is-title').value.trim(),
-      courseDescription: document.getElementById('is-desc').value.trim(),
-      evidenceOfPreparation: document.getElementById('is-evidence').value.trim(),
-      workToBeSubmitted: document.getElementById('is-work').value.trim(),
-      hoursWithSponsor: document.getElementById('is-hours-sponsor').value.trim(),
-      hoursIndependent: document.getElementById('is-hours-indep').value.trim(),
-    };
-    if (!payload.sponsorEmail) { Toast.show('Select a faculty sponsor.', 'error'); return; }
-    if (!payload.gradeOption) { Toast.show('Choose a grade option.', 'error'); return; }
-    if (!payload.courseDescription) { Toast.show('Add a course description.', 'error'); return; }
-    if (!payload.workToBeSubmitted) { Toast.show('Describe the work to be submitted.', 'error'); return; }
-    if (_syllabus) {
-      payload.syllabusBase64 = _syllabus.syllabusBase64;
-      payload.syllabusName = _syllabus.syllabusName;
-      payload.syllabusMimeType = _syllabus.syllabusMimeType;
-    }
-    // A template may carry a report requirement; it rides silently to the
-    // sponsor (the student never sees report fields on this form).
-    if (_carriedReport && _carriedReport.required) {
-      payload.reportRequired = true;
-      payload.reportDueDate = _carriedReport.dueText || '';
-    }
-    if (_resubmitId) payload.petitionId = _resubmitId;
-
-    FormHelper.setLoading('is-submit-btn', true, _resubmitId ? 'Resubmitting…' : 'Submitting…');
-    _busy(_resubmitId ? 'Resubmitting your petition…' : 'Submitting your petition…');
-    App.call('individual_studies', 'submit', payload, function (res) {
-      FormHelper.setLoading('is-submit-btn', false);
-      _idle();
-      Toast.show(res.resubmitted ? 'Petition resubmitted.' : 'Petition submitted to your sponsor.', 'success');
-      resetForm();
-      switchTab('mine');
-    }, function () { FormHelper.setLoading('is-submit-btn', false); _idle(); });
-  }
-
-  function resetForm() {
-    ['is-college','is-major','is-site','is-title','is-desc','is-evidence','is-work','is-hours-sponsor','is-hours-indep']
-      .forEach(function (id) { const el = document.getElementById(id); if (el) el.value = ''; });
-    ['is-term','is-course','is-sponsor','is-grade','is-classlevel'].forEach(function (id) { const el = document.getElementById(id); if (el) el.value = ''; });
-    _resetCourseSelect('— Select a term first —');
-    const syl = document.getElementById('is-syllabus'); if (syl) syl.value = '';
-    const sylCur = document.getElementById('is-syllabus-current'); if (sylCur) sylCur.style.display = 'none';
-    _syllabus = null;
-    // Clear template picker + carried report.
-    _sponsorTemplates = []; _carriedReport = null;
-    const tplPick = document.getElementById('is-tpl-pick'); if (tplPick) tplPick.innerHTML = '<option value="">— None (start blank) —</option>';
-    const tplGroup = document.getElementById('is-tpl-pick-group'); if (tplGroup) tplGroup.style.display = 'none';
-    _hideRedirect();
-    _resubmitId = null;
-    document.getElementById('is-resubmit-banner').style.display = 'none';
-    document.getElementById('is-cancel-resubmit').style.display = 'none';
-  }
-
-  function cancelResubmit() { resetForm(); switchTab('mine'); }
-
-  function startResubmit(rec) {
-    _ensureFormData();
-    _resubmitId = rec.petitionId;
-    switchTab('new');
-    // Defer field population until the form bootstrap has populated selects.
-    setTimeout(function () {
-      _setVal('is-term', rec.termCode);
-      onTermChange(rec.termCode);            // populate that term's courses
-      _setVal('is-course', rec.course);
-      onCourseChange(rec.course);
-      _setVal('is-sponsor', rec.sponsorEmail);
-      _setVal('is-grade', rec.gradeOption);
-      _setVal('is-college', rec.college);
-      _setVal('is-classlevel', rec.classLevel);
-      _setVal('is-major', rec.majorStatus);
-      _setVal('is-site', rec.studySiteAddress);
-      _setVal('is-title', rec.title);
-      _setVal('is-desc', rec.courseDescription);
-      _setVal('is-evidence', rec.evidenceOfPreparation);
-      _setVal('is-work', rec.workToBeSubmitted);
-      _setVal('is-hours-sponsor', rec.hoursWithSponsor);
-      _setVal('is-hours-indep', rec.hoursIndependent);
-      onHoursChange();
-      const banner = document.getElementById('is-resubmit-banner');
-      banner.textContent = 'Revising a returned petition. ' + (rec.returnNote ? 'Note: ' + rec.returnNote : '');
-      banner.style.display = 'block';
-      document.getElementById('is-cancel-resubmit').style.display = 'inline-flex';
-    }, 150);
-  }
-  function _setVal(id, v) { const el = document.getElementById(id); if (el) el.value = v == null ? '' : v; }
-
-  // ── Lists ─────────────────────────────────────────
-  function _listLoading(elId) {
-    const el = document.getElementById(elId);
-    if (el) el.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
-  }
-  function _listError(elId) {
-    const el = document.getElementById(elId);
-    if (el) el.innerHTML = '<div class="empty-state">Couldn\'t load this list. Use the refresh button to try again.</div>';
-  }
-
-  function loadMine(cb) {
-    _listLoading('is-mine-list');
-    App.call('individual_studies', 'mine', {}, function (rows) {
-      _renderList('is-mine-list', rows, 'mine');
-      if (cb) cb(rows);
-    }, function () { _listError('is-mine-list'); if (cb) cb([]); });
-  }
-  function loadReview() {
-    _listLoading('is-review-list');
-    App.call('individual_studies', 'sponsorQueue', {}, function (rows) { _renderList('is-review-list', rows, 'review'); },
-      function () { _listError('is-review-list'); });
-  }
-  function loadSponsored() {
-    _listLoading('is-sponsored-list');
-    App.call('individual_studies', 'sponsored', {}, function (rows) {
-      _sponsoredRows = rows || [];
-      renderSponsored();
-    }, function () { _listError('is-sponsored-list'); });
-  }
-  function renderSponsored() {
-    const q = (document.getElementById('is-sp-search') || {}).value || '';
-    const stage = (document.getElementById('is-sp-stage') || {}).value || '';
-    const rows = _filterRows(_sponsoredRows, q, stage, '');
-    _renderSortable('is-sponsored-list', rows, { who: 'student', sortState: _sortSponsored, sortSetter: function (s) { _sortSponsored = s; renderSponsored(); }, remind: false });
-  }
-
-  // ── Settings tab: student notification templates ──
-  // Mirrors the Transcript module: the template is the MESSAGE; the
-  // structural lines (class number, notes, links) are appended server-side
-  // and are not editable here.
-  function loadNotifySettings() {
-    const el = document.getElementById('is-notify-settings');
-    if (!el) return;
-    App.call('individual_studies', 'getSettings', {}, function (s) {
-      el.innerHTML =
-        '<div class="form-group">'
-        + '<label class="form-label" for="is-tmpl-complete">"Petition complete" message</label>'
-        + '<textarea class="form-textarea" id="is-tmpl-complete" rows="4">' + esc(s.NOTIFY_COMPLETE || '') + '</textarea>'
-        + '<div class="form-hint">Appended automatically: class number + enrollment instructions, your note to the student (if any), and the PDF link.</div>'
-        + '</div>'
-        + '<div class="form-group">'
-        + '<label class="form-label" for="is-tmpl-returned">"Returned for revision" message</label>'
-        + '<textarea class="form-textarea" id="is-tmpl-returned" rows="4">' + esc(s.NOTIFY_RETURNED || '') + '</textarea>'
-        + '<div class="form-hint">Appended automatically: the sponsor\'s return note and the resubmission link.</div>'
-        + '</div>'
-        + '<button class="btn btn-primary btn-sm" onclick="IndividualStudiesUI.saveNotifySettings()"><i class="ti ti-device-floppy"></i> Save notifications</button>';
-    }, function () {
-      el.innerHTML = '<div class="empty-state" style="padding:18px;">Could not load the notification settings. Refresh to retry.</div>';
-    });
-  }
-
-  function saveNotifySettings() {
-    const payload = {
-      NOTIFY_COMPLETE: (document.getElementById('is-tmpl-complete') || {}).value || '',
-      NOTIFY_RETURNED: (document.getElementById('is-tmpl-returned') || {}).value || '',
-    };
-    App.call('individual_studies', 'saveSettings', payload, function () {
-      Toast.show('Notification settings saved.', 'success');
-    });
-  }
-
-  // Standardized deep-link card: shareable link straight to the New
-  // Petition form (?focus=form, handled in init).
-  function _renderDeepLinkCard() {
-    const el = document.getElementById('is-deeplink-card');
-    if (!el) return;
-    el.innerHTML = App.deepLinkCard('individual_studies', {
-      roles: ['undergraduate_student', 'undergraduate_non_major'],
-      title: 'Student petition link',
-      note: 'Send students straight to the New Petition form.'
-    });
-  }
-
-  function loadAll() {
-    _listLoading('is-all-list');
-    App.call('individual_studies', 'allPetitions', {}, function (rows) {
-      _allRows = rows || [];
-      _populateTermFilter('is-all-term', _allRows);
-      renderAll();
-    }, function () { _listError('is-all-list'); });
-  }
-  function renderAll() {
-    const q = (document.getElementById('is-all-search') || {}).value || '';
-    const stage = (document.getElementById('is-all-stage') || {}).value || '';
-    const term = (document.getElementById('is-all-term') || {}).value || '';
-    const rows = _filterRows(_allRows, q, stage, term);
-    _renderSortable('is-all-list', rows, { who: 'student', sortState: _sortAll, sortSetter: function (s) { _sortAll = s; renderAll(); }, remind: true });
-  }
-
-  function _populateTermFilter(selId, rows) {
-    const sel = document.getElementById(selId);
-    if (!sel) return;
-    const terms = [];
-    const seen = {};
-    rows.forEach(function (r) { if (r.term && !seen[r.term]) { seen[r.term] = true; terms.push(r.term); } });
-    const cur = sel.value;
-    let opts = '<option value="">All terms</option>';
-    terms.forEach(function (t) { opts += '<option value="' + esc(t) + '">' + esc(t) + '</option>'; });
-    sel.innerHTML = opts;
-    sel.value = cur;
-  }
-
-  function _filterRows(rows, q, stage, term) {
-    q = String(q || '').trim().toLowerCase();
-    return (rows || []).filter(function (r) {
-      if (stage && r.stage !== stage) return false;
-      if (term && r.term !== term) return false;
-      if (q) {
-        const hay = (esc(r.studentName) + ' ' + r.course + ' ' + r.term + ' ' + (r.sponsorName || '')).toLowerCase();
-        if (hay.indexOf(q) === -1) return false;
-      }
-      return true;
-    });
-  }
-
-  // Sortable table shared by All Petitions and Sponsored. opts.who = 'student'
-  // or 'sponsor' (the people column); opts.remind adds a nudge button.
-  function _renderSortable(elId, rows, opts) {
-    const el = document.getElementById(elId);
-    if (!el) return;
-    opts = opts || {};
-    const sort = opts.sortState || { key: 'created', dir: 'desc' };
-    const whoField = opts.who === 'sponsor' ? 'sponsorName' : 'studentName';
-    const whoLabel = opts.who === 'sponsor' ? 'Sponsor' : 'Student';
-
-    const sorted = rows.slice().sort(function (a, b) {
-      let av, bv;
-      switch (sort.key) {
-        case 'course': av = a.course; bv = b.course; break;
-        case 'term': av = a.term; bv = b.term; break;
-        case 'who': av = a[whoField]; bv = b[whoField]; break;
-        case 'stage': av = a.stage; bv = b.stage; break;
-        default: av = a._created || 0; bv = b._created || 0;
-      }
-      if (av < bv) return sort.dir === 'asc' ? -1 : 1;
-      if (av > bv) return sort.dir === 'asc' ? 1 : -1;
-      return 0;
-    });
-
-    if (!sorted.length) { el.innerHTML = '<div class="empty-state">No petitions match.</div>'; return; }
-
-    function arrow(key) { return sort.key === key ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : ''; }
-    function th(key, label) {
-      return '<th scope="col" style="cursor:pointer;user-select:none;" onclick="IndividualStudiesUI._sortBy(\'' + elId + '\',\'' + key + '\')">' + label + arrow(key) + '</th>';
-    }
-
-    let body = '';
-    sorted.forEach(function (r) {
-      const meta = STAGE_META[r.stage] || { cls: 'badge-neutral', label: r.stage };
-      let remindCell = '';
-      if (opts.remind) {
-        const canRemind = r.stage === 'SUBMITTED' || r.stage === 'PENDING_ADVISOR' || r.stage === 'RETURNED';
-        remindCell = '<td onclick="event.stopPropagation();">'
-          + (canRemind
-              ? '<button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.remind(\'' + esc(r.petitionId) + '\')"><i class="ti ti-bell"></i> Nudge</button>'
-              : '') + '</td>';
-      }
-      body += '<tr tabindex="0" style="cursor:pointer;" onclick="IndividualStudiesUI.open(\'' + esc(r.petitionId) + '\')" '
-        + 'onkeydown="IndividualStudiesUI.rowKey(event,\'' + esc(r.petitionId) + '\')">'
-        + '<td><strong>' + esc(r.course) + '</strong></td>'
-        + '<td>' + esc(r.term) + '</td>'
-        + '<td>' + esc(r[whoField]) + '</td>'
-        + '<td><span class="badge ' + meta.cls + '">' + esc(meta.label) + '</span></td>'
-        + remindCell
-        + '</tr>';
-    });
-    el.innerHTML = '<div style="overflow-x:auto;"><table class="data-table"><thead><tr>'
-      + th('course', 'Course') + th('term', 'Term') + th('who', whoLabel) + th('stage', 'Status')
-      + (opts.remind ? '<th scope="col"></th>' : '')
-      + '</tr></thead><tbody>' + body + '</tbody></table></div>';
-  }
-
-  // Toggle sort for whichever table the header belongs to.
-  function _sortBy(elId, key) {
-    const state = elId === 'is-all-list' ? _sortAll : _sortSponsored;
-    if (state.key === key) state.dir = (state.dir === 'asc' ? 'desc' : 'asc');
-    else { state.key = key; state.dir = 'asc'; }
-    if (elId === 'is-all-list') renderAll(); else renderSponsored();
-  }
-
-  function remind(petitionId) {
-    _busy('Sending reminder…');
-    App.call('individual_studies', 'remindResponsible', { petitionId: petitionId }, function (res) {
-      _idle();
-      Toast.show('Reminder sent' + (res && res.remindedTo ? ' to ' + (Array.isArray(res.remindedTo) ? res.remindedTo.join(', ') : res.remindedTo) : '') + '.', 'success');
-    }, function () { _idle(); });
-  }
-  function loadAdvisor() {
-    _listLoading('is-advisor-list');
-    App.call('individual_studies', 'advisorQueue', {}, function (rows) { _renderList('is-advisor-list', rows, 'advisor'); },
-      function () { _listError('is-advisor-list'); });
-  }
-
-  function _renderList(elId, rows, context) {
-    const el = document.getElementById(elId);
-    if (!el) return;
-    rows = rows || [];
-    if (!rows.length) { el.innerHTML = '<div class="empty-state">Nothing here.</div>'; return; }
-    const showWho = (context === 'review' || context === 'sponsored' || context === 'advisor');
-    let body = '';
-    rows.forEach(function (r) {
-      const meta = STAGE_META[r.stage] || { cls: 'badge-neutral', label: r.stage };
-      body += '<tr tabindex="0" style="cursor:pointer;" onclick="IndividualStudiesUI.open(\'' + esc(r.petitionId) + '\')" '
-        + 'onkeydown="IndividualStudiesUI.rowKey(event,\'' + esc(r.petitionId) + '\')">'
-        + '<td><strong>' + esc(r.course) + '</strong><div class="text-sm text-muted">' + esc(r.term) + '</div></td>'
-        + (showWho ? '<td>' + esc(r.studentName) + '</td>' : '<td>' + esc(r.sponsorName) + '</td>')
-        + '<td><span class="badge ' + meta.cls + '">' + esc(meta.label) + '</span></td>'
-        + '</tr>';
-    });
-    el.innerHTML = '<div style="overflow-x:auto;"><table class="data-table"><thead><tr>'
-      + '<th scope="col">Course</th><th scope="col">' + (showWho ? 'Student' : 'Sponsor') + '</th><th scope="col">Status</th>'
-      + '</tr></thead><tbody>' + body + '</tbody></table></div>';
-  }
-
-  function rowKey(ev, petitionId) {
-    if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); open(petitionId); }
-  }
-
-  // ── Detail + actions ──────────────────────────────
-  function open(petitionId) {
-    _busy('Loading petition…');
-    App.call('individual_studies', 'get', { petitionId: petitionId }, function (rec) {
-      _idle();
-      _openDetail(rec);
-    }, function () { _idle(); });
-  }
-
-  function _row(label, value) {
-    return '<dt>' + esc(label) + '</dt><dd>' + (value || '&mdash;') + '</dd>';
-  }
-
-  function _openDetail(rec) {
-    _lastFocus = document.activeElement;
-    _lastDetailRec = rec;
-    const meta = STAGE_META[rec.stage] || { cls: 'badge-neutral', label: rec.stage };
-    document.getElementById('is-modal-title').textContent = (rec.course || 'Petition') + ' — ' + (rec.term || '');
-
-    let html = '<dl class="is-detail-grid">'
-      + _row('Status', '<span class="badge ' + meta.cls + '">' + esc(meta.label) + '</span>')
-      + _row('Student', esc(rec.studentName))
-      + _row('Course', esc(rec.course) + (rec.credits ? ' · ' + esc(rec.credits) + ' cr' : ''))
-      + _row('Term', esc(rec.term))
-      + _row('Sponsor', esc(rec.sponsorName))
-      + (rec.gradeOption ? _row('Grade option', esc(rec.gradeOption)) : '')
-      + (rec.title ? _row('Title', esc(rec.title)) : '')
-      + (rec.courseDescription ? _row('Description', esc(rec.courseDescription)) : '')
-      + (rec.workToBeSubmitted ? _row('Work to submit', esc(rec.workToBeSubmitted)) : '')
-      + (rec.evidenceOfPreparation ? _row('Preparation', esc(rec.evidenceOfPreparation)) : '')
-      + (rec.studySiteAddress ? _row('Study site', esc(rec.studySiteAddress)) : '')
-      + (rec.hoursWithSponsor || rec.hoursIndependent ? _row('Hours/week', esc(rec.hoursWithSponsor || '0') + ' with sponsor · ' + esc(rec.hoursIndependent || '0') + ' independent') : '')
-      + (rec.reportRequired ? _row('Written report', 'Required' + (rec.reportDueDate ? ' · due ' + esc(rec.reportDueDate) : '')) : '')
-      + (rec.syllabusLink ? _row('Syllabus', '<a href="' + esc(rec.syllabusLink) + '" target="_blank" rel="noopener">' + esc(rec.syllabusName || 'View syllabus') + ' <i class="ti ti-external-link"></i></a>') : '')
-      + (rec.sponsorComments ? _row('Sponsor comments', esc(rec.sponsorComments)) : '')
-      + (rec.classNumber ? _row('Class number', esc(rec.classNumber) + (rec.classSection ? ' · sec ' + esc(rec.classSection) : '')) : '')
-      + (rec.advisorComments ? _row('Advisor note', esc(rec.advisorComments)) : '')
-      + (rec.documentLink ? _row('Completed petition', '<a href="' + esc(rec.documentLink) + '" target="_blank" rel="noopener">Open PDF <i class="ti ti-external-link"></i></a>') : '')
-      + (rec.roomAccessRequested ? _row('Room access', 'Requested' + (rec.roomAccessRoom ? ' — ' + esc(rec.roomAccessRoom) : '') + (rec.roomAccessNote ? ' (' + esc(rec.roomAccessNote) + ')' : '')) : '')
-      + (rec.returnNote && rec.stage === 'RETURNED' ? _row('Return note', esc(rec.returnNote)) : '')
-      + '</dl>';
-
-    html += _actionsFor(rec);
-    document.getElementById('is-modal-body').innerHTML = html;
-    document.getElementById('is-modal').style.display = 'flex';
-  }
-
-  function _isMe(a) { return String(a || '').toLowerCase() === String(_me || '').toLowerCase(); }
-
-  function _actionsFor(rec) {
-    const out = [];
-
-    if (rec.stage === 'RETURNED' && _isMe(rec.studentEmail)) {
-      out.push('<button class="btn btn-primary" onclick=\'IndividualStudiesUI.startResubmitFromModal(' + JSON.stringify(rec) + ')\'><i class="ti ti-refresh"></i> Revise & resubmit</button>');
-    }
-    if (rec.stage !== 'COMPLETE' && _isMe(rec.studentEmail)) {
-      out.push('<button class="btn btn-secondary" onclick="IndividualStudiesUI.withdraw(\'' + esc(rec.petitionId) + '\')"><i class="ti ti-trash"></i> Withdraw</button>');
-    }
-    if (rec.stage === 'SUBMITTED' && (_isMe(rec.sponsorEmail) || _isSuper)) {
-      out.push(_sponsorPanel(rec));
-      setTimeout(function () { onSponsorHoursChange(rec.termCode || '', Number(rec.credits || 0)); }, 50);
-    }
-    if (rec.stage === 'PENDING_ADVISOR' && (_isAdvisor || _isSuper)) {
-      out.push('<div id="is-advisor-panel"><div class="text-sm text-muted">Loading class-number options…</div></div>');
-      setTimeout(function () { _loadAdvisorPanel(rec); }, 50);
-    }
-
-    // Room/lab-space access request: sponsor (or super_admin). Hidden at
-    // SUBMITTED — the approval panel's checkbox is the one control there —
-    // and shown on later stages as the catch-up/correction path (forgot at
-    // approval, or fixing the room; re-requesting updates and re-notifies).
-    if (rec.stage !== 'SUBMITTED' && (_isMe(rec.sponsorEmail) || _isSuper)) {
-      const label = rec.roomAccessRequested ? 'Update room access request' : 'Request room access';
-      let block = '<div style="margin-top:12px;">'
-        + '<button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.requestRoomAccess(\'' + esc(rec.petitionId) + '\')">'
-        + '<i class="ti ti-door"></i> ' + label + '</button>';
-      if (rec.roomAccessRequested) {
-        block += ' <span class="text-muted" style="font-size:12px;">Requested'
-          + (rec.roomAccessRoom ? ' — ' + esc(rec.roomAccessRoom) : '') + '</span>';
-      }
-      block += '</div>';
-      out.push(block);
-    }
-
-    // Save this petition as a reusable template (its sponsor, or super_admin).
-    if (_isMe(rec.sponsorEmail) || _isSuper) {
-      out.push('<div style="margin-top:10px;">'
-        + '<button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.saveAsTemplate(\'' + esc(rec.petitionId) + '\')">'
-        + '<i class="ti ti-template"></i> Save as template</button>'
-        + ' <span class="text-muted" style="font-size:12px;">Reuse these fields for future studies.</span>'
-        + '</div>');
-    }
-
-    // super_admin test cleanup: delete at any stage. Server-enforced too.
-    if (_isSuper) {
-      out.push('<div style="margin-top:16px;border-top:1px solid var(--color-border);padding-top:12px;">'
-        + '<button class="btn btn-danger btn-sm" onclick="IndividualStudiesUI.deletePetition(\'' + esc(rec.petitionId) + '\')">'
-        + '<i class="ti ti-trash"></i> Delete petition</button>'
-        + ' <span class="text-muted" style="font-size:12px;">Removes the record, its tasks, the PDF, and any syllabus. Irreversible.</span>'
-        + '</div>');
-    }
-
-    return out.length ? '<div style="margin-top:8px;">' + out.join(' ') + '</div>' : '';
-  }
-
-  // Sponsor panel: review/approve. No credit or grade fields (credits are
-  // course-derived; grade option is the student's choice). The sponsor may
-  // revise the two descriptions, leave comments, and optionally attach a syllabus.
-  function _sponsorPanel(rec) {
-    return '<div class="card" style="margin-top:8px;">'
-      + '<div class="card-title" style="font-size:14px;"><i class="ti ti-gavel"></i> Sponsor review</div>'
-      + '<div class="text-sm text-muted" style="margin-bottom:6px;">'
-      +   esc(rec.course) + (rec.credits ? ' · ' + esc(rec.credits) + ' credits' : '') + ' · '
-      +   (rec.gradeOption ? esc(rec.gradeOption) : 'grade option not set') + '</div>'
-      + '<div class="form-group"><label class="form-label">Revise description (optional)</label>'
-      +   '<textarea class="form-textarea" id="is-sp-desc" rows="2">' + esc(rec.courseDescription || '') + '</textarea></div>'
-      + '<div class="form-group"><label class="form-label">Revise work to be submitted (optional)</label>'
-      +   '<textarea class="form-textarea" id="is-sp-work" rows="2">' + esc(rec.workToBeSubmitted || '') + '</textarea></div>'
-      + '<div class="form-group"><label class="form-label">Hours/week — with sponsor (SR 760)</label>'
-      +   '<input class="form-input" id="is-sp-hours" inputmode="numeric" value="' + esc(rec.hoursWithSponsor || '') + '" oninput="IndividualStudiesUI.onSponsorHoursChange(\'' + esc(rec.termCode || '') + '\',' + Number(rec.credits || 0) + ')">'
-      +   '<p class="form-hint" id="is-sp-hours-hint" style="margin-top:2px;"></p></div>'
-      + '<div class="form-group">'
-      +   '<label style="display:inline-flex;align-items:center;gap:8px;font-weight:normal;cursor:pointer;">'
-      +   '<input type="checkbox" id="is-sp-report"' + (rec.reportRequired ? ' checked' : '') + ' onchange="IndividualStudiesUI.onSponsorReportToggle()"> A written report is required before credit</label></div>'
-      + '<div class="form-group" id="is-sp-report-due-group" style="display:' + (rec.reportRequired ? 'block' : 'none') + ';">'
-      +   '<label class="form-label">Last day to receive the report</label>'
-      +   '<input class="form-input" id="is-sp-report-due" value="' + esc(rec.reportDueDate || '') + '" placeholder="e.g. last day of instruction"></div>'
-      + '<div class="form-group"><label class="form-label">Comments</label>'
-      +   '<textarea class="form-textarea" id="is-sp-comments" rows="2"></textarea></div>'
-      + '<div class="form-group"><label class="form-label">Attach / replace syllabus (optional)</label>'
-      +   '<input class="form-input" type="file" id="is-sp-syllabus" accept=".pdf,application/pdf" onchange="IndividualStudiesUI.onSponsorSyllabusChange(event)"></div>'
-      + '<div class="form-group">'
-      +   '<label style="display:inline-flex;align-items:center;gap:8px;font-weight:normal;cursor:pointer;">'
-      +   '<input type="checkbox" id="is-sp-roomreq" onchange="IndividualStudiesUI.onRoomReqToggle()"> Request room / lab-space access</label></div>'
-      + '<div class="form-group" id="is-sp-room-group" style="display:none;">'
-      +   '<label class="form-label">Room / space</label>'
-      +   '<input class="form-input" id="is-sp-room" value="' + esc(rec.roomAccessRoom || rec.studySiteAddress || '') + '" placeholder="e.g. Historical Ecology Laboratory">'
-      +   '<input class="form-input" id="is-sp-room-note" style="margin-top:6px;" placeholder="Note for facilities (optional)"></div>'
-      + '<div class="form-actions">'
-      +   '<button class="btn btn-primary" onclick="IndividualStudiesUI.sponsorApprove(\'' + esc(rec.petitionId) + '\')"><i class="ti ti-check"></i> Approve</button>'
-      +   '<button class="btn btn-danger" onclick="IndividualStudiesUI.sponsorReturn(\'' + esc(rec.petitionId) + '\')"><i class="ti ti-arrow-back-up"></i> Return to student</button>'
-      + '</div></div>';
-  }
-
-  function _loadAdvisorPanel(rec) {
-    _fetchAdvisorContext(rec, '');
-  }
-
-  // Fetches advisor context (optionally for a candidate corrected course)
-  // and renders the panel. Shared by the initial load and the course select.
-  function _fetchAdvisorContext(rec, course) {
-    const payload = { petitionId: rec.petitionId };
-    if (course) payload.course = course;
-    App.call('individual_studies', 'advisorContext', payload, function (ctx) {
-      const panel = document.getElementById('is-advisor-panel');
-      if (!panel) return;
-      panel.innerHTML = _advisorPanelHtml(rec, ctx);
-      if (ctx.preassigned) {
-        _setVal('is-adv-classnum', ctx.preassigned.classNbr);
-        _setVal('is-adv-section', ctx.preassigned.section);
-        const src = document.getElementById('is-adv-source'); if (src) src.value = 'preassigned';
-      }
-    }, function () {
-      const panel = document.getElementById('is-advisor-panel');
-      if (panel) panel.innerHTML = '<div class="text-sm text-muted">Could not load class-number options. You can still enter a number below.</div>'
-        + _advisorPanelHtml(rec, { sections: [], otherPetitions: [] });
-    });
-  }
-
-  // Course dropdown changed: re-fetch context so the section list and
-  // pre-assignment reflect the candidate course. Nothing is saved until
-  // "Complete petition"; closing the modal abandons the correction.
-  function advisorCourseChanged(petitionId) {
-    const rec = _lastDetailRec;
-    if (!rec || rec.petitionId !== petitionId) return;
-    const sel = document.getElementById('is-adv-course');
-    const course = sel ? sel.value : '';
-    const panel = document.getElementById('is-advisor-panel');
-    if (panel) panel.innerHTML = '<div class="text-sm text-muted">Loading class-number options…</div>';
-    _fetchAdvisorContext(rec, course);
-  }
-
-  function _advisorPanelHtml(rec, ctx) {
-    ctx = ctx || {};
-    let creditBlock = '';
-    if (ctx.overCap) {
-      creditBlock = '<div class="is-credit-warn"><strong>Over the special-study limit.</strong> '
-        + 'This student has ' + esc(ctx.creditTotal) + ' special-study credits this term (limit ' + esc(ctx.creditCap) + '). '
-        + 'Department authorization is required to complete.'
-        + '<label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-weight:normal;">'
-        + '<input type="checkbox" id="is-adv-authorize"> Authorize this over-limit load</label></div>';
-    } else if (typeof ctx.creditTotal !== 'undefined') {
-      creditBlock = '<div class="text-sm text-muted" style="margin:6px 0;">Special-study credits this term: '
-        + esc(ctx.creditTotal) + ' / ' + esc(ctx.creditCap) + '.</div>';
-    }
-
-    let others = '';
-    if (ctx.otherPetitions && ctx.otherPetitions.length) {
-      others = '<div class="text-sm" style="margin:6px 0;"><span class="text-muted">Other studies this term: </span>'
-        + ctx.otherPetitions.map(function (o) { return esc(o.course) + ' (' + esc(o.credits) + ' cr, ' + esc(o.sponsorName) + ')'; }).join('; ')
-        + '</div>';
-    }
-
-    // Pre-assigned callout (sponsor + course match) as the shortcut.
-    let pre = '';
-    if (ctx.preassigned) {
-      pre = '<div class="is-classnum-opt"><strong>Pre-assigned to this sponsor:</strong> #' + esc(ctx.preassigned.classNbr)
-        + ' · sec ' + esc(ctx.preassigned.section) + ' — ' + esc(ctx.preassigned.instructorName)
-        + ' <button class="btn btn-secondary btn-sm" style="margin-left:6px;" onclick="IndividualStudiesUI.pickClass(\''
-        + esc(ctx.preassigned.classNbr) + '\',\'' + esc(ctx.preassigned.section) + '\',\'preassigned\')">Use</button></div>';
-    }
-
-    // The full course+credit section list; unassigned (Staff) highlighted.
-    let list = '';
-    const secs = ctx.sections || [];
-    if (secs.length) {
-      if (ctx.sectionsMatchedCredits === false) {
-        list += '<div class="text-sm text-muted" style="margin:6px 0;">No sections match this course\'s credits — showing all sections for the course.</div>';
-      }
-      list += secs.map(function (s) {
-        const who = s.isStaff ? 'Unassigned (Staff)' : esc(s.instructorName);
-        const src = s.isStaff ? 'pool' : 'reassigned';
-        return '<div class="is-section' + (s.isStaff ? ' is-unassigned' : '') + '">'
-          + '<span>#' + esc(s.classNbr) + ' · sec ' + esc(s.section)
-          + ' <span class="is-section-meta">' + esc(s.units) + ' units · ' + who + '</span></span>'
-          + '<button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.pickClass(\''
-          + esc(s.classNbr) + '\',\'' + esc(s.section) + '\',\'' + src + '\')">Use</button>'
-          + '</div>';
-      }).join('');
-    } else {
-      list = '<div class="text-sm text-muted" style="margin:6px 0;">No sections found for this course in the term schedule. Enter a class number manually.</div>';
-    }
-
-    // Course correction dropdown: only rendered when the schedule offers an
-    // alternative at the SAME credit value (the current course is always in
-    // the list). ctx.course is the effective course after any candidate pick.
-    const effCourse = ctx.course || rec.course;
-    let courseSel = '';
-    const copts = ctx.courseOptions || [];
-    if (copts.length > 1) {
-      courseSel = '<div class="form-group"><label class="form-label">Course</label>'
-        + '<select class="form-select" id="is-adv-course" onchange="IndividualStudiesUI.advisorCourseChanged(\'' + esc(rec.petitionId) + '\')">'
-        + copts.map(function (o) {
-            return '<option value="' + esc(o.course) + '"' + (String(o.course) === String(effCourse) ? ' selected' : '') + '>'
-              + esc(o.course) + (o.title ? ' — ' + esc(o.title) : '') + '</option>';
-          }).join('')
-        + '</select>'
-        + '<div class="form-hint">Correct a mis-filed course here (e.g. field study vs tutorial). Only '
-        + esc(rec.credits) + '-credit courses offered this term are listed — a different credit level needs a return to the sponsor. The sponsor is emailed if you change it.</div>'
-        + '</div>';
-    }
-
-    return '<div class="card" style="margin-top:8px;">'
-      + '<div class="card-title" style="font-size:14px;"><i class="ti ti-hash"></i> Assign class number</div>'
-      + '<div class="text-sm text-muted" style="margin-bottom:4px;">' + esc(effCourse)
-        + (rec.credits ? ' · ' + esc(rec.credits) + ' credits' : '') + '</div>'
-      + courseSel
-      + creditBlock + others + pre
-      + '<div style="margin:6px 0;">' + list + '</div>'
-      + '<div class="form-row">'
-      +   '<div class="form-group"><label class="form-label">Class number</label>'
-      +     '<input class="form-input" id="is-adv-classnum"></div>'
-      +   '<div class="form-group"><label class="form-label">Section</label>'
-      +     '<input class="form-input" id="is-adv-section"></div>'
-      + '</div>'
-      + '<input type="hidden" id="is-adv-source" value="">'
-      + '<div class="form-group"><label class="form-label">Note to student <span class="text-muted">(optional — included in their completion email)</span></label>'
-      +   '<textarea class="form-textarea" id="is-adv-comments" rows="2"></textarea></div>'
-      + '<div class="form-actions">'
-      +   '<button class="btn btn-primary" onclick="IndividualStudiesUI.advisorComplete(\'' + esc(rec.petitionId) + '\')"><i class="ti ti-check"></i> Complete petition</button>'
-      +   '<button class="btn btn-danger" onclick="IndividualStudiesUI.advisorReturn(\'' + esc(rec.petitionId) + '\')"><i class="ti ti-arrow-back-up"></i> Return to sponsor</button>'
-      + '</div></div>';
-  }
-
-  function pickClass(classNbr, section, source) {
-    _setVal('is-adv-classnum', classNbr);
-    _setVal('is-adv-section', section);
-    const src = document.getElementById('is-adv-source'); if (src) src.value = source;
-    Toast.show('Class number ' + classNbr + ' selected (' + source + ').', 'info');
-  }
-
-  // ── Action calls ──────────────────────────────────
-  function startResubmitFromModal(rec) { closeModal(); startResubmit(rec); }
-
-  function withdraw(petitionId) {
-    if (!window.confirm('Withdraw this petition? This cannot be undone.')) return;
-    _busy('Withdrawing…');
-    App.call('individual_studies', 'withdraw', { petitionId: petitionId }, function () {
-      _idle(); closeModal(); Toast.show('Petition withdrawn.', 'success'); _afterAction();
-    }, function () { _idle(); });
-  }
-
-  function deletePetition(petitionId) {
-    if (!window.confirm('Permanently delete this petition? This removes the record, its tasks, the generated PDF, and any syllabus. This cannot be undone.')) return;
-    _busy('Deleting petition…');
-    App.call('individual_studies', 'deletePetition', { petitionId: petitionId }, function () {
-      _idle(); closeModal(); Toast.show('Petition deleted.', 'success'); _afterAction();
-    }, function () { _idle(); });
-  }
-
-  function requestRoomAccess(petitionId) {
-    // Pre-fill: an existing request's room wins (it's what facilities was
-    // told), else the petition's study site address.
-    const pre = (_lastDetailRec && _lastDetailRec.petitionId === petitionId)
-      ? (_lastDetailRec.roomAccessRoom || _lastDetailRec.studySiteAddress || '') : '';
-    const room = window.prompt('Which room or lab space needs access?', pre);
-    if (room === null) return;
-    if (!room.trim()) { Toast.show('Enter the room or space.', 'error'); return; }
-    const note = window.prompt('Note for facilities (optional):') || '';
-    _busy('Requesting room access…');
-    App.call('individual_studies', 'requestRoomAccess',
-      { petitionId: petitionId, roomAccessRoom: room.trim(), roomAccessNote: note.trim() },
-      function () { _idle(); closeModal(); Toast.show('Room access requested. Facilities has been notified.', 'success'); _afterAction(); },
-      function () { _idle(); });
-  }
-
-  // Sponsor syllabus attach (in the review panel) — held until Approve.
-  let _sponsorSyllabus = null;
-  function onSponsorSyllabusChange(e) {
-    _sponsorSyllabus = null;
-    const file = e.target.files && e.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = function () {
-      const b64 = String(reader.result).split(',')[1] || '';
-      _sponsorSyllabus = { syllabusBase64: b64, syllabusName: file.name, syllabusMimeType: file.type || 'application/pdf' };
-    };
-    reader.onerror = function () { Toast.show('Could not read that file.', 'error'); };
-    reader.readAsDataURL(file);
-  }
-
-  function onRoomReqToggle() {
-    const on = document.getElementById('is-sp-roomreq').checked;
-    document.getElementById('is-sp-room-group').style.display = on ? 'block' : 'none';
-  }
-
-  function sponsorApprove(petitionId) {
-    const payload = {
-      petitionId: petitionId,
-      courseDescription: document.getElementById('is-sp-desc').value.trim(),
-      workToBeSubmitted: document.getElementById('is-sp-work').value.trim(),
-      comments: document.getElementById('is-sp-comments').value.trim(),
-    };
-    if (_sponsorSyllabus) {
-      payload.syllabusBase64 = _sponsorSyllabus.syllabusBase64;
-      payload.syllabusName = _sponsorSyllabus.syllabusName;
-      payload.syllabusMimeType = _sponsorSyllabus.syllabusMimeType;
-    }
-    const roomReq = document.getElementById('is-sp-roomreq');
-    if (roomReq && roomReq.checked) {
-      const room = document.getElementById('is-sp-room').value.trim();
-      if (!room) { Toast.show('Enter the room or space access is needed for.', 'error'); return; }
-      payload.requestRoomAccess = true;
-      payload.roomAccessRoom = room;
-      payload.roomAccessNote = document.getElementById('is-sp-room-note').value.trim();
-    }
-    const spHours = document.getElementById('is-sp-hours');
-    if (spHours && spHours.value.trim() !== '') payload.hoursWithSponsor = spHours.value.trim();
-    const spReport = document.getElementById('is-sp-report');
-    if (spReport) {
-      payload.reportRequired = spReport.checked;
-      payload.reportDueDate = spReport.checked ? document.getElementById('is-sp-report-due').value.trim() : '';
-    }
-    _busy('Recording your approval…');
-    App.call('individual_studies', 'sponsorApprove', payload,
-      function () { _idle(); _sponsorSyllabus = null; closeModal(); Toast.show('Approved and sent to the advisor.', 'success'); _afterAction(); },
-      function () { _idle(); });
-  }
-
-  function sponsorReturn(petitionId) {
-    const note = window.prompt('What should the student revise?');
-    if (note === null) return;
-    if (!note.trim()) { Toast.show('A note is required to return a petition.', 'error'); return; }
-    _busy('Returning to student…');
-    App.call('individual_studies', 'sponsorReturn', { petitionId: petitionId, note: note.trim() },
-      function () { _idle(); closeModal(); Toast.show('Returned to the student.', 'success'); _afterAction(); },
-      function () { _idle(); });
-  }
-
-  function advisorComplete(petitionId) {
-    const classNumber = document.getElementById('is-adv-classnum').value.trim();
-    if (!classNumber) { Toast.show('Enter or select a class number.', 'error'); return; }
-    const source = document.getElementById('is-adv-source').value;
-    const authEl = document.getElementById('is-adv-authorize');
-    const payload = {
-      petitionId: petitionId,
-      classNumber: classNumber,
-      classSection: document.getElementById('is-adv-section').value.trim(),
-      classNumberSource: source,
-      comments: document.getElementById('is-adv-comments').value.trim(),
-    };
-    const courseEl = document.getElementById('is-adv-course');
-    if (courseEl && courseEl.value) payload.course = courseEl.value;
-    if (authEl) payload.majorAuthorized = authEl.checked;
-    if (source === 'reassigned') {
-      if (!window.confirm('This number is listed under another instructor. Reassign it to this study?')) return;
-      payload.confirmReassign = true;
-    }
-    _busy('Completing the petition…');
-    App.call('individual_studies', 'advisorComplete', payload,
-      function (res) {
-        _idle(); closeModal();
-        Toast.show(res && res.courseChanged
-          ? 'Petition complete — course corrected to ' + res.course + '; the sponsor has been emailed.'
-          : 'Petition complete.', 'success', res && res.courseChanged ? 6000 : undefined);
-        _afterAction();
-      },
-      function () { _idle(); });
-  }
-
-  function advisorReturn(petitionId) {
-    const note = window.prompt('What should the sponsor reconsider?');
-    if (note === null) return;
-    if (!note.trim()) { Toast.show('A note is required to return a petition.', 'error'); return; }
-    _busy('Returning to sponsor…');
-    App.call('individual_studies', 'advisorReturn', { petitionId: petitionId, note: note.trim() },
-      function () { _idle(); closeModal(); Toast.show('Returned to the sponsor.', 'success'); _afterAction(); },
-      function () { _idle(); });
-  }
-
-  function _afterAction() {
-    document.querySelectorAll('#is-module .module-tab').forEach(function (b) {
-      if (b.classList.contains('active')) switchTab(b.dataset.tab);
-    });
-  }
-
-  function closeModal() {
-    document.getElementById('is-modal').style.display = 'none';
-    if (_lastFocus && _lastFocus.focus) { try { _lastFocus.focus(); } catch (e) {} }
-  }
-
-  // ── Class schedule import ─────────────────────────
-  function onCsvChange(e) {
-    const errEl = document.getElementById('is-csv-error');
-    if (errEl) errEl.classList.remove('visible');
-    _csvPayload = null;
-    const file = e.target.files && e.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = function () {
-      const b64 = String(reader.result).split(',')[1] || '';
-      _csvPayload = { csvBase64: b64 };
-    };
-    reader.onerror = function () { if (errEl) { errEl.textContent = 'Could not read that file.'; errEl.classList.add('visible'); } };
-    reader.readAsDataURL(file);
-  }
-
-  function previewImport() {
-    if (!_csvPayload) { Toast.show('Choose a CSV file first.', 'error'); return; }
-    _busy('Parsing the schedule…');
-    App.call('individual_studies', 'importPreview', _csvPayload, function (preview) {
-      _idle();
-      _preview = preview;
-      _renderPreview(preview);
-    }, function () { _idle(); });
-  }
-
-  function _renderPreview(p) {
-    const el = document.getElementById('is-import-preview');
-    if (!el) return;
-    let html = '<div class="card">'
-      + '<div class="card-title" style="font-size:14px;">Preview — term ' + esc(p.term) + '</div>'
-      + '<p class="text-sm">' + esc(p.counts.total) + ' sections · '
-      + esc(p.counts.matched) + ' matched · '
-      + esc(p.counts.unmatched) + ' unmatched · '
-      + esc(p.counts.staff) + ' staff/unassigned.</p>';
-
-    if (p.existingTermWarning) {
-      html += '<div class="is-credit-warn"><strong>This term already has a schedule.</strong> Committing replaces it entirely.</div>';
-    }
-
-    if (p.unmatched && p.unmatched.length) {
-      html += '<div class="card-title" style="font-size:13px;margin-top:8px;">Unmatched instructors</div>'
-        + '<p class="text-sm text-muted">Bind each to a person so the import (and future imports) resolves them.</p>';
-      const seen = {};
-      p.unmatched.forEach(function (r) {
-        if (seen[r.instructorRaw]) return; seen[r.instructorRaw] = true;
-        html += '<div class="is-classnum-opt">' + esc(r.instructorRaw)
-          + ' <input class="form-input" style="display:inline-block;width:auto;margin-left:8px;" placeholder="email to bind" id="is-bind-' + _safeId(r.instructorRaw) + '">'
-          + ' <button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.resolveInstructor(\'' + esc(r.instructorRaw).replace(/'/g, "\\'") + '\')">Bind</button></div>';
-      });
-    }
-
-    html += '<div class="form-actions" style="margin-top:10px;">'
-      + '<button class="btn btn-primary" id="is-commit-btn" onclick="IndividualStudiesUI.commitImport()"><i class="ti ti-database-import"></i> Commit schedule</button>'
-      + '</div></div>';
-    el.innerHTML = html;
-  }
-
-  function _safeId(s) { return String(s).replace(/[^a-zA-Z0-9]/g, '_'); }
-
-  function resolveInstructor(instructorRaw) {
-    const input = document.getElementById('is-bind-' + _safeId(instructorRaw));
-    const email = input ? input.value.trim() : '';
-    if (!email) { Toast.show('Enter an email to bind.', 'error'); return; }
-    _busy('Binding instructor…');
-    App.call('individual_studies', 'importResolve', { instructorRaw: instructorRaw, email: email }, function (res) {
-      _idle();
-      Toast.show('Bound to ' + res.name + (res.addedAltName ? ' (alt name saved).' : '.'), 'success');
-      previewImport();
-    }, function () { _idle(); });
-  }
-
-  function commitImport() {
-    if (!_preview) { Toast.show('Preview first.', 'error'); return; }
-    if (_preview.existingTermWarning) {
-      if (!window.confirm('Replace the existing ' + _preview.term + ' schedule entirely?')) return;
-    }
-    _busy('Committing schedule…');
-    App.call('individual_studies', 'importCommit', {
-      term: _preview.term, rows: _preview.rows, acknowledgeOverwrite: true,
-    }, function (res) {
-      _idle();
-      Toast.show('Committed ' + res.rowCount + ' sections for ' + res.term + '.', 'success');
-      document.getElementById('is-import-preview').innerHTML = '';
-      _preview = null; _csvPayload = null;
-      const csv = document.getElementById('is-csv'); if (csv) csv.value = '';
-      loadImportHistory();
-    }, function () { _idle(); });
-  }
-
-  // ── My Templates ──────────────────────────────────
-  let _templates = [];
-  let _pendingTplOwner = '';   // owner to select once the selector is populated (edit case)
-  function loadTemplates() {
-    _listLoading('is-tpl-list');
-    App.call('individual_studies', 'myTemplates', {}, function (rows) {
-      _templates = rows || [];
-      _renderTemplates();
-    }, function () { _listError('is-tpl-list'); });
-  }
-  function _renderTemplates() {
-    const el = document.getElementById('is-tpl-list');
-    if (!el) return;
-    if (!_templates.length) { el.innerHTML = '<div class="empty-state">No templates yet. Create one, or use “Save as template” on a petition.</div>'; return; }
-    let body = '';
-    _templates.forEach(function (t) {
-      body += '<tr>'
-        + '<td><strong>' + esc(t.name) + '</strong>' + (t.isDefault ? ' <span class="badge badge-success">Default</span>' : '') + '</td>'
-        + '<td>' + esc(t.course || '—') + (t.title ? ' · ' + esc(t.title) : '') + '</td>'
-        + (_isSuper ? '<td>' + esc(t.sponsorName) + '</td>' : '')
-        + '<td style="white-space:nowrap;text-align:right;">'
-        +   (t.isDefault ? '' : '<button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.setTemplateDefault(\'' + esc(t.templateId) + '\')" title="Make default"><i class="ti ti-star"></i></button> ')
-        +   '<button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.editTemplate(\'' + esc(t.templateId) + '\')"><i class="ti ti-edit"></i></button> '
-        +   '<button class="btn btn-danger btn-sm" onclick="IndividualStudiesUI.deleteTemplate(\'' + esc(t.templateId) + '\')"><i class="ti ti-trash"></i></button>'
-        + '</td></tr>';
-    });
-    el.innerHTML = '<div style="overflow-x:auto;"><table class="data-table"><thead><tr>'
-      + '<th scope="col">Name</th><th scope="col">Course</th>' + (_isSuper ? '<th scope="col">Owner</th>' : '') + '<th scope="col"></th>'
-      + '</tr></thead><tbody>' + body + '</tbody></table></div>';
-  }
-
-  function _tplFields() {
     return {
-      name: document.getElementById('is-tpl-name').value.trim(),
-      course: document.getElementById('is-tpl-course').value.trim(),
-      title: document.getElementById('is-tpl-title').value.trim(),
-      courseDescription: document.getElementById('is-tpl-desc').value.trim(),
-      evidenceOfPreparation: document.getElementById('is-tpl-evidence').value.trim(),
-      workToBeSubmitted: document.getElementById('is-tpl-work').value.trim(),
-      gradeOption: document.getElementById('is-tpl-grade').value,
-      hoursWithSponsor: document.getElementById('is-tpl-hours').value.trim(),
-      reportRequired: document.getElementById('is-tpl-report').checked,
-      reportDueText: document.getElementById('is-tpl-report-due').value.trim(),
-      roomAccessRoom: document.getElementById('is-tpl-room').value.trim(),
-      isDefault: document.getElementById('is-tpl-default').checked,
+      terms: terms,
+      redirectCourses: REDIRECT_COURSES,
+      gradeOptions: GRADE_OPTIONS.slice(),
+      sponsors: _eligibleSponsors(),
+      profile: {
+        name: profile.name || '',
+        email: profile.email || user,
+        studentId: profile.studentId || '',
+        hasStudentId: !!(profile.studentId),
+      },
     };
   }
-  function _setTplFields(t) {
-    t = t || {};
-    _setVal('is-tpl-id', t.templateId || '');
-    _setVal('is-tpl-name', t.name === '(untitled)' ? '' : (t.name || ''));
-    _setVal('is-tpl-course', t.course || '');
-    _setVal('is-tpl-title', t.title || '');
-    _setVal('is-tpl-desc', t.courseDescription || '');
-    _setVal('is-tpl-evidence', t.evidenceOfPreparation || '');
-    _setVal('is-tpl-work', t.workToBeSubmitted || '');
-    _setVal('is-tpl-grade', t.gradeOption || '');
-    _setVal('is-tpl-hours', t.hoursWithSponsor || '');
-    document.getElementById('is-tpl-report').checked = !!t.reportRequired;
-    onTplReportToggle();
-    _setVal('is-tpl-report-due', t.reportDueText || '');
-    _setVal('is-tpl-room', t.roomAccessRoom || '');
-    document.getElementById('is-tpl-default').checked = !!t.isDefault;
+
+  /** The caller's own petitions, newest first. Students see their own list. */
+  function mine(payload, user, roles) {
+    return DataService.query(SHEET(), TAB(), 'StudentEmail', user)
+      .map(_publicRecord)
+      .sort(_byCreatedDesc);
   }
 
-  function onTplReportToggle() {
-    const on = document.getElementById('is-tpl-report').checked;
-    document.getElementById('is-tpl-report-due-group').style.display = on ? 'block' : 'none';
-  }
-
-  function _showTplForm(titleText) {
-    document.getElementById('is-tpl-form-title').innerHTML = '<i class="ti ti-edit"></i> ' + esc(titleText);
-    document.getElementById('is-tpl-form-card').style.display = 'block';
-    // super_admin gets the owner selector, populated from eligible sponsors.
-    const grp = document.getElementById('is-tpl-sponsor-group');
-    if (_isSuper && grp) {
-      grp.style.display = 'block';
-      _ensureFormData(_populateTplSponsorSelect);
-    } else if (grp) {
-      grp.style.display = 'none';
+  /**
+   * Fetch one petition for the detail modal. Visible to the student who
+   * owns it, the sponsor on it, any advisor, or super_admin.
+   */
+  function get(payload, user, roles) {
+    const rec = _byId((payload || {}).petitionId);
+    if (!rec) throw new Error('Petition not found.');
+    if (!_canView(rec, user, roles)) throw new Error('You do not have access to this petition.');
+    const pub = _publicRecord(rec);
+    if (_isAdvisor(roles) || roles.includes('super_admin')) {
+      pub.advisorContext = _advisorContext(rec);
     }
-    document.getElementById('is-tpl-form-card').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    return pub;
   }
 
-  // Fills the super_admin "owner (instructor)" selector with eligible
-  // individual_studies_sponsor holders. Preserves the current selection.
-  function _populateTplSponsorSelect() {
-    const sel = document.getElementById('is-tpl-sponsor');
-    if (!sel || !_formData || !_formData.sponsors) return;
-    const cur = sel.value;
-    let opts = '<option value="">— Select instructor —</option>';
-    _formData.sponsors.forEach(function (s) { opts += '<option value="' + esc(s.email) + '">' + esc(s.name) + '</option>'; });
-    sel.innerHTML = opts;
-    if (_pendingTplOwner) { sel.value = _pendingTplOwner; _pendingTplOwner = ''; }
-    else if (cur) sel.value = cur;
-  }
+  /**
+   * Submit a NEW petition, or resubmit one currently RETURNED.
+   *
+   * @param {Object} payload
+   *   @param {string} payload.quarter
+   *   @param {string} payload.year          - 4-digit
+   *   @param {string} payload.course        - one of COURSES
+   *   @param {string} payload.sponsorEmail
+   *   @param {string} payload.studySiteAddress
+   *   @param {string} payload.title         - title & description of course
+   *   @param {string} payload.courseDescription
+   *   @param {string} payload.evidenceOfPreparation
+   *   @param {string} payload.workToBeSubmitted
+   *   @param {boolean} payload.reportRequired
+   *   @param {string} [payload.reportDueDate]
+   *   @param {string} payload.hoursWithSponsor
+   *   @param {string} payload.hoursIndependent
+   *   @param {string} payload.college
+   *   @param {string} payload.majorStatus   - "Undeclared" or major name
+   *   @param {string} payload.classLevel    - FR | SO | JR | SR
+   *   @param {string} [payload.petitionId]  - present on resubmission
+   */
+  function submit(payload, user, roles) {
+    payload = payload || {};
+    const termCode = String(payload.termCode || payload.term || '').trim();
+    if (!termCode) throw new Error('Select a term.');
+    const course  = String(payload.course || '').trim();
+    if (!course) throw new Error('Select a course.');
+    const sponsorEmail = String(payload.sponsorEmail || '').trim();
+    const title   = String(payload.title || '').trim();
+    const courseDescription = String(payload.courseDescription || '').trim();
+    const workToBeSubmitted = String(payload.workToBeSubmitted || '').trim();
 
-  function newTemplate() {
-    _setTplFields({});
-    _showTplForm('New template');   // populates owner selector via callback
-  }
-  function editTemplate(id) {
-    const t = _templates.find(function (x) { return x.templateId === id; });
-    if (!t) return;
-    _setTplFields(t);
-    _pendingTplOwner = t.sponsorEmail || '';   // applied once the selector fills
-    _showTplForm('Edit template');
-  }
-  function cancelTemplate() {
-    document.getElementById('is-tpl-form-card').style.display = 'none';
-  }
-  function saveTemplate() {
-    const payload = _tplFields();
-    if (!payload.name) { Toast.show('Give the template a name.', 'error'); return; }
-    const id = document.getElementById('is-tpl-id').value;
-    if (id) payload.templateId = id;
-    if (_isSuper) {
-      const owner = document.getElementById('is-tpl-sponsor').value;
-      if (owner) payload.sponsorEmail = owner;
+    if (!sponsorEmail) throw new Error('Select a faculty sponsor.');
+    if (!courseDescription) throw new Error('A description of the proposed course is required.');
+    if (!workToBeSubmitted) throw new Error('A description of the work to be submitted is required.');
+    if (!_isEligibleSponsor(sponsorEmail)) {
+      throw new Error('That person is not currently eligible to sponsor an individual study.');
     }
-    FormHelper.setLoading('is-tpl-save-btn', true, 'Saving…');
-    _busy('Saving template…');
-    App.call('individual_studies', 'saveTemplate', payload, function () {
-      FormHelper.setLoading('is-tpl-save-btn', false); _idle();
-      Toast.show('Template saved.', 'success');
-      cancelTemplate(); loadTemplates();
-    }, function () { FormHelper.setLoading('is-tpl-save-btn', false); _idle(); });
-  }
-  function setTemplateDefault(id) {
-    _busy('Updating default…');
-    App.call('individual_studies', 'setDefaultTemplate', { templateId: id }, function () {
-      _idle(); Toast.show('Default updated.', 'success'); loadTemplates();
-    }, function () { _idle(); });
-  }
-  function deleteTemplate(id) {
-    if (!window.confirm('Delete this template? This cannot be undone.')) return;
-    _busy('Deleting template…');
-    App.call('individual_studies', 'deleteTemplate', { templateId: id }, function () {
-      _idle(); Toast.show('Template deleted.', 'success'); loadTemplates();
-    }, function () { _idle(); });
+    // Grade option is the student's choice, set at submission.
+    const gradeOption = _requireOneOf(payload.gradeOption, GRADE_OPTIONS, 'Grade option');
+
+    // The term must have an imported schedule, and the course must be one of
+    // this module's undergrad courses present in that term's schedule. The
+    // course's credit value comes from the schedule — not typed, not coded.
+    const offered = _coursesForTerm(termCode);
+    const match = offered.find(c => String(c.course).trim().toUpperCase() === course.toUpperCase());
+    if (!match) {
+      throw new Error('That course is not available for the selected term. The schedule may not be imported yet.');
+    }
+    const credits = match.credits;            // intrinsic to the course (from schedule)
+    const decoded = ClassSchedule.decodeTermCode(termCode);
+
+    // SR 760: total weekly hours are fixed by credits + term length; the
+    // student sets only the with-sponsor portion, the rest is independent.
+    const _hoursSplit = _resolveHoursSplit(payload.hoursWithSponsor, credits, termCode);
+
+    const profile = Auth.getProfile(user);
+    if (!profile) throw new Error('Your profile could not be found.');
+    if (!profile.studentId) {
+      throw new Error('Your profile has no Student ID on file. Contact the department to add one before submitting.');
+    }
+
+    const fields = {
+      TermCode: termCode,
+      Quarter: decoded.quarter, Year: decoded.year,   // derived, for display
+      Course: course,
+      Credits: String(credits),                       // derived from the course
+      SponsorEmail: sponsorEmail,
+      StudySiteAddress: String(payload.studySiteAddress || '').trim(),
+      Title: title,
+      CourseDescription: courseDescription,
+      EvidenceOfPreparation: String(payload.evidenceOfPreparation || '').trim(),
+      WorkToBeSubmitted: workToBeSubmitted,
+      GradeOption: gradeOption,
+      ReportRequired: _boolStr(payload.reportRequired),
+      ReportDueDate: String(payload.reportDueDate || '').trim(),
+      HoursWithSponsor: String(_hoursSplit.withSponsor),
+      HoursIndependent: String(_hoursSplit.independent),
+      College: String(payload.college || '').trim(),
+      MajorStatus: String(payload.majorStatus || '').trim(),
+      ClassLevel: String(payload.classLevel || '').trim(),
+    };
+
+    const existingId = String(payload.petitionId || '').trim();
+
+    // ── Resubmission: must be the caller's own RETURNED record ──
+    if (existingId) {
+      const rec = _byId(existingId);
+      if (!rec) throw new Error('Petition not found: ' + existingId);
+      if (_norm(rec.StudentEmail) !== _norm(user)) {
+        throw new Error('You can only resubmit your own petition.');
+      }
+      if (rec.Stage !== STAGE.RETURNED) {
+        throw new Error('This petition is not awaiting resubmission.');
+      }
+
+      DataService.update(SHEET(), TAB(), 'PetitionID', existingId, Object.assign({}, fields, {
+        Stage: STAGE.SUBMITTED,
+        ReturnNote: '',
+      }));
+
+      // Optional syllabus (replace-in-place keeps the same Drive file id).
+      _maybeSaveSyllabus(existingId, payload, user);
+
+      Tasks.resolveForSource(MODULE, existingId, { resolvedBy: user });
+      _routeToSponsor(existingId, sponsorEmail, profile, course, /*resubmitted*/ true);
+      EventBus.emit(MODULE + '.resubmitted', { recordId: existingId, sponsorEmail: sponsorEmail }, { user: user });
+      return { petitionId: existingId, stage: STAGE.SUBMITTED, resubmitted: true };
+    }
+
+    // ── New petition: enforce the four-part duplicate key ──
+    _assertNoDuplicate(user, termCode, sponsorEmail, course);
+
+    const petitionId = DataService.generateId('IS');
+    DataService.insert(SHEET(), TAB(), Object.assign({
+      PetitionID: petitionId,
+      StudentEmail: user,
+      Stage: STAGE.SUBMITTED,
+      // Sponsor fields (set at sponsor stage; Credits is course-derived and
+      // GradeOption is student-chosen, both supplied via fields below)
+      SponsorComments: '',
+      SponsorDecidedBy: '', SponsorDecidedAt: '',
+      // Advisor fields (set at advisor stage)
+      ClassNumber: '', ClassSection: '', ClassNumberSource: '',
+      TotalSpecialStudyCredits: '', MajorAuthRequired: '', MajorAuthorized: '',
+      AdvisorComments: '', AdvisorProcessedBy: '', AdvisorProcessedAt: '',
+      // Drive (filled at COMPLETE)
+      DriveFileID: '', DocumentLink: '', FileName: '',
+      // Syllabus (optional, set below if supplied)
+      SyllabusFileID: '', SyllabusLink: '', SyllabusName: '',
+      ReturnNote: '',
+    }, fields));
+
+    // Optional syllabus upload.
+    _maybeSaveSyllabus(petitionId, payload, user);
+
+    _routeToSponsor(petitionId, sponsorEmail, profile, course, /*resubmitted*/ false);
+    EventBus.emit(MODULE + '.submitted', { recordId: petitionId, sponsorEmail: sponsorEmail }, { user: user });
+    return { petitionId: petitionId, stage: STAGE.SUBMITTED };
   }
 
-  // "Save as template" from a petition's detail view.
-  function saveAsTemplate(petitionId) {
-    const name = window.prompt('Name this template:');
-    if (name === null) return;
-    if (!name.trim()) { Toast.show('Give the template a name.', 'error'); return; }
-    const makeDefault = window.confirm('Make this your default template?\n\nOK = default · Cancel = not default');
-    _busy('Saving as template…');
-    App.call('individual_studies', 'saveAsTemplate',
-      { petitionId: petitionId, name: name.trim(), isDefault: makeDefault },
-      function () { _idle(); Toast.show('Saved as template.', 'success'); },
-      function () { _idle(); });
+  /** Student withdraws their own non-terminal petition. */
+  function withdraw(payload, user, roles) {
+    const rec = _byId((payload || {}).petitionId);
+    if (!rec) throw new Error('Petition not found.');
+    const isSuper = roles.includes('super_admin');
+    if (!isSuper && _norm(rec.StudentEmail) !== _norm(user)) {
+      throw new Error('You can only withdraw your own petition.');
+    }
+    if (rec.Stage === STAGE.COMPLETE) {
+      throw new Error('A completed petition cannot be withdrawn. Contact the undergraduate advisor.');
+    }
+    Tasks.resolveForSource(MODULE, rec.PetitionID, { resolvedBy: user, note: 'Withdrawn' });
+    DataService.remove(SHEET(), TAB(), 'PetitionID', rec.PetitionID);
+    EventBus.emit(MODULE + '.withdrawn', { recordId: rec.PetitionID }, { user: user });
+    return { withdrawn: true };
   }
 
-  function loadImportHistory() {
-    App.call('individual_studies', 'importHistory', {}, function (rows) {
-      const el = document.getElementById('is-import-history');
-      if (!el) return;
-      rows = rows || [];
-      if (!rows.length) { el.innerHTML = '<div class="empty-state">No imports yet.</div>'; return; }
-      let body = '';
-      rows.forEach(function (r) {
-        body += '<tr><td>' + esc(r.Term) + '</td><td>' + esc(r.RowCount) + '</td>'
-          + '<td>' + esc(r.MatchedCount) + ' / ' + esc(r.UnmatchedCount) + ' / ' + esc(r.StaffCount) + '</td>'
-          + '<td>' + esc(r.ImportedBy) + '</td></tr>';
-      });
-      el.innerHTML = '<div style="overflow-x:auto;"><table class="data-table"><thead><tr>'
-        + '<th>Term</th><th>Sections</th><th>Matched/Unmatched/Staff</th><th>By</th>'
-        + '</tr></thead><tbody>' + body + '</tbody></table></div>';
+  /**
+   * Permanently deletes a petition: resolves its open tasks, trashes its
+   * generated PDF and its syllabus (both best-effort), and removes the row.
+   * super_admin only, any stage. Built for clearing test/mistaken records;
+   * irreversible, so the UI confirms before calling. Audit-log entries are
+   * deliberately left intact (append-only history).
+   */
+  function deletePetition(payload, user, roles) {
+    if (roles.indexOf('super_admin') === -1) {
+      throw new Error('Only a super admin can delete a petition.');
+    }
+    const rec = _byId(String((payload || {}).petitionId || '').trim());
+    if (!rec) throw new Error('Petition not found.');
+
+    // Clear dashboard pointers first so nothing references a gone record.
+    Tasks.resolveForSource(MODULE, rec.PetitionID, { resolvedBy: user });
+    // The room-access task uses a distinct source id; resolve it too.
+    Tasks.resolveForSource(MODULE, _roomAccessSourceId(rec.PetitionID), { resolvedBy: user });
+
+    // Trash both Drive files if present; a missing file must not block deletion.
+    [rec.DriveFileID, rec.SyllabusFileID].forEach(fid => {
+      const id = String(fid || '').trim();
+      if (!id) return;
+      try { DriveApp.getFileById(id).setTrashed(true); }
+      catch (err) { Logger.log('deletePetition: could not trash file ' + id + ' (' + err + ')'); }
+    });
+
+    const removed = DataService.remove(SHEET(), TAB(), 'PetitionID', rec.PetitionID);
+    if (!removed) throw new Error('Delete failed — the record could not be removed.');
+
+    EventBus.emit(MODULE + '.deleted', { recordId: rec.PetitionID }, { user: user });
+    return { petitionId: rec.PetitionID, deleted: true };
+  }
+
+
+  // ============================================================
+  // SPONSOR ACTIONS
+  // ============================================================
+
+  /** Petitions awaiting the caller's sponsor decision (SUBMITTED, theirs). */
+  function sponsorQueue(payload, user, roles) {
+    const isSuper = roles.includes('super_admin');
+    return DataService.query(SHEET(), TAB(), 'Stage', STAGE.SUBMITTED)
+      .filter(r => isSuper || _norm(r.SponsorEmail) === _norm(user))
+      .map(_publicRecord)
+      .sort(_byCreatedDesc);
+  }
+
+  /** Petitions the caller has sponsored, at any stage, newest first. */
+  function sponsored(payload, user, roles) {
+    return DataService.query(SHEET(), TAB(), 'SponsorEmail', user)
+      .map(_publicRecord)
+      .sort(_byCreatedDesc);
+  }
+
+  /**
+   * Sponsor records the instructor-approval decision: grade option (and may
+   * revise the two description fields, and optionally attach a syllabus),
+   * then approves. Credits are NOT set here — they are intrinsic to the
+   * course (from the schedule) and were recorded at submission. Advances to
+   * PENDING_ADVISOR.
+   */
+  function sponsorApprove(payload, user, roles) {
+    const rec = _byId((payload || {}).petitionId);
+    if (!rec) throw new Error('Petition not found.');
+    _assertSponsor(rec, user, roles);
+    if (rec.Stage !== STAGE.SUBMITTED) throw new Error('This petition is not awaiting a sponsor decision.');
+
+    // The sponsor may edit the two description fields; preserve existing
+    // text when not supplied. Grade option is the student's choice and is
+    // not changed here; credits are intrinsic to the course.
+    const courseDescription = payload.courseDescription !== undefined
+      ? String(payload.courseDescription || '').trim() : rec.CourseDescription;
+    const workToBeSubmitted = payload.workToBeSubmitted !== undefined
+      ? String(payload.workToBeSubmitted || '').trim() : rec.WorkToBeSubmitted;
+
+    // The sponsor may adjust the hours split (with-sponsor vs independent);
+    // the SR 760 total stays locked to the course credits + term. If they
+    // don't supply a value, the student's split is kept.
+    const hoursPatch = {};
+    if (payload.hoursWithSponsor !== undefined) {
+      const split = _resolveHoursSplit(payload.hoursWithSponsor, rec.Credits, rec.TermCode);
+      hoursPatch.HoursWithSponsor = String(split.withSponsor);
+      hoursPatch.HoursIndependent = String(split.independent);
+    }
+
+    // The written-report requirement is the sponsor's to set (the student
+    // never sees it; it first appears on the completed PDF). If a template
+    // carried a value onto the petition, it's pre-checked for the sponsor.
+    const reportPatch = {};
+    if (payload.reportRequired !== undefined) {
+      const req = payload.reportRequired === true || payload.reportRequired === 'true';
+      reportPatch.ReportRequired = req ? 'TRUE' : '';
+      reportPatch.ReportDueDate = req ? String(payload.reportDueDate || '').trim() : '';
+    }
+
+    DataService.update(SHEET(), TAB(), 'PetitionID', rec.PetitionID, Object.assign({
+      SponsorComments: String(payload.comments || '').trim(),
+      CourseDescription: courseDescription,
+      WorkToBeSubmitted: workToBeSubmitted,
+      SponsorDecidedBy: user,
+      SponsorDecidedAt: new Date().toISOString(),
+      Stage: STAGE.PENDING_ADVISOR,
+    }, hoursPatch, reportPatch));
+
+    // Sponsor may attach/replace the syllabus as part of their review.
+    _maybeSaveSyllabus(rec.PetitionID, payload, user);
+
+    // Sponsor may request room/lab-space access at approval (checkbox + room).
+    if (payload.requestRoomAccess === true) {
+      _fireRoomAccessRequest(_byId(rec.PetitionID), user, payload.roomAccessRoom, payload.roomAccessNote);
+    }
+
+    Tasks.resolveForSource(MODULE, rec.PetitionID, { resolvedBy: user });
+    _routeToAdvisor(rec.PetitionID, rec);
+    EventBus.emit(MODULE + '.sponsor_approved', { recordId: rec.PetitionID }, { user: user });
+    return { petitionId: rec.PetitionID, stage: STAGE.PENDING_ADVISOR };
+  }
+
+  /** Sponsor returns the petition to the student for revision. */
+  function sponsorReturn(payload, user, roles) {
+    const rec = _byId((payload || {}).petitionId);
+    if (!rec) throw new Error('Petition not found.');
+    _assertSponsor(rec, user, roles);
+    if (rec.Stage !== STAGE.SUBMITTED) throw new Error('This petition is not awaiting a sponsor decision.');
+
+    const note = String((payload || {}).note || '').trim();
+    if (!note) throw new Error('Add a note telling the student what to revise.');
+
+    DataService.update(SHEET(), TAB(), 'PetitionID', rec.PetitionID, {
+      Stage: STAGE.RETURNED,
+      ReturnNote: note,
+    });
+
+    Tasks.resolveForSource(MODULE, rec.PetitionID, { resolvedBy: user });
+    _routeToStudent(rec.PetitionID, rec, note);
+    EventBus.emit(MODULE + '.returned', { recordId: rec.PetitionID }, { user: user });
+    return { petitionId: rec.PetitionID, stage: STAGE.RETURNED };
+  }
+
+  /**
+   * Sponsor requests (or updates) room/lab-space access for a petition,
+   * from the detail view, at any stage. Re-requesting replaces the prior
+   * facilities task and re-notifies with the corrected room. super_admin
+   * may also trigger it. The room/space is required so facilities can act.
+   */
+  function requestRoomAccess(payload, user, roles) {
+    const rec = _byId((payload || {}).petitionId);
+    if (!rec) throw new Error('Petition not found.');
+    if (roles.indexOf('super_admin') === -1 && _norm(rec.SponsorEmail) !== _norm(user)) {
+      throw new Error('Only the petition\'s faculty sponsor can request room access.');
+    }
+    const room = String((payload || {}).roomAccessRoom || '').trim();
+    if (!room) throw new Error('Enter the room or lab space access is needed for.');
+    _fireRoomAccessRequest(rec, user, room, (payload || {}).roomAccessNote);
+    return { petitionId: rec.PetitionID, roomAccessRequested: true, room: room };
+  }
+
+
+  // ============================================================
+  // ADVISOR ACTIONS
+  // ============================================================
+
+  /** Petitions awaiting advisor processing (PENDING_ADVISOR). */
+  function advisorQueue(payload, user, roles) {
+    _assertAdvisor(roles);
+    return DataService.query(SHEET(), TAB(), 'Stage', STAGE.PENDING_ADVISOR)
+      .map(_publicRecord)
+      .sort(_byCreatedDesc);
+  }
+
+  /**
+   * Every petition at any stage, newest first — the undergraduate advisor's
+   * (staff_undergrad) management/history view, and where super_admin reaches
+   * completed petitions to delete. Search/filter/sort happen client-side on
+   * this full list. Advisor role-holders and super_admin only.
+   */
+  function allPetitions(payload, user, roles) {
+    _assertAdvisor(roles);
+    return DataService.getAll(SHEET(), TAB())
+      .map(_publicRecord)
+      .sort(_byCreatedDesc);
+  }
+
+  /**
+   * Advisor (or super_admin) nudges whoever a petition is currently waiting
+   * on: the sponsor (SUBMITTED), the undergraduate advisor pool
+   * (PENDING_ADVISOR), or the student (RETURNED). A deliberate manual
+   * reminder always goes out. Mirrors the thesis module's remindResponsible.
+   */
+  function remindResponsible(payload, user, roles) {
+    _assertAdvisor(roles);
+    const rec = _byId(String((payload || {}).petitionId || '').trim());
+    if (!rec) throw new Error('Petition not found.');
+
+    let to, ask;
+    if (rec.Stage === STAGE.SUBMITTED) {
+      to = [rec.SponsorEmail]; ask = 'review it as the faculty sponsor';
+    } else if (rec.Stage === STAGE.PENDING_ADVISOR) {
+      to = _advisorEmails(); ask = 'assign a class number and complete it';
+    } else if (rec.Stage === STAGE.RETURNED) {
+      to = [rec.StudentEmail]; ask = 'revise and resubmit it';
+    } else {
+      throw new Error('This petition is not waiting on anyone to remind.');
+    }
+    to = (to || []).filter(e => String(e || '').trim());
+    if (!to.length) throw new Error('No one is assigned at this stage to remind.');
+
+    const who = _facultyLabel(user) || user;
+    Notify.send({
+      to: to,
+      subject: 'Reminder: individual study awaiting your action',
+      body: 'A reminder from ' + who + ': the ' + rec.Course + ' individual-studies petition for ' +
+        _studentLabel(rec.StudentEmail) + ' is waiting for you to ' + ask + '.\n\n' +
+        'Open it in the portal: ' + _deepLink(rec.PetitionID),
+      replyTo: Settings.replyTo('individual_studies'),   // module reply-to (Admin → settings); falls back to CONFIG.DEFAULT_REPLY_TO
+    });
+    EventBus.emit(MODULE + '.reminded', { recordId: rec.PetitionID, remindedTo: to }, { user: user });
+    return { petitionId: rec.PetitionID, remindedTo: to };
+  }
+
+  /**
+   * Decision-support context for one petition at the advisor stage:
+   *   - the auto-prefilled pre-assigned class number (sponsor+course match)
+   *   - the unassigned pool and reassignable numbers if no pre-assignment
+   *   - the student's other individual-studies petitions this term, the
+   *     running special-study credit total, and the >7 flag
+   */
+  function advisorContext(payload, user, roles) {
+    _assertAdvisor(roles);
+    const rec = _byId((payload || {}).petitionId);
+    if (!rec) throw new Error('Petition not found.');
+    return _advisorContext(rec, String((payload || {}).course || '').trim());
+  }
+
+  /**
+   * Advisor completes the petition: records the class number (confirmed
+   * prefill, pool pick, or reassignment), the major-authorization decision
+   * if required, generates the canonical PDF, and marks COMPLETE.
+   *
+   * @param {Object} payload
+   *   @param {string} payload.petitionId
+   *   @param {string} payload.classNumber       - the assigned/relayed number
+   *   @param {string} [payload.classSection]     - the source section, if any
+   *   @param {string} [payload.classNumberSource]- preassigned|pool|reassigned
+   *   @param {boolean} [payload.confirmReassign] - required for a reassignment
+   *   @param {boolean} [payload.majorAuthorized] - required when total > 7
+   *   @param {string} [payload.comments]
+   */
+  function advisorComplete(payload, user, roles) {
+    _assertAdvisor(roles);
+    payload = payload || {};
+    const rec = _byId(payload.petitionId);
+    if (!rec) throw new Error('Petition not found.');
+    if (rec.Stage !== STAGE.PENDING_ADVISOR) throw new Error('This petition is not awaiting advisor processing.');
+
+    const classNumber = String(payload.classNumber || '').trim();
+    if (!classNumber) throw new Error('A class number is required to complete the petition.');
+
+    const source = String(payload.classNumberSource || '').trim();
+    if (source === 'reassigned' && payload.confirmReassign !== true) {
+      throw new Error('Reassigning a class number listed under another instructor requires confirmation.');
+    }
+
+    // Optional course correction (e.g. a field study filed as a tutorial and
+    // not caught by the sponsor). The credit level is the anchor: only a
+    // course offered this term at the petition's credit value may be
+    // substituted, so credits, the SR 760 hours split, and the over-cap math
+    // are all unchanged. A credit-level change is a return to the sponsor,
+    // not a correction. The change itself is traced by the audit log (the
+    // dispatch payload) and a courtesy email to the sponsor below.
+    const originalCourse = String(rec.Course || '').trim();
+    let course = String(payload.course || '').trim() || originalCourse;
+    const courseChanged = course.toUpperCase() !== originalCourse.toUpperCase();
+    if (courseChanged) {
+      const allowed = _sameCreditCourses(_recTerm(rec), _toNum(rec.Credits), originalCourse)
+        .find(c => String(c.course).trim().toUpperCase() === course.toUpperCase());
+      if (!allowed) {
+        throw new Error('That course is not offered this term at ' + rec.Credits +
+          ' credits. To change the credit level, return the petition to the sponsor.');
+      }
+      course = String(allowed.course).trim();   // canonical casing from the schedule
+      // The corrected course must not collide with another of the student's
+      // petitions on the (student, term, sponsor, course) duplicate key.
+      const dup = DataService.query(SHEET(), TAB(), 'StudentEmail', rec.StudentEmail).find(r =>
+        String(r.PetitionID) !== String(rec.PetitionID) &&
+        _recTerm(r) === _recTerm(rec) &&
+        _norm(r.SponsorEmail) === _norm(rec.SponsorEmail) &&
+        String(r.Course).trim().toUpperCase() === course.toUpperCase() &&
+        r.Stage !== STAGE.RETURNED);
+      if (dup) {
+        throw new Error('The student already has a ' + course + ' petition with this sponsor this term. ' +
+          'Resolve that petition instead of correcting this one\'s course.');
+      }
+    }
+
+    // Major-department authorization: compute the term total ACROSS the
+    // student's petitions (this one's credits already recorded by the
+    // sponsor). If over the cap, the advisor must authorize.
+    const ctx = _advisorContext(rec);
+    const overCap = ctx.creditTotal > SPECIAL_STUDY_CREDIT_CAP;
+    if (overCap && payload.majorAuthorized !== true) {
+      throw new Error('This student has ' + ctx.creditTotal + ' special-study credits this term (over ' +
+        SPECIAL_STUDY_CREDIT_CAP + '). Department authorization is required to complete.');
+    }
+
+    const now = new Date().toISOString();
+    DataService.update(SHEET(), TAB(), 'PetitionID', rec.PetitionID, {
+      Course: course,
+      ClassNumber: classNumber,
+      ClassSection: String(payload.classSection || '').trim(),
+      ClassNumberSource: source,
+      TotalSpecialStudyCredits: String(ctx.creditTotal),
+      MajorAuthRequired: _boolStr(overCap),
+      MajorAuthorized: _boolStr(overCap ? true : false),
+      AdvisorComments: String(payload.comments || '').trim(),
+      AdvisorProcessedBy: user,
+      AdvisorProcessedAt: now,
+      Stage: STAGE.COMPLETE,
+    });
+
+    // Generate the canonical PDF now that every block is filled. Failure
+    // to generate must not strand the record in a half-completed state, so
+    // it is best-effort and logged; the record is COMPLETE regardless and
+    // the PDF can be regenerated.
+    const finalRec = _byId(rec.PetitionID);
+    let pdf = null;
+    try {
+      pdf = _generatePetitionPdf(finalRec, user);
+      if (pdf && pdf.fileId) {
+        DataService.update(SHEET(), TAB(), 'PetitionID', rec.PetitionID, {
+          DriveFileID: pdf.fileId, DocumentLink: pdf.url || '', FileName: pdf.fileName || '',
+        });
+        _grantStudentViewer(pdf.fileId, finalRec.StudentEmail);
+      }
+    } catch (e) {
+      Logger.log('IndividualStudiesModule: PDF generation failed for ' + rec.PetitionID + ': ' + e);
+    }
+
+    Tasks.resolveForSource(MODULE, rec.PetitionID, { resolvedBy: user });
+    _notifyComplete(finalRec, pdf);
+    if (courseChanged) _notifySponsorCourseChanged(finalRec, originalCourse, user);
+    EventBus.emit(MODULE + '.completed',
+      { recordId: rec.PetitionID, courseChangedFrom: courseChanged ? originalCourse : '' }, { user: user });
+    return { petitionId: rec.PetitionID, stage: STAGE.COMPLETE, documentLink: pdf ? pdf.url : '',
+             course: course, courseChanged: courseChanged };
+  }
+
+  /** Advisor returns the petition to the sponsor, clearing the decision. */
+  function advisorReturn(payload, user, roles) {
+    _assertAdvisor(roles);
+    const rec = _byId((payload || {}).petitionId);
+    if (!rec) throw new Error('Petition not found.');
+    if (rec.Stage !== STAGE.PENDING_ADVISOR) throw new Error('This petition is not awaiting advisor processing.');
+
+    const note = String((payload || {}).note || '').trim();
+    if (!note) throw new Error('Add a note telling the sponsor what to reconsider.');
+
+    DataService.update(SHEET(), TAB(), 'PetitionID', rec.PetitionID, {
+      Stage: STAGE.SUBMITTED,
+      SponsorComments: '',
+      SponsorDecidedBy: '', SponsorDecidedAt: '',
+      ReturnNote: note,
+    });
+
+    Tasks.resolveForSource(MODULE, rec.PetitionID, { resolvedBy: user });
+    _routeToSponsor(rec.PetitionID, rec.SponsorEmail, Auth.getProfile(rec.StudentEmail) || {}, rec.Course, /*resubmitted*/ false, note);
+    EventBus.emit(MODULE + '.advisor_returned', { recordId: rec.PetitionID }, { user: user });
+    return { petitionId: rec.PetitionID, stage: STAGE.SUBMITTED };
+  }
+
+
+  // ============================================================
+  // CLASS-SCHEDULE IMPORT (advisor admin) — thin wrappers over the service
+  // ============================================================
+
+  function importPreview(payload, user, roles) {
+    _assertAdvisor(roles);
+    return ClassSchedule.parsePreview(payload);
+  }
+
+  function importResolve(payload, user, roles) {
+    _assertAdvisor(roles);
+    return ClassSchedule.resolveUnmatched(payload);
+  }
+
+  function importCommit(payload, user, roles) {
+    _assertAdvisor(roles);
+    return ClassSchedule.commit(payload, user);
+  }
+
+  function importHistory(payload, user, roles) {
+    _assertAdvisor(roles);
+    return ClassSchedule.importHistory();
+  }
+
+
+  // ============================================================
+  // PRIVATE — routing (Tasks + Notify)
+  // ============================================================
+
+  function _routeToSponsor(petitionId, sponsorEmail, studentProfile, course, resubmitted, advisorNote) {
+    Tasks.create({
+      module: MODULE, sourceType: SOURCE_TYPE, sourceId: petitionId,
+      label: 'Individual study awaiting sponsor review',
+      assignedTo: sponsorEmail,
+    });
+    const studentName = studentProfile && (studentProfile.name || studentProfile.email) || 'A student';
+    const lines = [
+      (resubmitted ? studentName + ' has revised and resubmitted' : studentName + ' has submitted') +
+        ' an individual-studies petition for ' + course + '.',
+    ];
+    if (advisorNote) lines.push('', 'Advisor note: ' + advisorNote);
+    lines.push('', 'Review it in the portal: ' + _deepLink(petitionId));
+    Notify.send({
+      to: sponsorEmail,
+      subject: 'Individual study awaiting your review',
+      body: lines.join('\n'),
+      replyTo: Settings.replyTo('individual_studies'),   // module reply-to (Admin → settings); falls back to CONFIG.DEFAULT_REPLY_TO
     });
   }
+
+  function _routeToAdvisor(petitionId, rec) {
+    Tasks.create({
+      module: MODULE, sourceType: SOURCE_TYPE, sourceId: petitionId,
+      label: 'Individual study awaiting class number',
+      assignedRole: ADVISOR_ROLE,
+    });
+    const to = Notify.resolveRecipients({
+      superAdmins: [], explicit: _advisorEmails(),
+    });
+    if (to.length) {
+      Notify.send({
+        to: to,
+        subject: 'Individual study awaiting class number',
+        body: 'A ' + rec.Course + ' petition has been approved by its sponsor and is ready for a class number.\n\n' +
+              'Process it in the portal: ' + _deepLink(petitionId),
+        replyTo: Settings.replyTo('individual_studies'),   // module reply-to (Admin → settings); falls back to CONFIG.DEFAULT_REPLY_TO
+      });
+    }
+  }
+
+  /**
+   * Records a room-access request on the petition and notifies facilities.
+   * Idempotent on re-request: resolves any prior room-access task for this
+   * petition first (distinct source id, so the workflow's own task is
+   * untouched), then creates a fresh one and re-emails with the current
+   * room. Best-effort — a notify failure must not break the calling action.
+   */
+  function _fireRoomAccessRequest(rec, user, room, note) {
+    room = String(room || '').trim();
+    note = String(note || '').trim();
+    try {
+      DataService.update(SHEET(), TAB(), 'PetitionID', rec.PetitionID, {
+        RoomAccessRequested: 'TRUE',
+        RoomAccessRoom: room,
+        RoomAccessNote: note,
+        RoomAccessRequestedBy: user,
+        RoomAccessRequestedAt: new Date().toISOString(),
+      });
+
+      const sourceId = _roomAccessSourceId(rec.PetitionID);
+      // Replace any prior request task so a re-request doesn't stack.
+      Tasks.resolveForSource(MODULE, sourceId, { resolvedBy: user, note: 'Superseded by updated request' });
+      Tasks.create({
+        module: MODULE, sourceType: ROOM_ACCESS_SOURCE_TYPE, sourceId: sourceId,
+        label: 'Room access requested: ' + rec.Course + (room ? ' — ' + room : ''),
+        assignedRole: FACILITIES_ROLE,
+      });
+
+      const to = Notify.resolveRecipients({ superAdmins: [], explicit: _facilitiesEmails() });
+      if (to.length) {
+        const student = _studentLabel(rec.StudentEmail);
+        const lines = [
+          'A faculty sponsor has requested room/lab-space access for an individual study.',
+          '',
+          'Student: ' + student,
+          'Course: ' + rec.Course,
+          'Term: ' + _termLabel(rec),
+          'Space: ' + (room || '(not specified)'),
+        ];
+        if (note) lines.push('Note: ' + note);
+        if (rec.ClassNumber) lines.push('Class number: ' + rec.ClassNumber);
+        lines.push('Requested by: ' + (_facultyLabel(user) || user));
+        lines.push('', 'Petition: ' + _deepLink(rec.PetitionID));
+        Notify.send({ to: to, subject: 'Room access requested — ' + rec.Course, body: lines.join('\n'), replyTo: Settings.replyTo('individual_studies') });
+      }
+    } catch (e) {
+      Logger.log('IndividualStudiesModule._fireRoomAccessRequest failed for ' + rec.PetitionID + ': ' + e);
+    }
+  }
+
+  /** Active staff_facilities holders' emails. */
+  function _facilitiesEmails() {
+    return Auth.listUsers()
+      .filter(u => u.active && (u.roles || []).indexOf(FACILITIES_ROLE) !== -1)
+      .map(u => u.email);
+  }
+
+
+  function _routeToStudent(petitionId, rec, note) {
+    Tasks.create({
+      module: MODULE, sourceType: SOURCE_TYPE, sourceId: petitionId,
+      label: 'Your individual study needs revisions',
+      assignedTo: rec.StudentEmail,
+    });
+    Notify.send({
+      to: rec.StudentEmail,
+      subject: 'Your individual-studies petition was returned',
+      body: _fillNotifyTokens(_notifyTemplate('NOTIFY_RETURNED'), rec) + '\n\n' +
+            'What to revise: ' + note + '\n\n' +
+            'Revise and resubmit in the portal: ' + _deepLink(petitionId),
+      replyTo: Settings.replyTo('individual_studies'),   // module reply-to (Admin → settings); falls back to CONFIG.DEFAULT_REPLY_TO
+    });
+  }
+
+  function _notifyComplete(rec, pdf) {
+    const link = (pdf && pdf.url) ? pdf.url : (rec.DocumentLink || '');
+    const lines = [
+      _fillNotifyTokens(_notifyTemplate('NOTIFY_COMPLETE'), rec),
+      '',
+      'Class number: ' + (rec.ClassNumber || '(see portal)'),
+      'Enroll in this course in MyUCSC using the class number above.',
+    ];
+    if (String(rec.AdvisorComments || '').trim()) {
+      lines.push('', 'Note from the undergraduate advisor:', String(rec.AdvisorComments).trim());
+    }
+    if (link) lines.push('', 'Your completed petition (PDF): ' + link);
+    Notify.send({
+      to: rec.StudentEmail,
+      subject: 'Your individual-studies petition is complete',
+      body: lines.join('\n'),
+      replyTo: Settings.replyTo('individual_studies'),   // module reply-to (Admin → settings); falls back to CONFIG.DEFAULT_REPLY_TO
+    });
+  }
+
+  // ── Notification-template plumbing (Settings tab) ──
+
+  /** The effective template for a key: saved value, else the default. */
+  function _notifyTemplate(key) {
+    const v = String(_readSettings()[key] || '').trim();
+    return v || NOTIFY_DEFAULTS[key] || '';
+  }
+
+  /** Fills {FirstName} and {Course} from the petition + profile. */
+  function _fillNotifyTokens(tmpl, rec) {
+    const profile = Auth.getProfile(rec.StudentEmail);
+    const firstName = profile ? (profile.firstName || profile.name || '') : '';
+    return String(tmpl || '')
+      .replace(/\{FirstName\}/g, firstName)
+      .replace(/\{Course\}/g, rec.Course || '');
+  }
+
+  /** Key/value read with defaults — works even before the tab exists. */
+  function _readSettings() {
+    const out = {};
+    Object.keys(NOTIFY_DEFAULTS).forEach(k => { out[k] = NOTIFY_DEFAULTS[k]; });
+    try {
+      DataService.getAll(SHEET(), SETTINGS_TAB()).forEach(r => {
+        const k = String(r.Key || '').trim();
+        if (k) out[k] = String(r.Value != null ? r.Value : '');
+      });
+    } catch (e) { Logger.log('IndividualStudiesModule._readSettings failed: ' + e); }
+    return out;
+  }
+
+  function _writeSetting(key, value) {
+    const existing = DataService.query(SHEET(), SETTINGS_TAB(), 'Key', key);
+    if (existing.length) {
+      DataService.update(SHEET(), SETTINGS_TAB(), 'Key', key, { Value: value });
+    } else {
+      DataService.insert(SHEET(), SETTINGS_TAB(), { Key: key, Value: value });
+    }
+  }
+
+  /** Settings for the advisor's Settings tab. Advisor or super_admin. */
+  function getSettings(payload, user, roles) {
+    _assertAdvisor(roles);
+    return _readSettings();
+  }
+
+  /** Saves the notification templates. Only known keys are written; a key
+   *  absent from the payload is left untouched. Advisor or super_admin. */
+  function saveSettings(payload, user, roles) {
+    _assertAdvisor(roles);
+    payload = payload || {};
+    Object.keys(NOTIFY_DEFAULTS).forEach(key => {
+      if (payload[key] === undefined) return;
+      _writeSetting(key, String(payload[key]));
+    });
+    return _readSettings();
+  }
+
+  /**
+   * Courtesy note to the sponsor when the advisor corrected the course at
+   * completion. Their approval is on the record, so they should know what
+   * it now says. Best-effort — a notify failure must never break the
+   * completion (Notify.send already never throws, but keep the guard).
+   */
+  function _notifySponsorCourseChanged(rec, fromCourse, user) {
+    try {
+      Notify.send({
+        to: rec.SponsorEmail,
+        subject: 'Course corrected on a completed individual study',
+        body: 'While completing the individual-studies petition for ' + _studentLabel(rec.StudentEmail) +
+          ', the undergraduate advisor corrected the course from ' + fromCourse + ' to ' + rec.Course + '.\n\n' +
+          'Credits, grade option, and weekly hours are unchanged.\n\n' +
+          'Corrected by: ' + (_facultyLabel(user) || user) + '\n' +
+          'Petition: ' + _deepLink(rec.PetitionID),
+        replyTo: Settings.replyTo('individual_studies'),
+      });
+    } catch (e) {
+      Logger.log('IndividualStudiesModule._notifySponsorCourseChanged failed for ' + rec.PetitionID + ': ' + e);
+    }
+  }
+
+
+  // ============================================================
+  // PRIVATE — advisor decision context (credit total + class-number options)
+  // ============================================================
+
+  /**
+   * @param {Object} rec - the petition row
+   * @param {string} [courseOverride] - a candidate corrected course; the
+   *   section/preassignment lookups run against it so the advisor can
+   *   preview a correction before completing. Credits always stay the
+   *   petition's own (corrections are credit-matched by design).
+   */
+  function _advisorContext(rec, courseOverride) {
+    const term = _recTerm(rec);
+    const credits = _toNum(rec.Credits);
+    const course = String(courseOverride || '').trim() || rec.Course;
+
+    // The student's individual-studies petitions for this term (this module
+    // only — the grad/thesis credit picture is out of scope here).
+    const studentTermPetitions = DataService.query(SHEET(), TAB(), 'StudentEmail', rec.StudentEmail)
+      .filter(r => _recTerm(r) === term && r.Stage !== STAGE.RETURNED);
+
+    let creditTotal = 0;
+    const others = [];
+    studentTermPetitions.forEach(r => {
+      const c = _toNum(r.Credits);
+      creditTotal += c;
+      if (String(r.PetitionID) !== String(rec.PetitionID)) {
+        others.push({
+          petitionId: r.PetitionID, course: r.Course, credits: c,
+          stage: r.Stage, sponsorName: _facultyLabel(r.SponsorEmail),
+        });
+      }
+    });
+
+    // Class-number options from the ClassSchedule service, for the
+    // EFFECTIVE course (the petition's own, or the candidate correction).
+    let preassigned = null, allSections = [], sectionsMatchedCredits = true;
+    try {
+      const pre = ClassSchedule.findPreassigned(term, course, rec.SponsorEmail);
+      preassigned = pre ? _classRow(pre) : null;
+
+      // The authoritative menu: every section for this course at the
+      // petition's credit value, unassigned (Staff) sections first/
+      // highlighted. Falls back to all course sections (flagged) if none
+      // match the credit value, so the advisor is never stuck.
+      const res = ClassSchedule.sectionsForCourse(term, course, { units: credits });
+      sectionsMatchedCredits = res.matchedCredits;
+      allSections = (res.sections || []).map(_sectionRow);
+    } catch (e) {
+      Logger.log('IndividualStudiesModule._advisorContext: ClassSchedule lookup failed: ' + e);
+    }
+
+    return {
+      term: term,
+      termLabel: _termLabel(rec),
+      credits: credits,
+      course: course,
+      courseOptions: _sameCreditCourses(term, credits, rec.Course),
+      creditTotal: creditTotal,
+      creditCap: SPECIAL_STUDY_CREDIT_CAP,
+      overCap: creditTotal > SPECIAL_STUDY_CREDIT_CAP,
+      otherPetitions: others,
+      preassigned: preassigned,
+      sections: allSections,
+      sectionsMatchedCredits: sectionsMatchedCredits,
+    };
+  }
+
+  function _classRow(r) {
+    return {
+      classNbr: r.ClassNbr, section: r.Section, course: r.Course,
+      instructorRaw: r.InstructorRaw, instructorEmail: r.InstructorEmail,
+      instructorName: r.InstructorEmail ? _facultyLabel(r.InstructorEmail) : (r.InstructorRaw || 'Staff'),
+      matchMethod: r.MatchMethod,
+    };
+  }
+
+  /**
+   * Shape an annotated section (from ClassSchedule.sectionsForCourse) for
+   * the advisor's unified pick list. isStaff/isAssigned drive the UI
+   * highlight (unassigned = ready to take; assigned = relay/reassign).
+   */
+  function _sectionRow(s) {
+    return {
+      classNbr: s.classNbr, section: s.section, units: s.units,
+      instructorRaw: s.instructorRaw, instructorEmail: s.instructorEmail,
+      instructorName: s.instructorEmail ? _facultyLabel(s.instructorEmail) : (s.instructorRaw || 'Staff'),
+      isStaff: s.isStaff, isAssigned: s.isAssigned,
+      matchMethod: s.matchMethod,
+    };
+  }
+
+  /**
+   * Courses the advisor may correct this petition to: those offered in the
+   * term (module allowlist) with at least one section at the petition's
+   * credit value. The petition's own course is always included. The credit
+   * level is the anchor by design — same credits means the SR 760 hours
+   * split and the over-cap math are untouched; changing the credit level
+   * is a return-to-sponsor, not a correction.
+   */
+  function _sameCreditCourses(term, credits, currentCourse) {
+    const cur = String(currentCourse || '').trim().toUpperCase();
+    return _coursesForTerm(term).filter(c => {
+      const name = String(c.course || '').trim();
+      if (name.toUpperCase() === cur) return true;
+      try {
+        return ClassSchedule.sectionsForCourse(term, name, { units: credits }).matchedCredits === true;
+      } catch (e) {
+        return false;
+      }
+    }).map(c => ({ course: c.course, title: c.title || '' }));
+  }
+
+
+  // ============================================================
+  // PRIVATE — PDF generation (campus form layout, at COMPLETE)
+  // ============================================================
+
+  function _generatePetitionPdf(rec, user) {
+    const student = Auth.getProfile(rec.StudentEmail) || {};
+    const html = _petitionHtml(rec, student);
+    const fileName = _buildFileName(rec, student);
+    return ReportService.generate({
+      module: MODULE,
+      reportKey: 'petition',
+      title: 'Individual Studies Petition — ' + (student.name || rec.StudentEmail),
+      sourceId: rec.PetitionID,
+      params: { petitionId: rec.PetitionID, term: _recTerm(rec), course: rec.Course },
+      html: html,
+      fileName: fileName,
+      orientation: 'portrait',
+      letterhead: false,        // self-contained campus-form layout
+      footerText: '',
+    }, user);
+  }
+
+  /**
+   * Filename: <Year>-<Quarter>_<StudentID>-IS-<CourseToken>_Last-First.pdf
+   * e.g. 2025-Fall_1234567-IS-ANTH199_Oelze... no — Last-First is the student.
+   */
+  function _buildFileName(rec, student) {
+    const courseToken = String(rec.Course || '').replace(/\s+/g, '');
+    const last = (student.lastName || '').trim() || 'Student';
+    const first = (student.firstName || '').trim() || '';
+    const who = first ? (last + '-' + first) : last;
+    return rec.Year + '-' + rec.Quarter + '_' + (student.studentId || 'NOID') +
+           '-IS-' + courseToken + '_' + who + '.pdf';
+  }
+
+  /**
+   * Renders the petition as HTML mirroring the campus form's structure:
+   * student block, course block, the three approval blocks (instructor /
+   * course-sponsoring-agency / major-department), with name/email/timestamp
+   * in lieu of each signature. Single populated line per approval block
+   * (one study per petition). Table-based layout for the HTML->Doc->PDF
+   * pipeline (ReportService notes nested layout tables are fragile, so this
+   * keeps top-level tables simple).
+   */
+  function _petitionHtml(rec, student) {
+    const navy = (CONFIG.BRAND && CONFIG.BRAND.NAVY) || '#003C6C';
+    const e = _esc;
+    const studentName = student.name || rec.StudentEmail;
+    const sponsorName = _facultyLabel(rec.SponsorEmail);
+    const advisorName = rec.AdvisorProcessedBy ? _facultyLabel(rec.AdvisorProcessedBy) : '';
+
+    const row = (label, value) =>
+      '<tr><td style="padding:3px 10px 3px 0;color:#555;white-space:nowrap;vertical-align:top;">' + e(label) +
+      '</td><td style="padding:3px 0;vertical-align:top;">' + (value || '&mdash;') + '</td></tr>';
+
+    const sig = (who, email, at) => {
+      if (!who && !email) return '&mdash;';
+      return e(who || email) + (email ? ' &lt;' + e(email) + '&gt;' : '') +
+             (at ? '<br><span style="color:#777;font-size:9pt;">Approved ' + e(_fmtDate(at)) + '</span>' : '');
+    };
+
+    return ''
+      + '<div style="font-family:Arial,Helvetica,sans-serif;color:#1a1a1a;font-size:10pt;line-height:1.4;">'
+      + '<div style="border-bottom:3px solid ' + navy + ';padding-bottom:8px;margin-bottom:12px;">'
+      +   '<div style="font-size:9pt;color:#555;">University of California, Santa Cruz · Department of Anthropology</div>'
+      +   '<div style="font-size:15pt;font-weight:bold;color:' + navy + ';">Petition for Undergraduate Individual Studies Course</div>'
+      +   '<div style="font-size:8.5pt;color:#777;">Academic Senate, Santa Cruz Regulation 6.5, 9.1</div>'
+      + '</div>'
+
+      // Student / context block
+      + '<table style="width:100%;border-collapse:collapse;margin-bottom:10px;">'
+      +   row('Name', e(studentName))
+      +   row('Student ID', e(student.studentId || ''))
+      +   row('Email', e(rec.StudentEmail))
+      +   row('College', e(rec.College))
+      +   row('Status', e(rec.MajorStatus) + (rec.ClassLevel ? ' · ' + e(rec.ClassLevel) : ''))
+      +   row('Quarter / Year', e(rec.Quarter) + ' ' + e(rec.Year))
+      +   row('Course', e(rec.Course))
+      +   row('Course sponsoring agency', 'Anthropology')
+      +   row('Faculty sponsor', e(sponsorName))
+      +   row('Study site address', e(rec.StudySiteAddress))
+      + '</table>'
+
+      // Proposed course
+      + _block('Title and description of proposed course', e(rec.Title) +
+          (rec.CourseDescription ? '<br><br>' + e(rec.CourseDescription) : ''))
+      + _block('Evidence of preparation for special study', e(rec.EvidenceOfPreparation))
+      + _block('Description of work to be submitted', e(rec.WorkToBeSubmitted))
+      + (String(rec.SyllabusLink || '').trim()
+          ? _block('Syllabus', '<a href="' + e(rec.SyllabusLink) + '">' +
+              e(rec.SyllabusName || 'View syllabus') + '</a>')
+          : '')
+
+      + '<table style="width:100%;border-collapse:collapse;margin-bottom:10px;">'
+      +   row('Written report required', _isTrueStr(rec.ReportRequired) ? 'Yes' : 'No')
+      +   (_isTrueStr(rec.ReportRequired) && rec.ReportDueDate ? row('Report due', e(rec.ReportDueDate)) : '')
+      +   row('Hours per week — with faculty sponsor', e(rec.HoursWithSponsor))
+      +   row('Hours per week — independently', e(rec.HoursIndependent))
+      + '</table>'
+
+      // Student signature
+      + _approvalBlock('Student', sig(studentName, rec.StudentEmail, rec.CreatedAt))
+
+      // Instructor (sponsor) approval — credits + grade option
+      + _approvalBlock('Instructor approval (faculty sponsor)',
+          '<table style="width:100%;border-collapse:collapse;">'
+          + row('Credits', e(rec.Credits))
+          + row('Grade option', e(rec.GradeOption))
+          + (rec.SponsorComments ? row('Comments', e(rec.SponsorComments)) : '')
+          + row('Signed', sig(sponsorName, rec.SponsorEmail, rec.SponsorDecidedAt))
+          + '</table>')
+
+      // Course sponsoring agency approval — class number (advisor)
+      + _approvalBlock('Course sponsoring agency approval',
+          '<table style="width:100%;border-collapse:collapse;">'
+          + row('Class number', e(rec.ClassNumber))
+          + row('Course ID', e(rec.Course) + (rec.ClassSection ? ' · sec ' + e(rec.ClassSection) : ''))
+          + row('Signed', sig(advisorName, rec.AdvisorProcessedBy, rec.AdvisorProcessedAt))
+          + '</table>')
+
+      // Major department approval — only meaningful when over the cap
+      + _approvalBlock('Major department approval',
+          '<table style="width:100%;border-collapse:collapse;">'
+          + row('Total special-study credits', e(rec.TotalSpecialStudyCredits))
+          + row('Authorization required', _isTrueStr(rec.MajorAuthRequired) ? 'Yes (over ' + SPECIAL_STUDY_CREDIT_CAP + ' credits)' : 'No')
+          + (_isTrueStr(rec.MajorAuthRequired)
+              ? row('Authorized by', sig(advisorName, rec.AdvisorProcessedBy, rec.AdvisorProcessedAt))
+              : '')
+          + '</table>')
+
+      + '</div>';
+  }
+
+  function _block(label, value) {
+    const navy = (CONFIG.BRAND && CONFIG.BRAND.NAVY) || '#003C6C';
+    return '<div style="margin-bottom:10px;">'
+      + '<div style="font-size:9pt;font-weight:bold;color:' + navy + ';text-transform:uppercase;letter-spacing:0.4px;">' + _esc(label) + '</div>'
+      + '<div style="padding:4px 0;">' + (value || '&mdash;') + '</div>'
+      + '</div>';
+  }
+
+  function _approvalBlock(label, innerHtml) {
+    const navy = (CONFIG.BRAND && CONFIG.BRAND.NAVY) || '#003C6C';
+    return '<div style="border:1px solid #ccc;border-left:3px solid ' + navy + ';padding:8px 10px;margin-bottom:8px;">'
+      + '<div style="font-size:9pt;font-weight:bold;color:' + navy + ';text-transform:uppercase;letter-spacing:0.4px;margin-bottom:4px;">' + _esc(label) + '</div>'
+      + innerHtml
+      + '</div>';
+  }
+
+
+  // ============================================================
+  // PRIVATE — Drive student viewer grant (mirrors TranscriptModule)
+  // ============================================================
+
+  /**
+   * Grants the student read access on a generated file WITHOUT Drive's own
+   * "shared with you" email — the module's completion email already links
+   * the PDF, so the extra Drive notification was noise. Uses the Advanced
+   * Drive Service (already required by ReportService), handling both the
+   * v3 (create/sendNotificationEmail) and v2 (insert/sendNotificationEmails)
+   * shapes; falls back to DriveApp.addViewer (which does email) only if the
+   * advanced service is somehow unavailable. Best-effort, never throws.
+   */
+  function _grantStudentViewer(fileId, studentEmail) {
+    const id = String(fileId || '').trim();
+    const email = String(studentEmail || '').trim();
+    if (!id || !email) return;
+    try {
+      if (typeof Drive !== 'undefined' && Drive && Drive.Permissions) {
+        if (typeof Drive.Permissions.create === 'function') {          // v3
+          Drive.Permissions.create(
+            { role: 'reader', type: 'user', emailAddress: email },
+            id, { sendNotificationEmail: false });
+          return;
+        }
+        if (typeof Drive.Permissions.insert === 'function') {          // v2
+          Drive.Permissions.insert(
+            { role: 'reader', type: 'user', value: email },
+            id, { sendNotificationEmails: false });
+          return;
+        }
+      }
+      DriveApp.getFileById(id).addViewer(email);   // last resort: does notify
+    } catch (e) {
+      Logger.log('IndividualStudiesModule._grantStudentViewer: could not share ' + id + ' with ' + email + ': ' + e);
+    }
+  }
+
+
+  // ============================================================
+  // PRIVATE — eligibility, duplicate guard, record shaping, helpers
+  // ============================================================
+
+  /** Eligible sponsors: active holders of the SPONSOR_ROLE. Implemented
+   *  with Auth.listUsers() (Auth exposes no usersWithRole helper). */
+  function _eligibleSponsors() {
+    return Auth.listUsers()
+      .filter(u => u.active && (u.roles || []).indexOf(SPONSOR_ROLE) !== -1)
+      .map(u => ({ email: u.email, name: u.nameLastFirst || u.name || u.email }))
+      .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  }
+
+  function _isEligibleSponsor(email) {
+    const key = _norm(email);
+    return _eligibleSponsors().some(s => _norm(s.email) === key);
+  }
+
+  /** Advisor (staff_undergrad) emails, active holders. */
+  function _advisorEmails() {
+    return Auth.listUsers()
+      .filter(u => u.active && (u.roles || []).indexOf(ADVISOR_ROLE) !== -1)
+      .map(u => u.email);
+  }
+
+  /**
+   * Blocks an exact (student, term, instructor, course) duplicate, keyed on
+   * the canonical term code. A RETURNED record on the same key is not a
+   * duplicate (the student should resubmit it), so it is excluded.
+   */
+  function _assertNoDuplicate(student, termCode, sponsorEmail, course) {
+    const dup = DataService.query(SHEET(), TAB(), 'StudentEmail', student).find(r =>
+      _recTerm(r) === String(termCode).trim() &&
+      _norm(r.SponsorEmail) === _norm(sponsorEmail) &&
+      String(r.Course).trim() === String(course).trim() &&
+      r.Stage !== STAGE.RETURNED);
+    if (dup) {
+      const label = ClassSchedule.decodeTermCode(termCode).label;
+      throw new Error('You already have a ' + course + ' petition with this sponsor for ' +
+        label + '. Use it rather than filing a duplicate.');
+    }
+  }
+
+  function _publicRecord(r) {
+    return {
+      petitionId: r.PetitionID,
+      studentEmail: r.StudentEmail,
+      studentName: _studentLabel(r.StudentEmail),
+      termCode: _recTerm(r),
+      quarter: r.Quarter, year: r.Year,
+      term: _termLabel(r),                 // human label for display
+      course: r.Course,
+      sponsorEmail: r.SponsorEmail,
+      sponsorName: _facultyLabel(r.SponsorEmail),
+      studySiteAddress: r.StudySiteAddress,
+      title: r.Title,
+      courseDescription: r.CourseDescription,
+      evidenceOfPreparation: r.EvidenceOfPreparation,
+      workToBeSubmitted: r.WorkToBeSubmitted,
+      reportRequired: _isTrueStr(r.ReportRequired),
+      reportDueDate: r.ReportDueDate,
+      hoursWithSponsor: r.HoursWithSponsor,
+      hoursIndependent: r.HoursIndependent,
+      college: r.College, majorStatus: r.MajorStatus, classLevel: r.ClassLevel,
+      credits: r.Credits, gradeOption: r.GradeOption, sponsorComments: r.SponsorComments,
+      sponsorDecidedAt: r.SponsorDecidedAt ? _fmtDate(r.SponsorDecidedAt) : '',
+      classNumber: r.ClassNumber, classSection: r.ClassSection,
+      totalSpecialStudyCredits: r.TotalSpecialStudyCredits,
+      majorAuthRequired: _isTrueStr(r.MajorAuthRequired),
+      majorAuthorized: _isTrueStr(r.MajorAuthorized),
+      advisorComments: r.AdvisorComments,
+      advisorName: r.AdvisorProcessedBy ? _facultyLabel(r.AdvisorProcessedBy) : '',
+      advisorProcessedAt: r.AdvisorProcessedAt ? _fmtDate(r.AdvisorProcessedAt) : '',
+      stage: r.Stage,
+      documentLink: r.DocumentLink || '',
+      syllabusLink: r.SyllabusLink || '',
+      syllabusName: r.SyllabusName || '',
+      roomAccessRequested: _isTrueStr(r.RoomAccessRequested),
+      roomAccessRoom: r.RoomAccessRoom || '',
+      roomAccessNote: r.RoomAccessNote || '',
+      returnNote: r.ReturnNote || '',
+      createdAt: r.CreatedAt ? _fmtDate(r.CreatedAt) : '',
+      _created: r.CreatedAt ? new Date(r.CreatedAt).getTime() : 0,
+    };
+  }
+
+  function _canView(rec, user, roles) {
+    if (roles.includes('super_admin')) return true;
+    if (_isAdvisor(roles)) return true;
+    const me = _norm(user);
+    return _norm(rec.StudentEmail) === me || _norm(rec.SponsorEmail) === me;
+  }
+
+  function _assertSponsor(rec, user, roles) {
+    if (roles.includes('super_admin')) return;
+    if (_norm(rec.SponsorEmail) !== _norm(user)) {
+      throw new Error('Only the petition\'s faculty sponsor can act on it.');
+    }
+  }
+
+  function _assertAdvisor(roles) {
+    if (roles.includes('super_admin')) return;
+    if (!_isAdvisor(roles)) throw new Error('Only the undergraduate advisor can perform this action.');
+  }
+
+  function _isAdvisor(roles) { return (roles || []).indexOf(ADVISOR_ROLE) !== -1; }
+
+  function _byId(petitionId) {
+    const id = String(petitionId || '').trim();
+    if (!id) return null;
+    const found = DataService.query(SHEET(), TAB(), 'PetitionID', id);
+    return found && found.length ? found[0] : null;
+  }
+
+  function _studentLabel(email) {
+    const p = Auth.getProfile(email);
+    return p ? (p.nameLastFirst || p.name || email) : email;
+  }
+
+  function _facultyLabel(email) {
+    if (!email) return '';
+    const p = Auth.getProfile(email);
+    return p ? (p.nameLastFirst || p.name || email) : email;
+  }
+
+  function _deepLink(petitionId) {
+    let base = '';
+    try { base = ScriptApp.getService().getUrl() || ''; } catch (e) { base = ''; }
+    if (!base) return '(open the portal)';
+    const sep = base.indexOf('?') === -1 ? '?' : '&';
+    return base + sep + 'page=' + MODULE + '&focus=' + encodeURIComponent(petitionId);
+  }
+
+  // ── Term helpers (canonical key is the registrar term code) ──
+
+  /** The record's canonical term code. Falls back to deriving from
+   *  Quarter/Year for any legacy row written before TermCode existed. */
+  function _recTerm(r) {
+    const code = String(r.TermCode || '').trim();
+    if (code) return code;
+    return _encodeTermCode(r.Quarter, r.Year);   // legacy fallback
+  }
+
+  /** Human label for a record: prefer stored Quarter/Year, else decode. */
+  function _termLabel(r) {
+    const q = String(r.Quarter || '').trim();
+    const y = String(r.Year || '').trim();
+    if (q && y) return q + ' ' + y;
+    return ClassSchedule.decodeTermCode(_recTerm(r)).label;
+  }
+
+  /** Encode Quarter/Year back to a term code (legacy-row fallback only). */
+  function _encodeTermCode(quarter, year) {
+    const q = { 'winter': '0', 'spring': '2', 'summer': '4', 'fall': '8' };
+    const qd = q[String(quarter || '').trim().toLowerCase()];
+    const y = String(year || '').trim();
+    if (!qd || !/^\d{4}$/.test(y)) return '';
+    return '2' + y.slice(2) + qd;     // 2025 -> "25", prefixed with century 2
+  }
+
+  /** Undergrad courses (with credits) offered in a term, from the schedule. */
+  /**
+   * Builds the UCSC catalog URL for a course from its token. The catalog
+   * pages follow a fixed pattern keyed by the level band (the hundreds
+   * bucket of the number) and the lowercased course slug, e.g.
+   *   ANTH 197F -> .../courses/anth-anthropology/100/anth-197f
+   *   ANTH 297  -> .../courses/anth-anthropology/200/anth-297
+   * The F/G suffixes have their own catalog pages, so the slug is just the
+   * full course number lowercased. Returns '' if the number can't be read.
+   */
+  function _catalogUrl(course) {
+    const s = String(course || '').trim();
+    const m = s.match(/^ANTH\s+(\d+)([A-Z]*)$/i);
+    if (!m) return '';
+    const band = Math.floor(Number(m[1]) / 100) * 100;
+    const slug = 'anth-' + m[1] + (m[2] || '').toLowerCase();
+    return 'https://catalog.ucsc.edu/en/current/general-catalog/courses/anth-anthropology/'
+      + band + '/' + slug;
+  }
+
+  /** This module's undergrad courses present in a term's schedule, each with
+   *  credits (and title) from the schedule. Empty if the term isn't imported. */
+  function _coursesForTerm(termCode) {
+    try {
+      return ClassSchedule.coursesForTerm(termCode, { allowlist: COURSES })
+        .filter(c => c.credits !== null && c.credits !== undefined);
+    } catch (e) {
+      Logger.log('IndividualStudiesModule._coursesForTerm failed: ' + e);
+      return [];
+    }
+  }
+
+  // ── Syllabus (optional supporting document) ──
+
+  /**
+   * Save an optional syllabus upload onto a petition, if one is present in
+   * the payload (payload.syllabusBase64 + payload.syllabusName). Replace-in-
+   * place: a re-upload reuses the existing Drive file id. Grants the student
+   * viewer on the file. Best-effort — a syllabus failure never blocks the
+   * submit/approve it rides along with; it is logged.
+   */
+  function _maybeSaveSyllabus(petitionId, payload, user) {
+    const b64 = String((payload && payload.syllabusBase64) || '').trim();
+    if (!b64) return;     // no syllabus supplied — nothing to do
+    try {
+      const rec = _byId(petitionId);
+      if (!rec) return;
+      const folderId = (CONFIG.INDIVIDUAL_STUDIES && CONFIG.INDIVIDUAL_STUDIES.DRIVE_FOLDER_ID) || '';
+      if (!folderId) { Logger.log('IndividualStudiesModule: no syllabus folder configured.'); return; }
+
+      const name = String(payload.syllabusName || ('syllabus-' + petitionId + '.pdf')).trim();
+      const bytes = Utilities.base64Decode(b64);
+      const blob = Utilities.newBlob(bytes, payload.syllabusMimeType || 'application/pdf', name);
+
+      const existingId = String(rec.SyllabusFileID || '').trim();
+      let file;
+      if (existingId) {
+        // Replace contents in place, keep the same file id.
+        try {
+          file = DriveApp.getFileById(existingId);
+          file.setContent('');                 // clear; then overwrite via Drive
+        } catch (e) { file = null; }
+      }
+      if (!file) {
+        const folder = DriveApp.getFolderById(folderId);
+        file = folder.createFile(blob);
+      } else {
+        // Overwrite by creating anew in the same folder and trashing the old,
+        // since DriveApp can't replace bytes directly without Advanced Drive.
+        const folder = DriveApp.getFolderById(folderId);
+        const fresh = folder.createFile(blob);
+        try { file.setTrashed(true); } catch (e) {}
+        file = fresh;
+      }
+      file.setName(name);
+      const fileId = file.getId();
+      const link = 'https://drive.google.com/file/d/' + fileId + '/view';
+
+      DataService.update(SHEET(), TAB(), 'PetitionID', petitionId, {
+        SyllabusFileID: fileId, SyllabusLink: link, SyllabusName: name,
+      });
+      _grantStudentViewer(fileId, rec.StudentEmail);
+    } catch (e) {
+      Logger.log('IndividualStudiesModule._maybeSaveSyllabus failed for ' + petitionId + ': ' + e);
+    }
+  }
+
+  function _requireOneOf(value, allowed, label) {
+    const v = String(value || '').trim();
+    if (allowed.indexOf(v) === -1) {
+      throw new Error(label + ' must be one of: ' + allowed.join(', ') + '.');
+    }
+    return v;
+  }
+
+  function _byCreatedDesc(a, b) { return (b._created || 0) - (a._created || 0); }
+
+  function _toNum(v) { const n = Number(v); return isFinite(n) ? n : 0; }
+  function _boolStr(v) { return (v === true || v === 'true' || v === 'TRUE') ? 'TRUE' : 'FALSE'; }
+  function _isTrueStr(v) { return String(v).toUpperCase() === 'TRUE'; }
+  function _norm(s) { return String(s == null ? '' : s).trim().toLowerCase(); }
+
+  function _fmtDate(v) {
+    if (!v) return '';
+    const d = (v instanceof Date) ? v : new Date(v);
+    if (isNaN(d.getTime())) return String(v);
+    return Utilities.formatDate(d, Session.getScriptTimeZone(), 'MMM d, yyyy');
+  }
+
+  function _esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  // ── Sponsor-owned templates ───────────────────────
+  // A sponsor saves recurring study fields; on the New Petition form the
+  // student picks a sponsor and that sponsor's templates appear, with the
+  // IsDefault one auto-applied. super_admin may author on a sponsor's
+  // behalf (transitional). Templates live in a sibling tab; credits/title
+  // still resolve from the schedule at apply time.
+
+  const TEMPLATE_FIELDS = ['Course', 'Title', 'CourseDescription', 'WorkToBeSubmitted',
+    'EvidenceOfPreparation', 'GradeOption', 'HoursWithSponsor',
+    'ReportRequired', 'ReportDueText', 'RoomAccessRoom'];
+
+  function _templateRecord(r) {
+    return {
+      templateId: r.TemplateID,
+      sponsorEmail: r.SponsorEmail,
+      sponsorName: _facultyLabel(r.SponsorEmail) || r.SponsorEmail,
+      name: r.Name || '(untitled)',
+      isDefault: _isTrueStr(r.IsDefault),
+      course: r.Course || '',
+      title: r.Title || '',
+      courseDescription: r.CourseDescription || '',
+      workToBeSubmitted: r.WorkToBeSubmitted || '',
+      evidenceOfPreparation: r.EvidenceOfPreparation || '',
+      gradeOption: r.GradeOption || '',
+      hoursWithSponsor: r.HoursWithSponsor || '',
+      reportRequired: _isTrueStr(r.ReportRequired),
+      reportDueText: r.ReportDueText || '',
+      roomAccessRoom: r.RoomAccessRoom || '',
+      active: _isTrueStr(r.Active),
+    };
+  }
+
+  function _templateById(id) {
+    const rows = DataService.query(SHEET(), TPL_TAB(), 'TemplateID', String(id || '').trim());
+    return rows && rows.length ? rows[0] : null;
+  }
+
+  /** Owner check: the template's sponsor, or super_admin. */
+  function _assertTemplateOwner(tplRow, user, roles) {
+    if (roles.indexOf('super_admin') === -1 && _norm(tplRow.SponsorEmail) !== _norm(user)) {
+      throw new Error('You can only manage your own templates.');
+    }
+  }
+
+  /**
+   * Lists templates. A sponsor sees their own; super_admin sees all (or one
+   * sponsor's, if payload.sponsorEmail is given). Active and inactive both
+   * returned so the owner can manage them.
+   */
+  function myTemplates(payload, user, roles) {
+    const isSuper = roles.indexOf('super_admin') === -1 ? false : true;
+    const all = DataService.getAll(SHEET(), TPL_TAB());
+    let rows;
+    if (isSuper) {
+      const filter = _norm((payload || {}).sponsorEmail);
+      rows = filter ? all.filter(r => _norm(r.SponsorEmail) === filter) : all;
+    } else {
+      if (roles.indexOf(SPONSOR_ROLE) === -1) {
+        throw new Error('Only a faculty sponsor can manage templates.');
+      }
+      rows = all.filter(r => _norm(r.SponsorEmail) === _norm(user));
+    }
+    return rows.map(_templateRecord)
+      .sort((a, b) => (b.isDefault ? 1 : 0) - (a.isDefault ? 1 : 0)
+        || String(a.name).localeCompare(String(b.name)));
+  }
+
+  /**
+   * Active templates for one sponsor, for the student's New Petition form.
+   * Read-only; any signed-in user may call it (they're choosing a sponsor).
+   * Default first.
+   */
+  function templatesForSponsor(payload, user, roles) {
+    const sponsor = _norm((payload || {}).sponsorEmail);
+    if (!sponsor) return [];
+    return DataService.getAll(SHEET(), TPL_TAB())
+      .filter(r => _norm(r.SponsorEmail) === sponsor && _isTrueStr(r.Active))
+      .map(_templateRecord)
+      .sort((a, b) => (b.isDefault ? 1 : 0) - (a.isDefault ? 1 : 0)
+        || String(a.name).localeCompare(String(b.name)));
+  }
+
+  /**
+   * Creates or updates a template from the management form. Sponsors own
+   * theirs; super_admin may set SponsorEmail to assign it to an instructor.
+   * If isDefault is set, clears the flag on that sponsor's other templates.
+   */
+  function saveTemplate(payload, user, roles) {
+    payload = payload || {};
+    const isSuper = roles.indexOf('super_admin') !== -1;
+    const isSponsor = roles.indexOf(SPONSOR_ROLE) !== -1;
+    if (!isSuper && !isSponsor) throw new Error('Only a faculty sponsor can save templates.');
+
+    // Determine the owner. Sponsors always own their own; super_admin may
+    // assign to a chosen instructor (must be an eligible sponsor).
+    let owner;
+    if (isSuper && payload.sponsorEmail) {
+      owner = String(payload.sponsorEmail).trim();
+      if (!_isEligibleSponsor(owner)) {
+        throw new Error('That person is not an eligible individual-studies sponsor.');
+      }
+    } else {
+      owner = user;
+    }
+
+    const name = String(payload.name || '').trim();
+    if (!name) throw new Error('Give the template a name.');
+
+    const fields = {
+      SponsorEmail: owner,
+      Name: name,
+      Course: String(payload.course || '').trim(),
+      Title: String(payload.title || '').trim(),
+      CourseDescription: String(payload.courseDescription || '').trim(),
+      WorkToBeSubmitted: String(payload.workToBeSubmitted || '').trim(),
+      EvidenceOfPreparation: String(payload.evidenceOfPreparation || '').trim(),
+      GradeOption: String(payload.gradeOption || '').trim(),
+      HoursWithSponsor: String(payload.hoursWithSponsor || '').trim(),
+      ReportRequired: _boolStr(payload.reportRequired),
+      ReportDueText: String(payload.reportDueText || '').trim(),
+      RoomAccessRoom: String(payload.roomAccessRoom || '').trim(),
+      Active: 'TRUE',
+    };
+
+    let templateId;
+    if (payload.templateId) {
+      const existing = _templateById(payload.templateId);
+      if (!existing) throw new Error('Template not found.');
+      _assertTemplateOwner(existing, user, roles);
+      // Keep the original owner unless super_admin explicitly reassigns.
+      if (!(isSuper && payload.sponsorEmail)) fields.SponsorEmail = existing.SponsorEmail;
+      DataService.update(SHEET(), TPL_TAB(), 'TemplateID', existing.TemplateID, fields);
+      templateId = existing.TemplateID;
+    } else {
+      templateId = DataService.generateId('TPL');
+      DataService.insert(SHEET(), TPL_TAB(), Object.assign({ TemplateID: templateId, IsDefault: '' }, fields));
+    }
+
+    if (payload.isDefault === true || payload.isDefault === 'true') {
+      _applyDefault(fields.SponsorEmail, templateId);
+    }
+    return { templateId: templateId, saved: true };
+  }
+
+  /**
+   * Saves an existing petition's reusable fields as a new template owned by
+   * the petition's sponsor (or, for super_admin, the petition's sponsor).
+   * Asks for a name; may flag default.
+   */
+  function saveAsTemplate(payload, user, roles) {
+    payload = payload || {};
+    const rec = _byId(String(payload.petitionId || '').trim());
+    if (!rec) throw new Error('Petition not found.');
+    if (roles.indexOf('super_admin') === -1 && _norm(rec.SponsorEmail) !== _norm(user)) {
+      throw new Error('Only the petition\'s sponsor can save it as a template.');
+    }
+    const name = String(payload.name || '').trim();
+    if (!name) throw new Error('Give the template a name.');
+
+    const templateId = DataService.generateId('TPL');
+    DataService.insert(SHEET(), TPL_TAB(), {
+      TemplateID: templateId,
+      SponsorEmail: rec.SponsorEmail,
+      Name: name,
+      IsDefault: '',
+      Course: rec.Course || '',
+      Title: rec.Title || '',
+      CourseDescription: rec.CourseDescription || '',
+      WorkToBeSubmitted: rec.WorkToBeSubmitted || '',
+      EvidenceOfPreparation: rec.EvidenceOfPreparation || '',
+      GradeOption: rec.GradeOption || '',
+      HoursWithSponsor: rec.HoursWithSponsor || '',
+      ReportRequired: _boolStr(_isTrueStr(rec.ReportRequired)),
+      ReportDueText: rec.ReportDueDate || '',
+      RoomAccessRoom: rec.RoomAccessRoom || '',
+      Active: 'TRUE',
+    });
+    if (payload.isDefault === true || payload.isDefault === 'true') {
+      _applyDefault(rec.SponsorEmail, templateId);
+    }
+    return { templateId: templateId, saved: true };
+  }
+
+  /** Flags one template as the sponsor's default, clearing the others. */
+  function setDefaultTemplate(payload, user, roles) {
+    const tpl = _templateById((payload || {}).templateId);
+    if (!tpl) throw new Error('Template not found.');
+    _assertTemplateOwner(tpl, user, roles);
+    _applyDefault(tpl.SponsorEmail, tpl.TemplateID);
+    return { templateId: tpl.TemplateID, isDefault: true };
+  }
+
+  function _applyDefault(sponsorEmail, defaultId) {
+    DataService.getAll(SHEET(), TPL_TAB())
+      .filter(r => _norm(r.SponsorEmail) === _norm(sponsorEmail))
+      .forEach(r => {
+        const shouldBe = String(r.TemplateID) === String(defaultId) ? 'TRUE' : '';
+        if ((r.IsDefault || '') !== shouldBe) {
+          DataService.update(SHEET(), TPL_TAB(), 'TemplateID', r.TemplateID, { IsDefault: shouldBe });
+        }
+      });
+  }
+
+  /** Deletes (hard-removes) a template. Owner or super_admin. */
+  function deleteTemplate(payload, user, roles) {
+    const tpl = _templateById((payload || {}).templateId);
+    if (!tpl) throw new Error('Template not found.');
+    _assertTemplateOwner(tpl, user, roles);
+    DataService.remove(SHEET(), TPL_TAB(), 'TemplateID', tpl.TemplateID);
+    return { templateId: tpl.TemplateID, deleted: true };
+  }
+
 
   return {
-    init, switchTab,
-    onTermChange, onCourseChange, onHoursChange, onSyllabusChange,
-    onSponsorChange, onTemplatePick,
-    submit, resetForm, cancelResubmit,
-    startResubmit, startResubmitFromModal,
-    loadMine, loadReview, loadSponsored, renderSponsored, loadAdvisor,
-    loadAll, renderAll, _sortBy, remind,
-    loadNotifySettings, saveNotifySettings,
-    loadTemplates, newTemplate, editTemplate, cancelTemplate, saveTemplate,
-    setTemplateDefault, deleteTemplate, onTplReportToggle, saveAsTemplate,
-    open, rowKey, closeModal,
-    withdraw, deletePetition, onSponsorSyllabusChange, onRoomReqToggle, onSponsorHoursChange, onSponsorReportToggle, sponsorApprove, sponsorReturn, requestRoomAccess,
-    pickClass, advisorComplete, advisorReturn, advisorCourseChanged,
-    onCsvChange, previewImport, resolveInstructor, commitImport, loadImportHistory,
+    // TABS is the tab manifest consumed by TabRegistry (not a dispatchable action).
+    TABS: TABS,
+    // student
+    formData, mine, get, submit, withdraw, deletePetition,
+    // sponsor
+    sponsorQueue, sponsored, sponsorApprove, sponsorReturn, requestRoomAccess,
+    // advisor
+    advisorQueue, allPetitions, remindResponsible, advisorContext, advisorComplete, advisorReturn,
+    // import (advisor admin)
+    importPreview, importResolve, importCommit, importHistory,
+    // settings (advisor)
+    getSettings, saveSettings,
+    // templates (sponsor-owned)
+    myTemplates, templatesForSponsor, saveTemplate, saveAsTemplate, setDefaultTemplate, deleteTemplate,
   };
 
 })();
-IndividualStudiesUI.init();
-</script>

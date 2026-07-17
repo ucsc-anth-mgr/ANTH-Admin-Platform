@@ -1,42 +1,31 @@
 <!-- transcript.html — Transcript module UI (Layer 1 admin + Layer 2 student/advisor) -->
-<!-- Server-rendered: currentUser and userRoles are available as template vars. -->
-<!-- Four role-aware tabs:                                                       -->
-<!--   Upload / My Transcripts  → undergraduate_student                          -->
-<!--   Transcripts (review queue) → staff_undergrad + super_admin                -->
-<!--   Articulations (sync + flagged review + settings) → super_admin / staff    -->
+<!-- Server-rendered: currentUser, userRoles, and visibleTabs are template vars.     -->
+<!-- Tabs render from the TabRegistry (visibleTabs); which roles see each tab is     -->
+<!-- edited in Admin → Modules → Tabs. Defaults: Upload / My transcripts → student,  -->
+<!-- Transcripts (review queue) → staff_undergrad, Settings (articulations) → staff. -->
+<!-- Visibility only: every action is still permission-checked in TranscriptModule.  -->
 
 <? var _roles = JSON.parse(userRoles); ?>
-<? var _isStudent = _roles.includes('undergraduate_student'); ?>
-<? var _isAdvisor = _roles.includes('staff_undergrad') || _roles.includes('super_admin'); ?>
-<? var _isAdmin   = _roles.includes('super_admin') || _roles.includes('staff'); ?>
-<? var _canSync   = _isAdmin; ?>
+<? var trTabs = JSON.parse(visibleTabs); ?>
+<? var trHas = {}; trTabs.forEach(function(t) { trHas[t.key] = true; }); ?>
+<!-- _canSync mirrors the server gate on syncArticulations (super_admin | staff). -->
+<? var _canSync = _roles.includes('super_admin') || _roles.includes('staff'); ?>
 
 <div id="transcript-module">
 
-  <!-- Tab bar (role-aware) -->
+  <!-- Tab bar — rendered from the TabRegistry (visibleTabs template var).
+       Which tabs each role sees is edited in Admin → Modules → Tabs.
+       All buttons render inactive: init() picks the landing tab. -->
   <div class="module-tabs" role="tablist" aria-label="Transcript sections">
-    <? if (_isStudent) { ?>
-    <button class="module-tab" role="tab" aria-selected="false" data-tab="upload" id="tab-btn-upload" onclick="TranscriptUI.switchTab('upload')">
-      <i class="ti ti-file-upload"></i> Upload transcript
+    <? trTabs.forEach(function(t) { ?>
+    <button class="module-tab" role="tab" aria-selected="false" data-tab="<?= t.key ?>" onclick="TranscriptUI.switchTab('<?= t.key ?>')">
+      <i class="ti <?= t.icon ?>"></i> <?= t.label ?>
     </button>
-    <button class="module-tab" role="tab" aria-selected="false" data-tab="mine" onclick="TranscriptUI.switchTab('mine')">
-      <i class="ti ti-list"></i> My transcripts
-    </button>
-    <? } ?>
-    <? if (_isAdvisor) { ?>
-    <button class="module-tab" role="tab" aria-selected="false" data-tab="queue" onclick="TranscriptUI.switchTab('queue')">
-      <i class="ti ti-inbox"></i> Transcripts
-    </button>
-    <? } ?>
-    <? if (_isAdmin) { ?>
-    <button class="module-tab" role="tab" aria-selected="false" data-tab="artic" onclick="TranscriptUI.switchTab('artic')">
-      <i class="ti ti-table"></i> Settings
-    </button>
-    <? } ?>
+    <? }); ?>
   </div>
 
   <!-- ════ Tab: Upload (student) ═══════════════════════════ -->
-  <? if (_isStudent) { ?>
+  <? if (trHas.upload) { ?>
   <div id="tab-upload" class="tab-panel" role="tabpanel" style="display:none;">
     <div class="card" style="margin-top:20px;">
       <div class="card-title"><i class="ti ti-file-upload"></i> Upload a transcript</div>
@@ -78,7 +67,10 @@
     </div>
   </div>
 
+  <? } ?>
+
   <!-- ════ Tab: My transcripts (student) ═══════════════════ -->
+  <? if (trHas.mine) { ?>
   <div id="tab-mine" class="tab-panel" role="tabpanel" style="display:none;">
     <div class="card" style="margin-top:20px;">
       <div class="card-title" style="justify-content:space-between;">
@@ -93,7 +85,7 @@
   <? } ?>
 
   <!-- ════ Tab: Transcripts review queue (advisor) ═════════ -->
-  <? if (_isAdvisor) { ?>
+  <? if (trHas.queue) { ?>
   <div id="tab-queue" class="tab-panel" role="tabpanel" style="display:none;">
     <div class="card" style="margin-top:20px;">
       <div class="card-title" style="justify-content:space-between;">
@@ -113,7 +105,7 @@
   <? } ?>
 
   <!-- ════ Tab: Articulations (admin) ══════════════════════ -->
-  <? if (_isAdmin) { ?>
+  <? if (trHas.artic) { ?>
   <div id="tab-artic" class="tab-panel" role="tabpanel" style="display:none;">
 
     <!-- ── Needs review (flagged, non-1:1) ── -->
@@ -274,9 +266,15 @@ window.TranscriptUI = (() => {
 
   const _roles = <?!= userRoles ?>;
   const _isStudent = _roles.indexOf('undergraduate_student') !== -1;
-  const _isAdvisor = _roles.indexOf('staff_undergrad') !== -1 || _roles.indexOf('super_admin') !== -1;
-  const _isAdmin   = _roles.indexOf('super_admin') !== -1 || _roles.indexOf('staff') !== -1;
   const _isSuperAdmin = _roles.indexOf('super_admin') !== -1;
+
+  // The tabs the registry granted this user, injected by the platform
+  // (Code.gs → TabRegistry.visibleTabs). Tab logic keys off presence
+  // (_hasTab); _roles/_isStudent stay because the deep-link routing and
+  // the review modal's delete button genuinely need identity.
+  const _tabs = <?!= visibleTabs ?>;
+  const _hasTab = {};
+  _tabs.forEach(function (t) { _hasTab[t.key] = true; });
 
   var _years = [];
   var _defaultYearId = null;
@@ -301,14 +299,19 @@ window.TranscriptUI = (() => {
     if (el) el.style.display = 'none';
   }
 
-  // ── Init: pick the default tab by role, wire deep-link ──
+  // ── Init: role-preferred landing among visible tabs, wire deep-link ──
   function init() {
-    if (_isStudent) {
+    // Prefer the role-appropriate tab among those the registry granted
+    // (so a super_admin still lands on the queue, not the first tab),
+    // falling back to the first visible tab.
+    if (_isStudent && _hasTab.upload) {
       switchTab('upload');
-    } else if (_isAdvisor) {
+    } else if (_hasTab.queue) {
       switchTab('queue');
-    } else if (_isAdmin) {
+    } else if (_hasTab.artic) {
       switchTab('artic');
+    } else if (_tabs.length) {
+      switchTab(_tabs[0].key);
     }
 
     // Dashboard/email deep-link via window.__focus.sourceId:
@@ -317,17 +320,18 @@ window.TranscriptUI = (() => {
     //   other   → an advisor landing on the review queue
     var f = window.__focus;
     var target = f && f.sourceId ? String(f.sourceId) : '';
-    if (target === 'form' && _isStudent) {
+    if (target === 'form' && _isStudent && _hasTab.upload) {
       switchTab('upload');
-    } else if (target === 'mine' && _isStudent) {
+    } else if (target === 'mine' && _isStudent && _hasTab.mine) {
       switchTab('mine');
-    } else if (target && target !== 'form' && _isAdvisor) {
+    } else if (target && target !== 'form' && _hasTab.queue) {
       switchTab('queue');
     }
   }
 
   // ── Tabs ────────────────────────────────────────────────
   function switchTab(tab) {
+    if (!_hasTab[tab]) return;   // not one of this user's tabs
     document.querySelectorAll('#transcript-module .tab-panel').forEach(function (p) { p.style.display = 'none'; });
     document.querySelectorAll('#transcript-module .module-tab').forEach(function (b) {
       var on = b.dataset.tab === tab;

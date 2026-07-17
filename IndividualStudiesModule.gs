@@ -53,6 +53,52 @@ const IndividualStudiesModule = (() => {
   const TPL_TAB = function () { return CONFIG.TABS.INDIVIDUAL_STUDIES_TEMPLATES || 'Templates'; };
   const SETTINGS_TAB = function () { return CONFIG.TABS.INDIVIDUAL_STUDIES_SETTINGS || 'PetitionSettings'; };
 
+  // ============================================================
+  // Tab manifest — consumed by TabRegistry (Admin → Modules → Tabs)
+  // ============================================================
+  // Default roles mirror today's tab-bar role gates; super_admin is implicit
+  // on every tab (super sees all enabled tabs). `floor` is the Phase-2 hard
+  // minimum — declared now, enforced later. `actions` documents which
+  // dispatchables each tab drives; in Phase 1 they are NOT enforced from here
+  // — every action keeps its own permission checks in this module regardless
+  // of tab visibility (a visible tab is not a grant).
+  //
+  // Two notes specific to this module:
+  //   • Unlike Transcript, there is NO plain-staff back door: _assertAdvisor
+  //     admits only staff_undergrad and super_admin, so widening advisor/
+  //     settings/schedule to `staff` in the Tabs editor would show tabs whose
+  //     every action throws. Widen to staff_undergrad instead.
+  //   • Modal actions (get, withdraw, requestRoomAccess, saveAsTemplate,
+  //     deletePetition) fire from the detail modal reachable from any list;
+  //     each is listed under its most natural tab. Phase 2 should treat an
+  //     action as permitted if ANY visible tab owns it.
+  const TABS = [
+    { key: 'new', label: 'New Petition', icon: 'ti-file-plus',
+      roles: ['undergraduate_student', 'undergraduate_non_major'],
+      actions: ['formData', 'submit', 'templatesForSponsor'] },
+    { key: 'mine', label: 'My Petitions', icon: 'ti-list',
+      roles: ['undergraduate_student', 'undergraduate_non_major'],
+      actions: ['mine', 'get', 'withdraw'] },
+    { key: 'review', label: 'Review Queue', icon: 'ti-gavel',
+      roles: ['individual_studies_sponsor'],
+      actions: ['sponsorQueue', 'sponsorApprove', 'sponsorReturn', 'requestRoomAccess'] },
+    { key: 'sponsored', label: 'Sponsored', icon: 'ti-user-check',
+      roles: ['individual_studies_sponsor'],
+      actions: ['sponsored', 'saveAsTemplate'] },
+    { key: 'templates', label: 'My Templates', icon: 'ti-template',
+      roles: ['individual_studies_sponsor'],
+      actions: ['myTemplates', 'saveTemplate', 'setDefaultTemplate', 'deleteTemplate'] },
+    { key: 'advisor', label: 'Advisor Queue', icon: 'ti-clipboard-check',
+      roles: ['staff_undergrad'], floor: 'staff_undergrad',
+      actions: ['advisorQueue', 'advisorContext', 'advisorComplete', 'advisorReturn'] },
+    { key: 'settings', label: 'Settings', icon: 'ti-settings',
+      roles: ['staff_undergrad'], floor: 'staff_undergrad',
+      actions: ['allPetitions', 'remindResponsible', 'getSettings', 'saveSettings', 'deletePetition'] },
+    { key: 'schedule', label: 'Class Schedule', icon: 'ti-table-import',
+      roles: ['staff_undergrad'], floor: 'staff_undergrad',
+      actions: ['importPreview', 'importResolve', 'importCommit', 'importHistory'] },
+  ];
+
   // Student-notification message templates (UI-managed in the Settings tab,
   // stored key/value in PetitionSettings — mirrors TranscriptSettings).
   // The template is the MESSAGE ONLY; the structural, load-bearing lines
@@ -1789,6 +1835,8 @@ const IndividualStudiesModule = (() => {
 
 
   return {
+    // TABS is the tab manifest consumed by TabRegistry (not a dispatchable action).
+    TABS: TABS,
     // student
     formData, mine, get, submit, withdraw, deletePetition,
     // sponsor

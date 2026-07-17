@@ -88,6 +88,36 @@ const TranscriptModule = (() => {
   const DEFAULT_YEAR_ID = 76;
 
   // ========================================================================
+  // Tab manifest — consumed by TabRegistry (Admin → Modules → Tabs)
+  // ========================================================================
+  // Default roles mirror today's UI gates; super_admin is implicit on every
+  // tab (super sees all enabled tabs). `floor` is the Phase-2 hard minimum —
+  // declared now, enforced later. `actions` documents which dispatchables
+  // each tab drives; in Phase 1 they are NOT enforced from here — every
+  // action keeps its own permission checks in this module regardless of
+  // tab visibility (a visible tab is not a grant).
+  // dailyDigest is deliberately unlisted: it's Scheduler-invoked, not
+  // tab-driven. Note the server admits `staff` on the queue actions
+  // (listQueue/getTranscript/recordReview) even though the queue tab
+  // defaults to staff_undergrad — widening that tab to staff in the
+  // Tabs editor works with no code change.
+  const TABS = [
+    { key: 'upload', label: 'Upload transcript', icon: 'ti-file-upload',
+      roles: ['undergraduate_student'],
+      actions: ['getMyPrereqStatus', 'listColleges', 'uploadTranscript'] },
+    { key: 'mine', label: 'My transcripts', icon: 'ti-list',
+      roles: ['undergraduate_student'],
+      actions: ['listMyTranscripts'] },
+    { key: 'queue', label: 'Transcripts', icon: 'ti-inbox',
+      roles: ['staff_undergrad'], floor: 'staff_undergrad',
+      actions: ['listQueue', 'getTranscript', 'recordReview', 'overrideReset'] },
+    { key: 'artic', label: 'Settings', icon: 'ti-table',
+      roles: ['staff'], floor: 'staff',
+      actions: ['listAcademicYears', 'getSummary', 'listReview', 'syncArticulations',
+                'getSettings', 'saveSettings', 'shareFolderWithAdvisors', 'diagnose'] },
+  ];
+
+  // ========================================================================
   // Public actions (dispatchable)
   // ========================================================================
 
@@ -1344,7 +1374,9 @@ const TranscriptModule = (() => {
   }
 
   // Only these names are dispatchable.
-  return { listAcademicYears, getSummary, listReview, syncArticulations, diagnose,
+  // TABS is the tab manifest consumed by TabRegistry (not a dispatchable action).
+  return { TABS: TABS,
+           listAcademicYears, getSummary, listReview, syncArticulations, diagnose,
            getMyPrereqStatus, listColleges, listMyTranscripts, uploadTranscript,
            listQueue, getTranscript, recordReview, overrideReset,
            getSettings, saveSettings, dailyDigest, shareFolderWithAdvisors };
