@@ -32,6 +32,7 @@ const CONFIG = {
     AUDIT_LOG:     '1Jog3zXwu5dpAuWuJ8I-VPjbqH4ybRlc3yl1zUzh1HxE',        // Tab: AuditLog
     SUBMISSIONS:   '1zacvd0FhWcjKldhKt9Fan3lWY0QkRAZ3Ol45wobBZl4',  // Tab per form type
     // Senior Thesis module — its OWN spreadsheet (per-module storage tier).
+    // Tabs: Thesis, ThesisEnrollment (ANTH 195S enrollment petitions).
     THESIS:        '16MiWlHY0mTFuBioI5mc1nV3mmiIEbgBssG3h7jO4tBc',
     // Transcript / ASSIST-articulation module — its OWN spreadsheet
     // (per-module storage tier). Tabs: Articulations, ArticulationReview,
@@ -101,6 +102,8 @@ const CONFIG = {
     REPORTS:     'Reports',
     THESIS_ELIGIBILITY: 'ThesisEligibility',
     THESIS_SETTINGS: 'ThesisSettings',
+    // ANTH 195S enrollment petitions (Thesis module; lives in SHEETS.THESIS)
+    THESIS_ENROLLMENT: 'ThesisEnrollment',
     // Transcript / ASSIST-articulation module tabs (live in SHEETS.TRANSCRIPT)
     ARTICULATIONS:        'Articulations',
     ARTICULATION_REVIEW:  'ArticulationReview',
@@ -180,6 +183,11 @@ const CONFIG = {
     // Drive Service enabled: Apps Script editor → Services (+) → Drive API.
     // Without it, resubmission still works but creates a new file ID.
     DRIVE_FOLDER_ID: '1KZ62caXh6IO-fLghGzaPJAC1b-qI50he',
+    // Drive folder for ANTH 195S ENROLLMENT documents: the generated
+    // enrollment-petition PDFs (moved here after ReportService archives
+    // them — the move keeps the file id, so the Reports index stays
+    // valid) and optional syllabus uploads.
+    ENROLLMENT_DRIVE_FOLDER_ID: '1kr3l1hUL3GAPwjNj_G74uqDFqV3_tsTf',
   },
 
   // ── Transcript / ASSIST articulation module ────────────────

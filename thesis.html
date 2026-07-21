@@ -7,15 +7,15 @@
        Which tabs each role sees is edited in Admin → Modules → Tabs.
        All buttons render inactive: init() always picks the landing tab.
        The Submit tab is additionally DATA-gated — it renders hidden and
-       init() reveals it only while the student has no thesis on record,
-       so returning students never see it flash in. `roles` stays parsed
-       here because the Review-queue panel's super_admin scriptlet below
-       still needs it. -->
+       init() reveals it only while the student has no thesis on record;
+       the Enroll tab renders hidden and is revealed only while no 195S
+       enrollment is in flight. `roles` stays parsed here because the
+       Review-queue panel's super_admin scriptlet below still needs it. -->
   <div class="module-tabs" role="tablist" aria-label="Senior Thesis sections">
     <? var roles = JSON.parse(userRoles); ?>
     <? var thTabs = JSON.parse(visibleTabs); ?>
     <? thTabs.forEach(function(t) { ?>
-    <button class="module-tab" role="tab" aria-selected="false" data-tab="<?= t.key ?>"<?!= t.key === 'submit' ? ' id="tab-btn-submit" style="display:none;"' : '' ?> onclick="ThesisUI.switchTab('<?= t.key ?>')">
+    <button class="module-tab" role="tab" aria-selected="false" data-tab="<?= t.key ?>"<?!= (t.key === 'submit' || t.key === 'enroll') ? ' id="tab-btn-' + t.key + '" style="display:none;"' : '' ?> onclick="ThesisUI.switchTab('<?= t.key ?>')">
       <i class="ti <?= t.icon ?>"></i> <?= t.label ?>
     </button>
     <? }); ?>
@@ -27,6 +27,7 @@
       <div class="card-title"><i class="ti ti-file-upload"></i> Senior thesis submission</div>
 
       <div id="resubmit-banner" class="form-hint" style="display:none;"></div>
+      <div id="th-enroll-prefill-hint" class="form-hint" style="display:none;"></div>
 
       <div id="thesis-form">
         <div class="form-row">
@@ -114,6 +115,147 @@
     </div>
   </div>
 
+  <!-- ── Tab: Enroll in 195S (student) ─────────────────── -->
+  <div id="tab-enroll" class="tab-panel" role="tabpanel" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title"><i class="ti ti-file-plus"></i> Enroll in ANTH 195S — Senior Thesis</div>
+      <p class="text-muted" style="font-size:13px;margin-top:0;">
+        This petition requests a class number so you can enroll in ANTH 195S for the term below.
+        Your faculty sponsor approves it, then the undergraduate advisor assigns the class number.
+      </p>
+
+      <div id="en-resubmit-banner" class="form-hint" style="display:none;"></div>
+      <div id="en-no-terms" class="empty-state" style="display:none;padding:24px;">
+        No terms are currently open for ANTH 195S enrollment. The class schedule for the term
+        may not be imported yet — check back, or contact the undergraduate advisor.
+      </div>
+
+      <div id="enroll-form">
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label" for="en-term">Term <span class="required" aria-hidden="true">*</span></label>
+            <select class="form-select" id="en-term" onchange="ThesisUI.onEnrollTermChange()">
+              <option value="">— Loading terms… —</option>
+            </select>
+            <div class="form-hint" id="en-term-hint"></div>
+            <div class="form-error"></div>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="en-grade">Grade option <span class="required" aria-hidden="true">*</span></label>
+            <select class="form-select" id="en-grade">
+              <option value="">— Select —</option>
+            </select>
+            <div class="form-error"></div>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label" for="en-college">College</label>
+            <input class="form-input" type="text" id="en-college" placeholder="e.g. Merrill">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="en-major">Major status</label>
+            <input class="form-input" type="text" id="en-major" placeholder="e.g. Anthropology B.A.">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="en-level">Class level</label>
+            <select class="form-select" id="en-level">
+              <option value="">— Select —</option>
+              <option>FR</option><option>SO</option><option>JR</option><option>SR</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="en-site">Study site address</label>
+          <input class="form-input" type="text" id="en-site" placeholder="Where the work will be carried out (campus, lab, library…)">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="en-title">Thesis title <span class="required" aria-hidden="true">*</span></label>
+          <input class="form-input" type="text" id="en-title" placeholder="Working title is fine">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="en-desc">Description of proposed thesis work <span class="required" aria-hidden="true">*</span></label>
+          <textarea class="form-textarea" id="en-desc" rows="4"
+            placeholder="What you will be writing this term."></textarea>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="en-evidence">Evidence of preparation for special study</label>
+          <textarea class="form-textarea" id="en-evidence" rows="3"
+            placeholder="Completed research, coursework, or fieldwork that prepared you to write the thesis now."></textarea>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="en-work">Description of work to be submitted <span class="required" aria-hidden="true">*</span></label>
+          <textarea class="form-textarea" id="en-work" rows="3"
+            placeholder="The completed senior thesis, plus anything else your sponsor requires."></textarea>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="en-hours">Hours per week with your faculty sponsor</label>
+          <input class="form-input" type="number" id="en-hours" min="0" step="1" value="0" style="max-width:140px;"
+            oninput="ThesisUI.onEnrollHoursInput()">
+          <div class="form-hint" id="en-hours-hint">Select a term to see the required weekly total (Senate Regulation 760).</div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="en-syllabus">Syllabus / study plan (optional, PDF)</label>
+          <input class="form-input" type="file" id="en-syllabus" accept="application/pdf">
+          <div class="form-error" id="en-syllabus-error"></div>
+        </div>
+
+        <!-- ⚠ STOP warning — directly above sponsor selection + submit.
+             The checkbox is REQUIRED; the server refuses without it. -->
+        <div class="en-stop-card" role="alert">
+          <div class="en-stop-title">⚠️ STOP: Are you completing your final thesis THIS quarter?</div>
+          <p style="margin:6px 0 8px;">Please read carefully before requesting a class number for ANTH 195S:</p>
+          <ul style="margin:0 0 10px;padding-left:20px;">
+            <li style="margin-bottom:6px;"><strong>ANTH 195S is specifically for the writing and completion of your thesis.</strong>
+              To receive a passing grade and satisfy your senior comprehensive and DC requirements, your final
+              thesis must be finished and submitted by the end of this course.</li>
+            <li><strong>ANTH 198 is for independent research.</strong> If you are still gathering data, conducting
+              field study, or doing preparatory research and will not finish writing the thesis this term, you
+              must enroll in ANTH 198 instead (use the Individual Studies module).</li>
+          </ul>
+          <label style="display:flex;align-items:flex-start;gap:8px;font-weight:600;cursor:pointer;">
+            <input type="checkbox" id="en-confirm" style="margin-top:3px;">
+            <span>I confirm that I will finish and submit my final thesis this term, and I am ready to enroll in ANTH 195S.</span>
+          </label>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="en-sponsor">Faculty sponsor <span class="required" aria-hidden="true">*</span></label>
+          <select class="form-select" id="en-sponsor">
+            <option value="">— Loading faculty… —</option>
+          </select>
+          <div class="form-error"></div>
+        </div>
+
+        <div class="form-actions">
+          <button class="btn btn-primary" id="en-submit-btn" onclick="ThesisUI.submitEnroll()">
+            <i class="ti ti-send"></i> Submit enrollment petition
+          </button>
+          <button class="btn btn-secondary" id="en-cancel-resubmit" style="display:none;" onclick="ThesisUI.cancelEnrollResubmit()">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Tab: My enrollment (student) ──────────────────── -->
+  <div id="tab-myenroll" class="tab-panel" role="tabpanel" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title" style="justify-content:space-between;">
+        <span><i class="ti ti-list-check"></i> My ANTH 195S enrollment</span>
+        <button class="btn btn-secondary btn-sm" onclick="ThesisUI.loadMyEnrollments()" aria-label="Refresh My enrollment"><i class="ti ti-refresh"></i></button>
+      </div>
+      <div id="myenroll-list"><div class="empty-state">No enrollment petitions yet</div></div>
+    </div>
+  </div>
+
   <!-- ── Tab: Review queue ─────────────────────────────── -->
   <div id="tab-queue" class="tab-panel" role="tabpanel" style="display:none;">
     <div class="card" style="margin-top:20px;">
@@ -140,6 +282,37 @@
         <button class="btn btn-secondary btn-sm" onclick="ThesisUI.loadSponsored()" aria-label="Refresh Sponsored theses"><i class="ti ti-refresh"></i></button>
       </div>
       <div id="sponsored-list"><div class="empty-state">No sponsored theses yet.</div></div>
+    </div>
+  </div>
+
+  <!-- ── Tab: Enrollment queue (sponsor) ───────────────── -->
+  <div id="tab-enrollqueue" class="tab-panel" role="tabpanel" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title" style="justify-content:space-between;">
+        <span><i class="ti ti-gavel"></i> ANTH 195S enrollment petitions naming me</span>
+        <button class="btn btn-secondary btn-sm" onclick="ThesisUI.loadEnrollQueue()" aria-label="Refresh Enrollment queue"><i class="ti ti-refresh"></i></button>
+      </div>
+      <p class="text-muted" style="font-size:13px;margin-top:0;">
+        Petitions marked <strong>Awaiting sponsor</strong> need your decision. Open one to review it —
+        approve only if the student will submit the completed thesis this term.
+      </p>
+      <div id="enrollqueue-list"><div class="empty-state">No enrollment petitions yet.</div></div>
+    </div>
+  </div>
+
+  <!-- ── Tab: Enrollment advisor (staff_undergrad) ─────── -->
+  <div id="tab-enrolladvisor" class="tab-panel" role="tabpanel" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title" style="justify-content:space-between;">
+        <span><i class="ti ti-clipboard-check"></i> Enrollments awaiting a class number</span>
+        <button class="btn btn-secondary btn-sm" onclick="ThesisUI.loadEnrollAdvisor()" aria-label="Refresh Enrollment advisor queue"><i class="ti ti-refresh"></i></button>
+      </div>
+      <p class="text-muted" style="font-size:13px;margin-top:0;">
+        Sponsor-approved ANTH 195S petitions. Open one to assign a class number from the term's
+        schedule and complete it; the total special-study credit check (across Individual Studies
+        petitions too) is surfaced there.
+      </p>
+      <div id="enrolladvisor-list"><div class="empty-state">Nothing waiting.</div></div>
     </div>
   </div>
 
@@ -171,7 +344,7 @@
         <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
           <input type="checkbox" id="th-notify-handoff"> Email the next party at each workflow handoff
         </label>
-        <div class="form-hint">When off, the module advances theses silently (no notification emails).</div>
+        <div class="form-hint">When off, the module advances theses and 195S enrollments silently (no notification emails).</div>
       </div>
       <div class="form-group">
         <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
@@ -233,6 +406,23 @@
   display: inline-flex; padding: 2px; border-radius: 50%;
 }
 .region-chip button:hover { color: var(--color-danger); }
+/* 195S enrollment warning cards */
+.en-stop-card {
+  border: 1px solid var(--color-danger, #b3261e);
+  border-left: 5px solid var(--color-danger, #b3261e);
+  background: rgba(179, 38, 30, 0.05);
+  border-radius: var(--radius, 8px);
+  padding: 12px 16px; margin: 18px 0; font-size: 13.5px;
+}
+.en-stop-title { font-weight: 700; font-size: 14.5px; color: var(--color-danger, #b3261e); }
+.en-notice-card {
+  border: 1px solid var(--color-border);
+  border-left: 5px solid #FDC700;
+  background: rgba(253, 199, 0, 0.08);
+  border-radius: var(--radius, 8px);
+  padding: 12px 16px; margin: 0 0 14px; font-size: 13.5px;
+}
+.en-notice-title { font-weight: 700; font-size: 14px; }
 .th-busy {
   position: fixed; inset: 0; background: rgba(255,255,255,0.75);
   display: flex; align-items: center; justify-content: center; z-index: 1100;
@@ -261,6 +451,13 @@ window.ThesisUI = (() => {
     UNDER_REVIEW:    { cls: 'badge-warning', label: 'Under review' },
     ACCEPTED:        { cls: 'badge-success', label: 'Accepted — final processing' },
   };
+  // 195S enrollment stages (same internal names, enrollment wording).
+  const ENROLL_STAGE_META = {
+    SUBMITTED:       { cls: 'badge-warning', label: 'Awaiting sponsor' },
+    PENDING_ADVISOR: { cls: 'badge-gold',    label: 'Awaiting class number' },
+    RETURNED:        { cls: 'badge-danger',  label: 'Returned' },
+    COMPLETE:        { cls: 'badge-success', label: 'Complete' },
+  };
 
   let _sponsors = [];          // eligible sponsors
   let _readers = [];           // eligible honors readers
@@ -271,6 +468,12 @@ window.ThesisUI = (() => {
   // suffices; cleared whenever the modal closes or a panel re-renders.
   let _commentFile = null;     // { dataBase64, mimeType } or null
   let _resubmitId = null;      // set when revising a returned thesis
+  // ── 195S enrollment state ──
+  let _enrollData = null;      // enrollFormData cache (terms, sponsors, gradeOptions…)
+  let _enrollSyllabus = null;  // student form syllabus { base64, name, mime }
+  let _enrollSpSyllabus = null;// sponsor-panel syllabus attachment
+  let _enrollResubmitId = null;// set when revising a returned enrollment
+  let _enrollPrefill = null;   // COMPLETE-enrollment prefill for the thesis form
   const _roles = <?!= userRoles ?>;
   // Visible tabs for this user, injected by the server (TabRegistry).
   // Tab logic keys off presence (_hasTab); the action panels below still
@@ -289,12 +492,43 @@ window.ThesisUI = (() => {
     App.call('thesis', 'listEligible', { capability: 'sponsor' }, list => {
       _sponsors = list || [];
       _fillFacultySelect(document.getElementById('th-sponsor'), _sponsors);
+      _applyEnrollPrefill();   // sponsor prefill can now land, if fetched
     });
     App.call('thesis', 'listEligible', { capability: 'reader' }, list => {
       _readers = list || [];
     });
     App.call('thesis', 'listCountries', {}, groups => _fillCountrySelect(groups || []));
     document.getElementById('th-file').addEventListener('change', _onFileChange);
+    const enSyl = document.getElementById('en-syllabus');
+    if (enSyl) enSyl.addEventListener('change', _onEnrollSyllabusChange);
+
+    // 195S enrollment tab gating (students): the Enroll button stays
+    // hidden while an enrollment is in flight (SUBMITTED / PENDING_ADVISOR
+    // / RETURNED — a RETURNED record reaches the form via its Revise
+    // button instead), mirroring the Submit tab's data gate. The fetched
+    // rows also seed the My enrollment list.
+    if (_isStudent && _hasTab.enroll) {
+      App.call('thesis', 'enrollMine', {}, rows => {
+        rows = rows || [];
+        const el = document.getElementById('myenroll-list');
+        if (el) el.innerHTML = rows.length ? _renderEnrollList(rows, 'mine')
+          : '<div class="empty-state">No enrollment petitions yet</div>';
+        const inFlight = rows.some(r =>
+          r.stage === 'SUBMITTED' || r.stage === 'PENDING_ADVISOR' || r.stage === 'RETURNED');
+        if (!inFlight) {
+          const btn = document.getElementById('tab-btn-enroll');
+          if (btn) btn.style.display = '';
+        }
+      });
+    }
+    // The thesis-form prefill from a COMPLETE enrollment (the linkage
+    // between the two halves). Fetched once; applied when the submit
+    // form's fields are empty and the sponsor list has loaded.
+    if (_isStudent && _hasTab.submit) {
+      App.call('thesis', 'enrollmentPrefill', {}, res => {
+        if (res && res.found) { _enrollPrefill = res; _applyEnrollPrefill(); }
+      });
+    }
 
     // Deep-link to the submission form: focus 'form' opens the Submit tab
     // directly (standardized "open this module's form" token). Only a
@@ -352,20 +586,59 @@ window.ThesisUI = (() => {
       switchTab(_tabs[0].key);
     }
 
-    // Dashboard/email deep-link: open the focused record's detail. If the
-    // record is awaiting final processing and the viewer works the
-    // graduation queue, land on that tab — it is where the action lives.
+    // Dashboard/email deep-link: open the focused record's detail.
+    // Enrollment ids carry the ENR prefix and route to enrollGet; if the
+    // record is actionable and the viewer works the matching queue, land
+    // on that tab first — it is where the action lives.
     const f = window.__focus;
     if (f && f.sourceId && f.sourceId !== 'form') {
-      _busy('Loading thesis…');
-      App.call('thesis', 'get', { thesisId: f.sourceId }, rec => {
-        _idle();
-        if (_isAdvisorUser && rec && rec.stage === 'PENDING_ADVISOR'
-            && document.querySelector('#thesis-module [data-tab="grad"]')) {
-          switchTab('grad');
-        }
-        _openDetail(rec);
-      }, () => _idle());
+      if (String(f.sourceId).indexOf('ENR') === 0) {
+        _busy('Loading enrollment…');
+        App.call('thesis', 'enrollGet', { enrollmentId: f.sourceId }, rec => {
+          _idle();
+          if (_isAdvisorUser && rec && rec.stage === 'PENDING_ADVISOR'
+              && document.querySelector('#thesis-module [data-tab="enrolladvisor"]')) {
+            switchTab('enrolladvisor');
+          }
+          _openEnrollDetail(rec);
+        }, () => _idle());
+      } else {
+        _busy('Loading thesis…');
+        App.call('thesis', 'get', { thesisId: f.sourceId }, rec => {
+          _idle();
+          if (_isAdvisorUser && rec && rec.stage === 'PENDING_ADVISOR'
+              && document.querySelector('#thesis-module [data-tab="grad"]')) {
+            switchTab('grad');
+          }
+          _openDetail(rec);
+        }, () => _idle());
+      }
+    }
+  }
+
+  // Applies the COMPLETE-enrollment prefill onto the thesis submission
+  // form, but only into EMPTY fields and never during a resubmission —
+  // the student can always type over it. Called from both async arrivals
+  // (the prefill fetch and the sponsor list), whichever lands last wins.
+  function _applyEnrollPrefill() {
+    if (!_enrollPrefill || _resubmitId) return;
+    const q = document.getElementById('th-quarter');
+    const y = document.getElementById('th-year');
+    const s = document.getElementById('th-sponsor');
+    let applied = false;
+    if (q && !q.value && _enrollPrefill.quarter) { q.value = _enrollPrefill.quarter; applied = true; }
+    if (y && !y.value && _enrollPrefill.year)    { y.value = _enrollPrefill.year; applied = true; }
+    if (s && !s.value && _enrollPrefill.sponsorEmail && _sponsors.length) {
+      s.value = _enrollPrefill.sponsorEmail;
+      if (s.value === _enrollPrefill.sponsorEmail) applied = true;
+    }
+    if (applied) {
+      const hint = document.getElementById('th-enroll-prefill-hint');
+      if (hint) {
+        hint.style.display = 'block';
+        hint.innerHTML = '<i class="ti ti-link"></i> Term and sponsor were prefilled from your completed '
+          + 'ANTH 195S enrollment (' + _esc(_enrollPrefill.term || '') + '). Change them if needed.';
+      }
     }
   }
 
@@ -446,6 +719,10 @@ window.ThesisUI = (() => {
     if (tab === 'sponsored') loadSponsored();
     if (tab === 'grad')      loadGradQueue();
     if (tab === 'settings')  loadSettings();
+    if (tab === 'enroll')    loadEnrollForm();
+    if (tab === 'myenroll')  loadMyEnrollments();
+    if (tab === 'enrollqueue')   loadEnrollQueue();
+    if (tab === 'enrolladvisor') loadEnrollAdvisor();
   }
 
   // ── File handling ────────────────────────────────────
@@ -1002,6 +1279,664 @@ window.ThesisUI = (() => {
     if (document.getElementById('tab-mine').style.display !== 'none')  loadMine();
     if (document.getElementById('tab-sponsored').style.display !== 'none') loadSponsored();
     if (document.getElementById('tab-grad').style.display !== 'none') loadGradQueue();
+    const mq = document.getElementById('tab-myenroll');
+    if (mq && mq.style.display !== 'none') loadMyEnrollments();
+    const eq = document.getElementById('tab-enrollqueue');
+    if (eq && eq.style.display !== 'none') loadEnrollQueue();
+    const ea = document.getElementById('tab-enrolladvisor');
+    if (ea && ea.style.display !== 'none') loadEnrollAdvisor();
+  }
+
+  // ════════════════════════════════════════════════════
+  // ANTH 195S ENROLLMENT — student form, lists, modal panels
+  // ════════════════════════════════════════════════════
+
+  // ── Student form ──
+  // Bootstrap data is cached; loadEnrollForm(cb) fetches once and
+  // populates the term / grade / sponsor selects, then runs cb (used by
+  // startEnrollResubmit to prefill after the selects exist).
+  function loadEnrollForm(cb) {
+    if (_enrollData) { if (typeof cb === 'function') cb(); return; }
+    App.call('thesis', 'enrollFormData', {}, data => {
+      _enrollData = data || { terms: [], sponsors: [], gradeOptions: [] };
+      const termSel = document.getElementById('en-term');
+      const terms = _enrollData.terms || [];
+      if (termSel) {
+        termSel.innerHTML = '<option value="">— Select —</option>'
+          + terms.map(t =>
+              '<option value="' + _esc(t.term) + '" data-credits="' + _esc(t.credits)
+              + '" data-weeks="' + _esc(t.weeks) + '">' + _esc(t.label)
+              + ' — ' + _esc(t.credits) + ' credits</option>').join('');
+      }
+      const noTerms = document.getElementById('en-no-terms');
+      const form = document.getElementById('enroll-form');
+      if (noTerms && form) {
+        noTerms.style.display = terms.length ? 'none' : 'block';
+        form.style.display = terms.length ? 'block' : 'none';
+      }
+      const gradeSel = document.getElementById('en-grade');
+      if (gradeSel) {
+        gradeSel.innerHTML = '<option value="">— Select —</option>'
+          + (_enrollData.gradeOptions || []).map(g =>
+              '<option value="' + _esc(g) + '">' + _esc(g) + '</option>').join('');
+      }
+      _fillFacultySelect(document.getElementById('en-sponsor'), _enrollData.sponsors || []);
+      onEnrollTermChange();
+      if (typeof cb === 'function') cb();
+    });
+  }
+
+  function _enrollSelectedTerm() {
+    const sel = document.getElementById('en-term');
+    if (!sel || !sel.value || !_enrollData) return null;
+    return (_enrollData.terms || []).find(t => String(t.term) === String(sel.value)) || null;
+  }
+
+  /** SR 760: total weekly hours are fixed by credits + term length. */
+  function _enrollHoursTotal(t) {
+    if (!t) return 0;
+    const c = Number(t.credits);
+    if (!isFinite(c) || c <= 0) return 0;
+    return Math.round((Number(t.hoursPerCredit || 30) * c) / Number(t.weeks || 10));
+  }
+
+  function onEnrollTermChange() {
+    const t = _enrollSelectedTerm();
+    const hint = document.getElementById('en-term-hint');
+    if (hint) {
+      hint.textContent = t
+        ? 'ANTH 195S · ' + t.credits + ' credits' + (t.isSummer ? ' · summer (5-week) term' : '')
+        : '';
+    }
+    onEnrollHoursInput();
+  }
+
+  function onEnrollHoursInput() {
+    const t = _enrollSelectedTerm();
+    const hint = document.getElementById('en-hours-hint');
+    if (!hint) return;
+    if (!t) {
+      hint.textContent = 'Select a term to see the required weekly total (Senate Regulation 760).';
+      return;
+    }
+    const total = _enrollHoursTotal(t);
+    const input = document.getElementById('en-hours');
+    let ws = Number((input && input.value) || 0);
+    if (!isFinite(ws) || ws < 0) ws = 0;
+    if (ws > total) {
+      hint.innerHTML = '<span style="color:var(--color-danger);">Hours with your sponsor cannot exceed the '
+        + total + ' hours/week total for ' + _esc(t.credits) + ' credits (Senate Regulation 760).</span>';
+      return;
+    }
+    hint.textContent = 'Senate Regulation 760: ' + total + ' hours/week total for '
+      + t.credits + ' credits' + (t.isSummer ? ' (summer)' : '') + ' — '
+      + ws + ' with your sponsor, ' + (total - ws) + ' independent.';
+  }
+
+  function _onEnrollSyllabusChange(e) {
+    const errEl = document.getElementById('en-syllabus-error');
+    if (errEl) errEl.classList.remove('visible');
+    _enrollSyllabus = null;
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    if (file.type !== 'application/pdf') {
+      if (errEl) { errEl.textContent = 'The syllabus must be a PDF file.'; errEl.classList.add('visible'); }
+      e.target.value = ''; return;
+    }
+    const fr = new FileReader();
+    fr.onload = () => {
+      _enrollSyllabus = {
+        base64: String(fr.result).split(',')[1] || '',
+        name: file.name, mime: 'application/pdf',
+      };
+    };
+    fr.onerror = () => {
+      _enrollSyllabus = null;
+      if (errEl) { errEl.textContent = 'Could not read that file. Try again.'; errEl.classList.add('visible'); }
+    };
+    fr.readAsDataURL(file);
+  }
+
+  function submitEnroll() {
+    const term = document.getElementById('en-term').value;
+    if (!term) { Toast.show('Select a term.', 'error'); return; }
+    const grade = document.getElementById('en-grade').value;
+    if (!grade) { Toast.show('Choose a grade option.', 'error'); return; }
+    const title = document.getElementById('en-title').value.trim();
+    if (!title) { Toast.show('Enter a thesis title (a working title is fine).', 'error'); return; }
+    const desc = document.getElementById('en-desc').value.trim();
+    if (!desc) { Toast.show('Describe the thesis work you will complete this term.', 'error'); return; }
+    const work = document.getElementById('en-work').value.trim();
+    if (!work) { Toast.show('Describe the work to be submitted.', 'error'); return; }
+    // The STOP confirmation is REQUIRED — the server refuses without it.
+    if (!document.getElementById('en-confirm').checked) {
+      Toast.show('Please read the warning and confirm you will finish and submit your thesis this term. '
+        + 'If not, enroll in ANTH 198 through the Individual Studies module instead.', 'error');
+      return;
+    }
+    const sponsor = document.getElementById('en-sponsor').value;
+    if (!sponsor) { Toast.show('Select a faculty sponsor.', 'error'); return; }
+
+    const payload = {
+      termCode: term,
+      sponsorEmail: sponsor,
+      studentConfirmed: true,
+      gradeOption: grade,
+      title: title,
+      courseDescription: desc,
+      evidenceOfPreparation: document.getElementById('en-evidence').value.trim(),
+      workToBeSubmitted: work,
+      hoursWithSponsor: document.getElementById('en-hours').value,
+      studySiteAddress: document.getElementById('en-site').value.trim(),
+      college: document.getElementById('en-college').value.trim(),
+      majorStatus: document.getElementById('en-major').value.trim(),
+      classLevel: document.getElementById('en-level').value,
+    };
+    if (_enrollSyllabus) {
+      payload.syllabusBase64 = _enrollSyllabus.base64;
+      payload.syllabusName = _enrollSyllabus.name;
+      payload.syllabusMimeType = _enrollSyllabus.mime;
+    }
+    if (_enrollResubmitId) payload.enrollmentId = _enrollResubmitId;
+
+    FormHelper.setLoading('en-submit-btn', true, _enrollResubmitId ? 'Resubmitting…' : 'Submitting…');
+    _busy(_enrollResubmitId ? 'Resubmitting your petition…' : 'Submitting your petition…');
+    App.call('thesis', 'enrollSubmit', payload, res => {
+      FormHelper.setLoading('en-submit-btn', false);
+      _idle();
+      Toast.show(res && res.resubmitted ? 'Enrollment petition resubmitted.'
+        : 'Enrollment petition submitted to your sponsor.', 'success');
+      _resetEnrollForm();
+      // A petition is now in flight — re-hide the Enroll tab (the server's
+      // per-term duplicate guard is the real gate; the tab shouldn't invite it).
+      const btn = document.getElementById('tab-btn-enroll');
+      if (btn) btn.style.display = 'none';
+      if (_hasTab.myenroll) switchTab('myenroll'); else switchTab('mine');
+    }, () => { FormHelper.setLoading('en-submit-btn', false); _idle(); });
+  }
+
+  function _resetEnrollForm() {
+    ['en-term', 'en-grade', 'en-level', 'en-sponsor'].forEach(id => {
+      const el = document.getElementById(id); if (el) el.value = '';
+    });
+    ['en-college', 'en-major', 'en-site', 'en-title', 'en-desc', 'en-evidence', 'en-work'].forEach(id => {
+      const el = document.getElementById(id); if (el) el.value = '';
+    });
+    const hours = document.getElementById('en-hours'); if (hours) hours.value = '0';
+    const syl = document.getElementById('en-syllabus'); if (syl) syl.value = '';
+    const conf = document.getElementById('en-confirm'); if (conf) conf.checked = false;
+    _enrollSyllabus = null; _enrollResubmitId = null;
+    const banner = document.getElementById('en-resubmit-banner');
+    if (banner) banner.style.display = 'none';
+    const cancel = document.getElementById('en-cancel-resubmit');
+    if (cancel) cancel.style.display = 'none';
+    onEnrollTermChange();
+  }
+
+  function cancelEnrollResubmit() {
+    _resetEnrollForm();
+    const btn = document.getElementById('tab-btn-enroll');
+    if (btn) btn.style.display = 'none';
+    if (_hasTab.myenroll) switchTab('myenroll');
+  }
+
+  function startEnrollResubmit(rec) {
+    _enrollResubmitId = rec.enrollmentId;
+    // The Enroll tab is hidden while a petition is in flight; the Revise
+    // button is the sanctioned way back in, so reveal it for this pass.
+    const btn = document.getElementById('tab-btn-enroll');
+    if (btn) btn.style.display = '';
+    switchTab('enroll');
+    loadEnrollForm(() => {
+      document.getElementById('en-term').value = rec.termCode || '';
+      document.getElementById('en-grade').value = rec.gradeOption || '';
+      document.getElementById('en-college').value = rec.college || '';
+      document.getElementById('en-major').value = rec.majorStatus || '';
+      document.getElementById('en-level').value = rec.classLevel || '';
+      document.getElementById('en-site').value = rec.studySiteAddress || '';
+      document.getElementById('en-title').value = rec.title || '';
+      document.getElementById('en-desc').value = rec.courseDescription || '';
+      document.getElementById('en-evidence').value = rec.evidenceOfPreparation || '';
+      document.getElementById('en-work').value = rec.workToBeSubmitted || '';
+      document.getElementById('en-hours').value = rec.hoursWithSponsor || '0';
+      document.getElementById('en-sponsor').value = rec.sponsorEmail || '';
+      // Resubmission re-attests: the checkbox starts unchecked on purpose.
+      document.getElementById('en-confirm').checked = false;
+      onEnrollTermChange();
+      const banner = document.getElementById('en-resubmit-banner');
+      if (banner) {
+        banner.style.display = 'block';
+        banner.innerHTML = '<strong>Revising a returned enrollment petition.</strong> '
+          + (rec.returnNote ? 'Reviewer note: ' + _esc(rec.returnNote) + ' ' : '')
+          + 'Update the fields, re-confirm the statement, and resubmit.';
+      }
+      const cancel = document.getElementById('en-cancel-resubmit');
+      if (cancel) cancel.style.display = 'inline-flex';
+    });
+    closeModal();
+  }
+
+  // ── Lists ──
+  function loadMyEnrollments() {
+    const el = document.getElementById('myenroll-list');
+    if (!el) return;
+    el.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
+    App.call('thesis', 'enrollMine', {}, rows => {
+      el.innerHTML = (rows && rows.length) ? _renderEnrollList(rows, 'mine')
+        : '<div class="empty-state">No enrollment petitions yet</div>';
+    });
+  }
+
+  function loadEnrollQueue() {
+    const el = document.getElementById('enrollqueue-list');
+    if (!el) return;
+    el.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
+    App.call('thesis', 'enrollSponsorQueue', {}, rows => {
+      el.innerHTML = (rows && rows.length) ? _renderEnrollList(rows, 'sponsor')
+        : '<div class="empty-state">No enrollment petitions yet.</div>';
+    });
+  }
+
+  function loadEnrollAdvisor() {
+    const el = document.getElementById('enrolladvisor-list');
+    if (!el) return;
+    el.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
+    App.call('thesis', 'enrollAdvisorQueue', {}, rows => {
+      el.innerHTML = (rows && rows.length) ? _renderEnrollList(rows, 'advisor')
+        : '<div class="empty-state">Nothing waiting.</div>';
+    });
+  }
+
+  function _renderEnrollList(rows, context) {
+    const showStudent = context !== 'mine';
+    const showRemind = context === 'advisor' && _isAdvisorUser;
+    const body = rows.map(r => {
+      const m = ENROLL_STAGE_META[r.stage] || { cls: 'badge-neutral', label: r.stage };
+      const who = showStudent ? _esc(r.studentName) : _esc(r.sponsorName);
+      const whoLabel = showStudent ? 'Student' : 'Sponsor';
+      const classCell = r.classNumber
+        ? '<strong>' + _esc(r.classNumber) + '</strong>'
+        : '<span class="text-muted">—</span>';
+      const remindCell = showRemind
+        ? '<td onclick="event.stopPropagation();"><button class="btn btn-secondary btn-sm" '
+          + 'onclick="ThesisUI.enrollRemind(\'' + _esc(r.enrollmentId) + '\')" title="Email whoever this petition is waiting on">'
+          + '<i class="ti ti-bell"></i> Remind</button></td>'
+        : '';
+      return '<tr role="button" tabindex="0" aria-label="Open enrollment petition for ' + _esc(r.term) + '" '
+        + 'onclick="ThesisUI.openEnroll(\'' + _esc(r.enrollmentId) + '\',\'' + _esc(r.stage) + '\')" '
+        + 'onkeydown="ThesisUI.enrollRowKey(event,\'' + _esc(r.enrollmentId) + '\',\'' + _esc(r.stage) + '\')" style="cursor:pointer;">'
+        + '<td>' + _esc(r.term) + '</td>'
+        + '<td><span class="text-muted" style="font-size:11px;">' + whoLabel + '</span><br>' + who + '</td>'
+        + '<td>' + _esc(r.credits || '') + '</td>'
+        + '<td>' + classCell + '</td>'
+        + '<td><span class="badge ' + m.cls + ' th-stage">' + m.label + '</span></td>'
+        + remindCell
+        + '<td><i class="ti ti-chevron-right text-muted"></i></td>'
+        + '</tr>';
+    }).join('');
+    return '<div class="table-wrap"><table class="data-table"><thead><tr>'
+      + '<th scope="col">Term</th><th scope="col">' + (showStudent ? 'Student' : 'Sponsor') + '</th>'
+      + '<th scope="col">Credits</th><th scope="col">Class #</th><th scope="col">Stage</th>'
+      + (showRemind ? '<th scope="col"></th>' : '') + '<th scope="col"></th>'
+      + '</tr></thead><tbody>' + body + '</tbody></table></div>';
+  }
+
+  function enrollRowKey(ev, enrollmentId, listedStage) {
+    if (ev.key === 'Enter' || ev.key === ' ') {
+      ev.preventDefault();
+      openEnroll(enrollmentId, listedStage);
+    }
+  }
+
+  function openEnroll(enrollmentId, listedStage) {
+    _busy('Loading enrollment…');
+    App.call('thesis', 'enrollGet', { enrollmentId }, rec => {
+      _idle();
+      if (listedStage && rec && rec.stage !== listedStage) _afterAction();
+      _openEnrollDetail(rec);
+    }, () => _idle());
+  }
+
+  // ── Detail modal ──
+  function _openEnrollDetail(rec) {
+    _lastFocus = document.activeElement;
+    const m = ENROLL_STAGE_META[rec.stage] || { cls: 'badge-neutral', label: rec.stage };
+    document.getElementById('th-modal-title').textContent =
+      'ANTH 195S enrollment — ' + (rec.term || '');
+
+    let html = '<dl class="th-detail-grid">'
+      + _row('Stage', '<span class="badge ' + m.cls + '">' + m.label + '</span>')
+      + _row('Student', _esc(rec.studentName))
+      + _row('Term', _esc(rec.term))
+      + _row('Course', _esc(rec.course) + (rec.credits ? ' · ' + _esc(rec.credits) + ' credits' : ''))
+      + (rec.gradeOption ? _row('Grade option', _esc(rec.gradeOption)) : '')
+      + (rec.college || rec.majorStatus || rec.classLevel
+          ? _row('Student status', _esc([rec.college, rec.majorStatus, rec.classLevel].filter(Boolean).join(' · ')))
+          : '')
+      + (rec.studySiteAddress ? _row('Study site', _esc(rec.studySiteAddress)) : '')
+      + (rec.title ? _row('Thesis title', _esc(rec.title)) : '')
+      + (rec.courseDescription ? _row('Proposed work', _esc(rec.courseDescription)) : '')
+      + (rec.evidenceOfPreparation ? _row('Preparation', _esc(rec.evidenceOfPreparation)) : '')
+      + (rec.workToBeSubmitted ? _row('Work to be submitted', _esc(rec.workToBeSubmitted)) : '')
+      + _row('Hours / week', _esc(rec.hoursWithSponsor || '0') + ' with sponsor · '
+          + _esc(rec.hoursIndependent || '0') + ' independent')
+      + (rec.reportRequired ? _row('Written report', 'Required' + (rec.reportDueDate ? ' — due ' + _esc(rec.reportDueDate) : '')) : '')
+      + (rec.syllabusLink ? _row('Syllabus', '<a href="' + _esc(rec.syllabusLink) + '" target="_blank" rel="noopener">' + _esc(rec.syllabusName || 'Open') + ' <i class="ti ti-external-link"></i></a>') : '')
+      + _row('Sponsor', _esc(rec.sponsorName))
+      + (rec.studentConfirmed ? _row('Student confirmation', 'Confirmed — will finish and submit the thesis this term') : '')
+      + (rec.sponsorVerified ? _row('Sponsor verification', 'Verified — student is prepared to complete the thesis this term'
+          + (rec.sponsorDecidedAt ? ' · ' + _esc(rec.sponsorDecidedAt) : '')) : '')
+      + (rec.sponsorComments ? _row('Sponsor comments', _esc(rec.sponsorComments)) : '')
+      + (rec.classNumber ? _row('Class number', '<strong>' + _esc(rec.classNumber) + '</strong>'
+          + (rec.classSection ? ' · sec ' + _esc(rec.classSection) : '')) : '')
+      + (rec.totalSpecialStudyCredits ? _row('Special-study credits (term)', _esc(rec.totalSpecialStudyCredits)
+          + (rec.majorAuthRequired ? ' — over the cap; department ' + (rec.majorAuthorized ? 'authorized' : 'authorization required') : '')) : '')
+      + (rec.advisorComments ? _row('Advisor comments', _esc(rec.advisorComments)) : '')
+      + (rec.documentLink ? _row('Petition PDF', '<a href="' + _esc(rec.documentLink) + '" target="_blank" rel="noopener">Open PDF <i class="ti ti-external-link"></i></a>') : '')
+      + (rec.returnNote ? _row('Return note', _esc(rec.returnNote)) : '')
+      + '</dl>';
+
+    html += _enrollActionsFor(rec);
+    document.getElementById('th-modal-body').innerHTML = html;
+    document.getElementById('th-modal').style.display = 'flex';
+    const closeBtn = document.getElementById('th-modal-close');
+    if (closeBtn) closeBtn.focus();
+  }
+
+  function _enrollActionsFor(rec) {
+    const me = <?!= JSON.stringify(currentUser) ?>;
+    const isMe = (a, b) => String(a || '').toLowerCase() === String(b || '').toLowerCase();
+    const isSuper = _roles.indexOf('super_admin') !== -1;
+    const out = [];
+
+    // Student: revise a returned petition; withdraw a non-terminal one.
+    if (rec.stage === 'RETURNED' && isMe(rec.studentEmail, me)) {
+      out.push('<button class="btn btn-primary" onclick=\'ThesisUI.startEnrollResubmit(' + _json(rec) + ')\'>'
+        + '<i class="ti ti-refresh"></i> Revise & resubmit</button>');
+    }
+    if (rec.stage !== 'COMPLETE' && isMe(rec.studentEmail, me)) {
+      out.push('<div style="margin-top:10px;">'
+        + '<button class="btn btn-secondary btn-sm" onclick="ThesisUI.enrollWithdraw(\'' + _esc(rec.enrollmentId) + '\')">'
+        + '<i class="ti ti-arrow-back"></i> Withdraw petition</button>'
+        + ' <span class="text-muted" style="font-size:12px;">Removes it entirely; you can file again later.</span>'
+        + '</div>');
+    }
+
+    // Sponsor deciding a submitted petition (super_admin may act too).
+    if (rec.stage === 'SUBMITTED' && (isMe(rec.sponsorEmail, me) || isSuper)) {
+      out.push(_enrollSponsorPanel(rec));
+    }
+
+    // Advisor assigning the class number.
+    if (rec.stage === 'PENDING_ADVISOR' && _isAdvisorUser) {
+      out.push(_enrollAdvisorPanel(rec));
+    }
+
+    // super_admin test cleanup.
+    if (isSuper) {
+      out.push('<div style="margin-top:16px;border-top:1px solid var(--color-border);padding-top:12px;">'
+        + '<button class="btn btn-danger btn-sm" onclick=\'ThesisUI.enrollDelete(' + _json({ id: rec.enrollmentId, term: rec.term, student: rec.studentName }) + ')\'>'
+        + '<i class="ti ti-trash"></i> Delete enrollment</button>'
+        + ' <span class="text-muted" style="font-size:12px;">Removes the record, its tasks, and its files. Irreversible.</span>'
+        + '</div>');
+    }
+
+    return out.length ? '<div id="en-action-panel">' + out.join('') + '</div>' : '';
+  }
+
+  // The SPONSOR NOTICE + approval panel. The verification checkbox is
+  // REQUIRED to approve (the server refuses without it); Return does not
+  // require it. The sponsor may revise the two description fields, the
+  // hours split, and the written-report requirement, and may attach a
+  // syllabus — mirroring the Individual Studies sponsor stage.
+  function _enrollSponsorPanel(rec) {
+    _enrollSpSyllabus = null;
+    const total = Number(rec.hoursWithSponsor || 0) + Number(rec.hoursIndependent || 0);
+    return '<div class="card" style="margin-top:8px;">'
+      + '<div class="card-title" style="font-size:14px;"><i class="ti ti-gavel"></i> Sponsor decision</div>'
+
+      + '<div class="en-notice-card" role="note">'
+      +   '<div class="en-notice-title">📌 SPONSOR NOTICE: ANTH 195S vs. ANTH 198</div>'
+      +   '<p style="margin:6px 0 8px;">Before signing, please verify the current stage of your student\'s project. '
+      +   'Faculty and students frequently confuse these two courses:</p>'
+      +   '<ul style="margin:0 0 4px;padding-left:20px;">'
+      +     '<li style="margin-bottom:6px;"><strong>Approve ANTH 195S ONLY if the student is ready to write</strong> and will submit their '
+      +     'completed final thesis by the end of this term. A passing grade in 195S requires the finished thesis to '
+      +     'satisfy the B.A. senior comprehensive and DC requirements.</li>'
+      +     '<li><strong>Direct the student to ANTH 198</strong> if they are still conducting research, gathering data, or will '
+      +     'otherwise not finish writing the final thesis this term.</li>'
+      +   '</ul>'
+      + '</div>'
+
+      + '<div class="form-group"><label class="form-label">Description of proposed thesis work</label>'
+      + '<textarea class="form-textarea" id="en-sp-desc" rows="3">' + _esc(rec.courseDescription || '') + '</textarea>'
+      + '<div class="form-hint">You may revise the student\'s wording before approving.</div></div>'
+      + '<div class="form-group"><label class="form-label">Description of work to be submitted</label>'
+      + '<textarea class="form-textarea" id="en-sp-work" rows="2">' + _esc(rec.workToBeSubmitted || '') + '</textarea></div>'
+      + '<div class="form-group"><label class="form-label">Hours per week with you (of ' + _esc(total) + ' total, SR 760)</label>'
+      + '<input class="form-input" type="number" id="en-sp-hours" min="0" step="1" value="' + _esc(rec.hoursWithSponsor || '0') + '" style="max-width:140px;"></div>'
+      + '<div class="form-group"><label style="display:flex;align-items:center;gap:8px;font-weight:normal;cursor:pointer;">'
+      + '<input type="checkbox" id="en-sp-report"' + (rec.reportRequired ? ' checked' : '') + '> Written report required</label>'
+      + '<input class="form-input" type="text" id="en-sp-report-due" placeholder="Report due (e.g. last day of finals)" '
+      + 'value="' + _esc(rec.reportDueDate || '') + '" style="margin-top:6px;"></div>'
+      + '<div class="form-group"><label class="form-label">Comments (optional)</label>'
+      + '<textarea class="form-textarea" id="en-sp-comments" rows="2"></textarea></div>'
+      + '<div class="form-group"><label class="form-label">Syllabus / study plan (optional, PDF)</label>'
+      + '<input class="form-input" type="file" id="en-sp-syllabus" accept="application/pdf" '
+      + 'onchange="ThesisUI._onEnrollSpSyllabusChange(this)">'
+      + '<div class="form-error" id="en-sp-syllabus-error"></div></div>'
+
+      + '<div class="form-group" style="margin-top:14px;">'
+      + '<label style="display:flex;align-items:flex-start;gap:8px;font-weight:600;cursor:pointer;">'
+      + '<input type="checkbox" id="en-sp-verify" style="margin-top:3px;">'
+      + '<span>By approving this petition, I verify that this student is prepared to complete and submit '
+      + 'their final thesis by the end of this enrollment period. <span class="required" aria-hidden="true">*</span></span>'
+      + '</label></div>'
+
+      + '<div class="form-actions">'
+      + '<button class="btn btn-primary" id="en-sp-save" onclick="ThesisUI.enrollSponsorApprove(\'' + _esc(rec.enrollmentId) + '\')">'
+      + '<i class="ti ti-check"></i> Approve enrollment</button>'
+      + '<button class="btn btn-danger" onclick="ThesisUI.enrollSponsorReturn(\'' + _esc(rec.enrollmentId) + '\')">'
+      + '<i class="ti ti-arrow-back-up"></i> Return to student</button>'
+      + '</div></div>';
+  }
+
+  function _onEnrollSpSyllabusChange(input) {
+    const errEl = document.getElementById('en-sp-syllabus-error');
+    if (errEl) errEl.classList.remove('visible');
+    _enrollSpSyllabus = null;
+    const file = input.files && input.files[0];
+    if (!file) return;
+    if (file.type !== 'application/pdf') {
+      if (errEl) { errEl.textContent = 'The syllabus must be a PDF file.'; errEl.classList.add('visible'); }
+      input.value = ''; return;
+    }
+    const fr = new FileReader();
+    fr.onload = () => {
+      _enrollSpSyllabus = { base64: String(fr.result).split(',')[1] || '', name: file.name };
+    };
+    fr.onerror = () => { _enrollSpSyllabus = null; };
+    fr.readAsDataURL(file);
+  }
+
+  function enrollSponsorApprove(enrollmentId) {
+    if (!document.getElementById('en-sp-verify').checked) {
+      Toast.show('Confirm the verification statement to approve — or return the petition and direct the student to ANTH 198.', 'error');
+      return;
+    }
+    const payload = {
+      enrollmentId: enrollmentId,
+      sponsorVerified: true,
+      courseDescription: document.getElementById('en-sp-desc').value.trim(),
+      workToBeSubmitted: document.getElementById('en-sp-work').value.trim(),
+      hoursWithSponsor: document.getElementById('en-sp-hours').value,
+      reportRequired: document.getElementById('en-sp-report').checked,
+      reportDueDate: document.getElementById('en-sp-report-due').value.trim(),
+      comments: document.getElementById('en-sp-comments').value.trim(),
+    };
+    if (_enrollSpSyllabus) {
+      payload.syllabusBase64 = _enrollSpSyllabus.base64;
+      payload.syllabusName = _enrollSpSyllabus.name;
+      payload.syllabusMimeType = 'application/pdf';
+    }
+    FormHelper.setLoading('en-sp-save', true, 'Saving…');
+    App.call('thesis', 'enrollSponsorApprove', payload, () => {
+      Toast.show('Enrollment approved — sent to the undergraduate advisor for a class number.', 'success');
+      closeModal(); _afterAction();
+    }, () => FormHelper.setLoading('en-sp-save', false));
+  }
+
+  function enrollSponsorReturn(enrollmentId) {
+    const note = window.prompt('Add a note telling the student what to revise:\n\n(If they are still conducting research, tell them to file for ANTH 198 in the Individual Studies module instead.)');
+    if (note === null) return;
+    if (!note.trim()) { Toast.show('A return note is required.', 'error'); return; }
+    _busy('Returning petition…');
+    App.call('thesis', 'enrollSponsorReturn', { enrollmentId, note: note.trim() }, () => {
+      _idle(); Toast.show('Returned to student.', 'success'); closeModal(); _afterAction();
+    }, () => _idle());
+  }
+
+  // Advisor panel: credit-cap context (across Individual Studies too) and
+  // the class-number pick list from the term's schedule.
+  function _enrollAdvisorPanel(rec) {
+    const ctx = rec.advisorContext || {};
+    const sections = ctx.sections || [];
+    const pre = ctx.preassigned || null;
+
+    let capHtml = '<p class="text-muted" style="font-size:13px;margin:0 0 10px;">'
+      + 'Special-study credits this term (195S + Individual Studies): <strong>'
+      + _esc(ctx.creditTotal != null ? ctx.creditTotal : '?') + '</strong> of a ' + _esc(ctx.creditCap || 7) + '-credit cap.';
+    if (ctx.otherPetitions && ctx.otherPetitions.length) {
+      capHtml += ' Other petitions: ' + ctx.otherPetitions.map(p =>
+        _esc(p.course) + ' (' + _esc(p.credits) + ' cr, ' + _esc(p.stage) + ')').join('; ') + '.';
+    }
+    capHtml += '</p>';
+    if (ctx.overCap) {
+      capHtml += '<div class="en-stop-card" style="margin:0 0 12px;">'
+        + '<div class="en-stop-title" style="font-size:13.5px;">Over the ' + _esc(ctx.creditCap || 7) + '-credit special-study cap</div>'
+        + '<label style="display:flex;align-items:flex-start;gap:8px;font-weight:600;cursor:pointer;margin-top:6px;">'
+        + '<input type="checkbox" id="en-ad-auth" style="margin-top:3px;">'
+        + '<span>Major department authorization granted for ' + _esc(ctx.creditTotal) + ' special-study credits this term. <span class="required" aria-hidden="true">*</span></span>'
+        + '</label></div>';
+    }
+
+    let pickHtml;
+    if (sections.length) {
+      const opts = sections.map(s => {
+        const source = (pre && String(pre.classNbr) === String(s.classNbr)) ? 'preassigned'
+          : (s.isStaff ? 'pool' : 'reassigned');
+        const tag = source === 'preassigned' ? ' — pre-assigned to this sponsor'
+          : source === 'pool' ? ' — unassigned (Staff)'
+          : ' — listed under ' + s.instructorName;
+        const selAttr = (pre && String(pre.classNbr) === String(s.classNbr)) ? ' selected' : '';
+        return '<option value="' + _esc(s.classNbr) + '" data-section="' + _esc(s.section || '')
+          + '" data-source="' + source + '"' + selAttr + '>#' + _esc(s.classNbr)
+          + (s.section ? ' · sec ' + _esc(s.section) : '') + tag + '</option>';
+      }).join('');
+      pickHtml = '<div class="form-group"><label class="form-label">Class number <span class="required" aria-hidden="true">*</span></label>'
+        + '<select class="form-select" id="en-ad-class"><option value="">— Select —</option>' + opts + '</select>'
+        + (ctx.sectionsMatchedCredits === false
+            ? '<div class="form-hint" style="color:var(--color-danger);">No section matched the petition\'s '
+              + _esc(ctx.credits) + '-credit value — all ANTH 195S sections for the term are listed.</div>'
+            : '<div class="form-hint">Sections come from the imported schedule for ' + _esc(ctx.termLabel || rec.term) + '.</div>')
+        + '</div>';
+    } else {
+      pickHtml = '<div class="form-group"><label class="form-label">Class number <span class="required" aria-hidden="true">*</span></label>'
+        + '<input class="form-input" type="text" id="en-ad-class-manual" placeholder="Enter the class number" style="max-width:200px;">'
+        + '<div class="form-hint" style="color:var(--color-danger);">No ANTH 195S sections found in the imported schedule for this term — enter the number manually.</div>'
+        + '</div>';
+    }
+
+    return '<div class="card" style="margin-top:8px;">'
+      + '<div class="card-title" style="font-size:14px;"><i class="ti ti-clipboard-check"></i> Assign class number & complete</div>'
+      + capHtml
+      + pickHtml
+      + '<div class="form-group"><label class="form-label">Note to the student (optional)</label>'
+      + '<textarea class="form-textarea" id="en-ad-comments" rows="2" placeholder="Included in the completion email and on the record."></textarea></div>'
+      + '<div class="form-actions">'
+      + '<button class="btn btn-primary" id="en-ad-save" onclick="ThesisUI.enrollAdvisorComplete(\'' + _esc(rec.enrollmentId) + '\', ' + (ctx.overCap ? 'true' : 'false') + ')">'
+      + '<i class="ti ti-check"></i> Complete enrollment</button>'
+      + '<button class="btn btn-secondary" onclick="ThesisUI.enrollAdvisorReturn(\'' + _esc(rec.enrollmentId) + '\')">'
+      + '<i class="ti ti-arrow-back-up"></i> Return to sponsor</button>'
+      + '</div></div>';
+  }
+
+  function enrollAdvisorComplete(enrollmentId, overCap) {
+    let classNumber = '', classSection = '', source = '';
+    const sel = document.getElementById('en-ad-class');
+    if (sel) {
+      classNumber = sel.value;
+      const opt = sel.options[sel.selectedIndex];
+      if (opt) { classSection = opt.dataset.section || ''; source = opt.dataset.source || ''; }
+    } else {
+      const manual = document.getElementById('en-ad-class-manual');
+      classNumber = manual ? manual.value.trim() : '';
+    }
+    if (!classNumber) { Toast.show('Select or enter a class number.', 'error'); return; }
+    if (overCap) {
+      const box = document.getElementById('en-ad-auth');
+      if (!box || !box.checked) {
+        Toast.show('This student is over the special-study credit cap — confirm department authorization to complete.', 'error');
+        return;
+      }
+    }
+    const payload = {
+      enrollmentId: enrollmentId,
+      classNumber: classNumber,
+      classSection: classSection,
+      classNumberSource: source,
+      majorAuthorized: !!overCap,
+      comments: (document.getElementById('en-ad-comments') || { value: '' }).value.trim(),
+    };
+    if (source === 'reassigned') {
+      if (!window.confirm('That class number is listed under a different instructor. Reassign it to this petition?')) return;
+      payload.confirmReassign = true;
+    }
+    FormHelper.setLoading('en-ad-save', true, 'Saving…');
+    App.call('thesis', 'enrollAdvisorComplete', payload, res => {
+      Toast.show('Enrollment completed — the student has been sent class number ' + classNumber + '.', 'success');
+      closeModal(); _afterAction();
+    }, () => FormHelper.setLoading('en-ad-save', false));
+  }
+
+  function enrollAdvisorReturn(enrollmentId) {
+    const note = window.prompt('Add a note telling the sponsor what to reconsider:\n\n(Their approval — including the completion verification — will be cleared for re-review.)');
+    if (note === null) return;
+    if (!note.trim()) { Toast.show('A note to the sponsor is required.', 'error'); return; }
+    _busy('Returning to sponsor…');
+    App.call('thesis', 'enrollAdvisorReturn', { enrollmentId, note: note.trim() }, () => {
+      _idle(); Toast.show('Returned to the sponsor for re-review.', 'success'); closeModal(); _afterAction();
+    }, () => _idle());
+  }
+
+  function enrollRemind(enrollmentId) {
+    _busy('Sending reminder…');
+    App.call('thesis', 'enrollRemind', { enrollmentId }, res => {
+      _idle();
+      Toast.show('Reminder sent' + (res && res.remindedTo ? ' to ' + [].concat(res.remindedTo).join(', ') : '') + '.', 'success');
+    }, () => _idle());
+  }
+
+  function enrollWithdraw(enrollmentId) {
+    if (!window.confirm('Withdraw this enrollment petition?\n\nIt will be removed entirely; you can file a new one later.')) return;
+    _busy('Withdrawing…');
+    App.call('thesis', 'enrollWithdraw', { enrollmentId }, () => {
+      _idle();
+      Toast.show('Petition withdrawn.', 'success');
+      closeModal(); _afterAction();
+      // With nothing in flight, the Enroll tab may come back.
+      const btn = document.getElementById('tab-btn-enroll');
+      if (btn && _hasTab.enroll) btn.style.display = '';
+    }, () => _idle());
+  }
+
+  function enrollDelete(info) {
+    info = info || {};
+    if (!window.confirm('Permanently delete the ' + (info.term || '') + ' enrollment for ' + (info.student || '') + '?\n\nThis removes the record, clears its tasks, and trashes its files. It cannot be undone.')) return;
+    _busy('Deleting enrollment…');
+    App.call('thesis', 'enrollDelete', { enrollmentId: info.id }, () => {
+      _idle(); Toast.show('Enrollment deleted.', 'success'); closeModal(); _afterAction();
+    }, () => _idle());
   }
 
   // ── Settings (advisor + super_admin) ─────────────────
@@ -1039,7 +1974,8 @@ window.ThesisUI = (() => {
 
   function closeModal() {
     document.getElementById('th-modal').style.display = 'none';
-    _commentFile = null;   // drop any attachment staged in a decision panel
+    _commentFile = null;      // drop any attachment staged in a decision panel
+    _enrollSpSyllabus = null; // drop any sponsor-panel syllabus attachment
     // Return focus to the row/control that opened the dialog, if it still exists.
     if (_lastFocus && document.contains(_lastFocus) && typeof _lastFocus.focus === 'function') {
       _lastFocus.focus();
@@ -1089,6 +2025,14 @@ window.ThesisUI = (() => {
     submitSponsor, submitReader, advisorComplete, returnThesis, returnToSponsor,
     loadSettings, saveSettings,
     _toggleReader, _onCommentFileChange,
+    // ANTH 195S enrollment
+    loadEnrollForm, onEnrollTermChange, onEnrollHoursInput,
+    submitEnroll, cancelEnrollResubmit, startEnrollResubmit,
+    loadMyEnrollments, loadEnrollQueue, loadEnrollAdvisor,
+    openEnroll, enrollRowKey,
+    enrollSponsorApprove, enrollSponsorReturn, _onEnrollSpSyllabusChange,
+    enrollAdvisorComplete, enrollAdvisorReturn,
+    enrollRemind, enrollWithdraw, enrollDelete,
   };
 
 })();

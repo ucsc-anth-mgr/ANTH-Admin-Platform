@@ -21,6 +21,10 @@
 // correction loop inside faculty/staff. The student never sees a thesis
 // bounce after faculty approval.
 //
+// The module also owns ANTH 195S ENROLLMENT — the front half of the
+// thesis lifecycle (see the ENROLLMENT section below), a two-hop
+// petition mirroring the Individual Studies module.
+//
 // DESIGN NOTES (platform contracts honored here):
 //   - Identity is NOT copied onto the record. Student name/ID and faculty
 //     names are read from Auth.getProfile at read time. StudentEmail and
@@ -73,21 +77,35 @@ const ThesisModule = (() => {
   // Declares this module's tabs for per-role visibility, edited in
   // Admin → Modules → Tabs. NOTE: the Submit tab is additionally
   // DATA-gated client-side — even when visible by role, init() only
-  // reveals it while the student has no thesis on record. Modal and
-  // shared actions (get, sponsorDecision, readerDecision,
-  // returnToStudent, returnToSponsor, deleteThesis, repairAdvisorTasks,
-  // listEligible, listCountries) stay unlisted — each is guarded
-  // inside its own handler.
+  // reveals it while the student has no thesis on record; the Enroll
+  // tab is likewise revealed only while no 195S enrollment is in
+  // flight. Modal and shared actions (get, sponsorDecision,
+  // readerDecision, returnToStudent, returnToSponsor, deleteThesis,
+  // repairAdvisorTasks, listEligible, listCountries, enrollGet,
+  // enrollWithdraw, enrollDelete, enrollmentPrefill) stay unlisted —
+  // each is guarded inside its own handler.
   const TABS = [
     { key: 'submit',    label: 'Submit a thesis',  icon: 'ti-file-upload',
       roles: ['undergraduate_student'], actions: ['submit'] },
     { key: 'mine',      label: 'My theses',        icon: 'ti-list',
       roles: ['undergraduate_student'], actions: ['mySubmissions'] },
+    { key: 'enroll',    label: 'Enroll in 195S',   icon: 'ti-file-plus',
+      roles: ['undergraduate_student'],
+      actions: ['enrollFormData', 'enrollSubmit'] },
+    { key: 'myenroll',  label: 'My enrollment',    icon: 'ti-list-check',
+      roles: ['undergraduate_student'],
+      actions: ['enrollMine'] },
     { key: 'queue',     label: 'Review queue',     icon: 'ti-inbox',
       roles: ['senate_faculty', 'lecturer', 'staff', 'staff_undergrad'],
       actions: ['queue'] },
     { key: 'sponsored', label: 'Sponsored theses', icon: 'ti-user-check',
       roles: ['senate_faculty', 'lecturer'], actions: ['sponsored'] },
+    { key: 'enrollqueue', label: 'Enrollment queue', icon: 'ti-gavel',
+      roles: ['thesis_sponsor'],
+      actions: ['enrollSponsorQueue', 'enrollSponsorApprove', 'enrollSponsorReturn'] },
+    { key: 'enrolladvisor', label: 'Enrollment advisor', icon: 'ti-clipboard-check',
+      roles: [ADVISOR_ROLE], floor: ADVISOR_ROLE,
+      actions: ['enrollAdvisorQueue', 'enrollAdvisorComplete', 'enrollAdvisorReturn', 'enrollRemind'] },
     { key: 'grad',      label: 'Graduation queue', icon: 'ti-school',
       roles: [ADVISOR_ROLE], floor: ADVISOR_ROLE,
       actions: ['gradQueue', 'advisorComplete', 'remindResponsible'] },
@@ -431,11 +449,6 @@ const ThesisModule = (() => {
   }
 
 
-  /**
-   * Faculty reader records the honors decision on a PENDING_HONORS thesis.
-   * Either outcome advances to the advisor for final processing.
-   * @param {Object} payload - { thesisId, decision, comments }
-   */
   /**
    * Honors reader APPROVES a thesis for honors (with required comments).
    * There is no denial: a reader who is not convinced uses returnToSponsor
@@ -1387,6 +1400,1114 @@ const ThesisModule = (() => {
   }
 
 
+  // ============================================================
+  // ANTH 195S ENROLLMENT (petition) — front half of the lifecycle
+  // ============================================================
+  // The petition to obtain a class number and enroll in ANTH 195S at the
+  // start of the term, mirroring IndividualStudiesModule (which
+  // deliberately excludes 195S and redirects here). Same two-hop shape:
+  //
+  //   SUBMITTED ─ sponsor ─┬─ Approve ─► PENDING_ADVISOR
+  //                        └─ Return ──► RETURNED
+  //   PENDING_ADVISOR ─ advisor ─┬─ Complete ─► COMPLETE (PDF generated)
+  //                              └─ Return ───► SUBMITTED (to sponsor;
+  //                                             decision + verification cleared)
+  //   RETURNED ─ student resubmits ─► SUBMITTED (same record)
+  //
+  // Differences from Individual Studies, by design:
+  //   - Course is FIXED (ANTH 195S), so the four-part duplicate key
+  //     collapses to (student, term). Sponsor eligibility is the existing
+  //     thesis_sponsor role — the person sponsoring the enrollment is the
+  //     person who will sponsor the thesis.
+  //   - Two REQUIRED attestations, enforced server-side and printed in
+  //     the PDF's signature blocks: the student's 195S-vs-198 confirmation
+  //     at submit, and the sponsor's completion verification at approve.
+  //   - The >7-credit special-study total counts BOTH these enrollments
+  //     and the Individual Studies petitions for the term (and IS counts
+  //     these back — see IndividualStudiesModule._advisorContext).
+  //   - The canonical PDF is generated at COMPLETE via ReportService and
+  //     then FILED into CONFIG.THESIS.ENROLLMENT_DRIVE_FOLDER_ID. A Drive
+  //     move keeps the file id, so the Reports archive index stays valid.
+  //   - Notifications ride the module's _notify, so the Settings tab's
+  //     handoff toggle governs enrollment mail too (default on).
+  //   - Enrollment IDs use the 'ENR' prefix, so 'thesis'-module task
+  //     resolution by sourceId never collides with thesis records, and
+  //     the UI can route a deep link by prefix.
+
+  const ENROLL_TAB = function () {
+    return (CONFIG.TABS && CONFIG.TABS.THESIS_ENROLLMENT) || 'ThesisEnrollment';
+  };
+  const ENROLL_COURSE = 'ANTH 195S';
+  const ENROLL_SOURCE_TYPE = 'thesis_enrollment';
+  const ENROLL_SPONSOR_ROLE = 'thesis_sponsor';
+  const ENROLL_GRADE_OPTIONS = ['Letter', 'Pass/No Pass'];
+
+  // The campus rule: more than 7 special-study credits in a term needs
+  // department (advisor) authorization. Shared with Individual Studies.
+  const SPECIAL_STUDY_CREDIT_CAP = 7;
+
+  // The two attestations, verbatim as they appear in the UI and on the
+  // generated PDF. Server-enforced: enrollSubmit / enrollSponsorApprove
+  // refuse without them.
+  const ENROLL_STUDENT_CONFIRM_TEXT =
+    'I confirm that I will finish and submit my final thesis this term, ' +
+    'and I am ready to enroll in ANTH 195S.';
+  const ENROLL_SPONSOR_VERIFY_TEXT =
+    'By approving this petition, I verify that this student is prepared to ' +
+    'complete and submit their final thesis by the end of this enrollment period.';
+
+  // Senate Regulation 760: 1 credit = 30 hours of work over the term.
+  // Weekly load = (30 x credits) / weeks; quarters run 10 weeks, summer 5.
+  // The total is fixed by policy — students and sponsors only set the
+  // split (with-sponsor vs. independent); independent is the remainder.
+  const SR760_HOURS_PER_CREDIT = 30;
+  function _termWeeks(termCode) {
+    try { return ClassSchedule.decodeTermCode(termCode).quarter === 'Summer' ? 5 : 10; }
+    catch (e) { return 10; }
+  }
+  function _weeklyHoursTotal(credits, termCode) {
+    const c = Number(credits);
+    if (!isFinite(c) || c <= 0) return 0;
+    return Math.round((SR760_HOURS_PER_CREDIT * c) / _termWeeks(termCode));
+  }
+  function _resolveHoursSplit(withSponsorRaw, credits, termCode) {
+    const total = _weeklyHoursTotal(credits, termCode);
+    const ws = Number(String(withSponsorRaw == null ? '' : withSponsorRaw).trim() || 0);
+    if (!isFinite(ws) || ws < 0) throw new Error('Enter a valid number of hours with the sponsor.');
+    if (ws > total) {
+      throw new Error('Hours with the sponsor (' + ws + ') cannot exceed the ' + total +
+        ' hours/week total required for ' + credits + ' credits (Senate Regulation 760).');
+    }
+    return { withSponsor: ws, independent: total - ws, total: total };
+  }
+
+
+  // ── Student actions ────────────────────────────────────────
+
+  /**
+   * Bootstrap data for the enrollment form. Term-first and schedule-
+   * driven, like Individual Studies: the only terms offered are those
+   * whose imported schedule contains an ANTH 195S section with a credit
+   * value. Also returns eligible sponsors (thesis_sponsor holders), grade
+   * options, the student's identity prefill, and the confirmation text.
+   */
+  function enrollFormData(payload, user) {
+    const profile = Auth.getProfile(user) || {};
+    let terms = [];
+    try {
+      terms = ClassSchedule.availableTerms().map(t => {
+        const match = ClassSchedule.coursesForTerm(t.term, { allowlist: [ENROLL_COURSE] })
+          .filter(c => c.credits !== null && c.credits !== undefined)
+          .find(c => String(c.course).trim().toUpperCase() === ENROLL_COURSE.toUpperCase());
+        if (!match) return null;
+        return {
+          term: t.term, label: t.label, quarter: t.quarter, year: t.year,
+          weeks: _termWeeks(t.term), isSummer: _termWeeks(t.term) === 5,
+          hoursPerCredit: SR760_HOURS_PER_CREDIT,
+          credits: match.credits, courseTitle: match.title || '',
+        };
+      }).filter(function (t) { return !!t; });
+    } catch (e) {
+      Logger.log('ThesisModule.enrollFormData: schedule lookup failed: ' + e);
+      terms = [];
+    }
+    return {
+      terms: terms,
+      course: ENROLL_COURSE,
+      gradeOptions: ENROLL_GRADE_OPTIONS.slice(),
+      sponsors: Auth.usersWithRole(ENROLL_SPONSOR_ROLE),
+      confirmText: ENROLL_STUDENT_CONFIRM_TEXT,
+      profile: {
+        name: profile.name || '',
+        email: profile.email || user,
+        studentId: profile.studentId || '',
+        hasStudentId: !!(profile.studentId),
+      },
+    };
+  }
+
+  /** The caller's own enrollment petitions, newest first. */
+  function enrollMine(payload, user, roles) {
+    return DataService.query(CONFIG.SHEETS.THESIS, ENROLL_TAB(), 'StudentEmail', user)
+      .map(_enrPublicRecord)
+      .sort(_byCreatedDesc);
+  }
+
+  /**
+   * One enrollment petition for the detail modal. Visible to the student
+   * who owns it, the sponsor on it, any advisor, or super_admin. Advisor
+   * and super_admin viewers get the decision-support context attached
+   * (credit total across modules, class-number options).
+   */
+  function enrollGet(payload, user, roles) {
+    const rec = _enrById((payload || {}).enrollmentId);
+    if (!rec) throw new Error('Enrollment petition not found.');
+    const isSuper = (roles || []).indexOf('super_admin') !== -1;
+    const isAdvisor = (roles || []).indexOf(ADVISOR_ROLE) !== -1;
+    const me = _norm(user);
+    const allowed = isSuper || isAdvisor ||
+      _norm(rec.StudentEmail) === me || _norm(rec.SponsorEmail) === me;
+    if (!allowed) throw new Error('You do not have access to this enrollment petition.');
+    const pub = _enrPublicRecord(rec);
+    if (isAdvisor || isSuper) pub.advisorContext = _enrAdvisorContext(rec);
+    return pub;
+  }
+
+  /**
+   * Submit a NEW ANTH 195S enrollment petition, or resubmit one currently
+   * RETURNED. The student's confirmation checkbox is REQUIRED on both
+   * paths — the STOP warning is the point of this form.
+   *
+   * @param {Object} payload
+   *   @param {string}  payload.termCode
+   *   @param {string}  payload.sponsorEmail
+   *   @param {boolean} payload.studentConfirmed  - REQUIRED true
+   *   @param {string}  payload.studySiteAddress
+   *   @param {string}  payload.title
+   *   @param {string}  payload.courseDescription - required
+   *   @param {string}  payload.evidenceOfPreparation
+   *   @param {string}  payload.workToBeSubmitted - required
+   *   @param {string}  payload.gradeOption       - Letter | Pass/No Pass
+   *   @param {string}  payload.hoursWithSponsor
+   *   @param {string}  payload.college / majorStatus / classLevel
+   *   @param {string}  [payload.syllabusBase64/Name/MimeType] - optional
+   *   @param {string}  [payload.enrollmentId]    - present on resubmission
+   */
+  function enrollSubmit(payload, user, roles) {
+    payload = payload || {};
+
+    // The attestation gate. A client checkbox is convenience; this is the
+    // source of truth.
+    if (payload.studentConfirmed !== true && payload.studentConfirmed !== 'true') {
+      throw new Error('You must confirm that you will finish and submit your final thesis this term ' +
+        'before requesting a class number for ANTH 195S. If you are still conducting research, ' +
+        'enroll in ANTH 198 through the Individual Studies module instead.');
+    }
+
+    const termCode = String(payload.termCode || payload.term || '').trim();
+    if (!termCode) throw new Error('Select a term.');
+    const sponsorEmail = String(payload.sponsorEmail || '').trim();
+    const courseDescription = String(payload.courseDescription || '').trim();
+    const workToBeSubmitted = String(payload.workToBeSubmitted || '').trim();
+
+    if (!sponsorEmail) throw new Error('Select a faculty sponsor.');
+    if (!courseDescription) throw new Error('A description of the proposed thesis work is required.');
+    if (!workToBeSubmitted) throw new Error('A description of the work to be submitted is required.');
+    if (!_holdsRole(sponsorEmail, ENROLL_SPONSOR_ROLE)) {
+      throw new Error('That person is not currently eligible to sponsor senior theses.');
+    }
+    const gradeOption = _requireOneOf(payload.gradeOption, ENROLL_GRADE_OPTIONS, 'Grade option');
+
+    // The term must have an imported schedule containing ANTH 195S; its
+    // credit value comes from the schedule — not typed, not coded.
+    const match = _enrCourseForTerm(termCode);
+    if (!match) {
+      throw new Error('ANTH 195S is not available for the selected term. The schedule may not be imported yet.');
+    }
+    const credits = match.credits;
+    const decoded = ClassSchedule.decodeTermCode(termCode);
+    const hoursSplit = _resolveHoursSplit(payload.hoursWithSponsor, credits, termCode);
+
+    const profile = Auth.getProfile(user);
+    if (!profile) throw new Error('Your profile could not be found.');
+    if (!profile.studentId) {
+      throw new Error('Your profile has no Student ID on file. Contact the department to add one before submitting.');
+    }
+
+    const now = new Date().toISOString();
+    const fields = {
+      TermCode: termCode,
+      Quarter: decoded.quarter, Year: decoded.year,
+      Course: ENROLL_COURSE,
+      Credits: String(credits),
+      SponsorEmail: sponsorEmail,
+      StudySiteAddress: String(payload.studySiteAddress || '').trim(),
+      Title: String(payload.title || '').trim(),
+      CourseDescription: courseDescription,
+      EvidenceOfPreparation: String(payload.evidenceOfPreparation || '').trim(),
+      WorkToBeSubmitted: workToBeSubmitted,
+      GradeOption: gradeOption,
+      ReportRequired: _boolStr(payload.reportRequired),
+      ReportDueDate: String(payload.reportDueDate || '').trim(),
+      HoursWithSponsor: String(hoursSplit.withSponsor),
+      HoursIndependent: String(hoursSplit.independent),
+      College: String(payload.college || '').trim(),
+      MajorStatus: String(payload.majorStatus || '').trim(),
+      ClassLevel: String(payload.classLevel || '').trim(),
+      StudentConfirmed: 'TRUE',
+      StudentConfirmedAt: now,
+    };
+
+    const existingId = String(payload.enrollmentId || '').trim();
+
+    // ── Resubmission: must be the caller's own RETURNED record ──
+    if (existingId) {
+      const rec = _enrById(existingId);
+      if (!rec) throw new Error('Enrollment petition not found: ' + existingId);
+      if (_norm(rec.StudentEmail) !== _norm(user)) {
+        throw new Error('You can only resubmit your own enrollment petition.');
+      }
+      if (rec.Stage !== STAGE.RETURNED) {
+        throw new Error('This enrollment petition is not awaiting resubmission.');
+      }
+
+      DataService.update(CONFIG.SHEETS.THESIS, ENROLL_TAB(), 'EnrollmentID', existingId,
+        Object.assign({}, fields, { Stage: STAGE.SUBMITTED, ReturnNote: '' }));
+
+      _enrMaybeSaveSyllabus(existingId, payload);
+
+      Tasks.resolveForSource('thesis', existingId, { resolvedBy: user });
+      _enrRouteToSponsor(existingId, sponsorEmail, profile, /*resubmitted*/ true);
+      EventBus.emit('thesis.enrollment_resubmitted',
+        { enrollmentId: existingId, sponsorEmail: sponsorEmail }, { user: user });
+      return { enrollmentId: existingId, stage: STAGE.SUBMITTED, resubmitted: true };
+    }
+
+    // ── New petition: ONE enrollment per (student, term). The course is
+    // fixed, so IS's four-part key collapses to two. A RETURNED record is
+    // not a duplicate (resubmit it instead); COMPLETE records in OTHER
+    // terms are fine (a retake enrolls again next term).
+    const dup = DataService.query(CONFIG.SHEETS.THESIS, ENROLL_TAB(), 'StudentEmail', user)
+      .find(r => _enrRecTerm(r) === termCode && r.Stage !== STAGE.RETURNED);
+    if (dup) {
+      const label = decoded.label || (decoded.quarter + ' ' + decoded.year);
+      throw new Error('You already have an ANTH 195S enrollment petition for ' + label +
+        (dup.Stage === STAGE.COMPLETE ? ' (completed).' : ' (in progress).') +
+        ' Contact the undergraduate advisor if you believe this is an error.');
+    }
+
+    const enrollmentId = DataService.generateId('ENR');
+    DataService.insert(CONFIG.SHEETS.THESIS, ENROLL_TAB(), Object.assign({
+      EnrollmentID: enrollmentId,
+      StudentEmail: user,
+      Stage: STAGE.SUBMITTED,
+      SponsorVerified: '', SponsorComments: '', SponsorDecidedBy: '', SponsorDecidedAt: '',
+      ClassNumber: '', ClassSection: '', ClassNumberSource: '',
+      TotalSpecialStudyCredits: '', MajorAuthRequired: '', MajorAuthorized: '',
+      AdvisorComments: '', AdvisorProcessedBy: '', AdvisorProcessedAt: '',
+      SyllabusFileID: '', SyllabusLink: '', SyllabusName: '',
+      DriveFileID: '', DocumentLink: '', FileName: '',
+      ReturnNote: '',
+    }, fields));
+
+    _enrMaybeSaveSyllabus(enrollmentId, payload);
+
+    _enrRouteToSponsor(enrollmentId, sponsorEmail, profile, /*resubmitted*/ false);
+    EventBus.emit('thesis.enrollment_submitted',
+      { enrollmentId: enrollmentId, sponsorEmail: sponsorEmail }, { user: user });
+    return { enrollmentId: enrollmentId, stage: STAGE.SUBMITTED };
+  }
+
+  /** Student withdraws their own non-terminal enrollment petition
+   *  (removes the row, mirroring Individual Studies withdraw). */
+  function enrollWithdraw(payload, user, roles) {
+    const rec = _enrById((payload || {}).enrollmentId);
+    if (!rec) throw new Error('Enrollment petition not found.');
+    const isSuper = (roles || []).indexOf('super_admin') !== -1;
+    if (!isSuper && _norm(rec.StudentEmail) !== _norm(user)) {
+      throw new Error('You can only withdraw your own enrollment petition.');
+    }
+    if (rec.Stage === STAGE.COMPLETE) {
+      throw new Error('A completed enrollment cannot be withdrawn. Contact the undergraduate advisor.');
+    }
+    Tasks.resolveForSource('thesis', rec.EnrollmentID, { resolvedBy: user, note: 'Withdrawn' });
+    DataService.remove(CONFIG.SHEETS.THESIS, ENROLL_TAB(), 'EnrollmentID', rec.EnrollmentID);
+    EventBus.emit('thesis.enrollment_withdrawn', { enrollmentId: rec.EnrollmentID }, { user: user });
+    return { withdrawn: true };
+  }
+
+  /**
+   * Prefill for the thesis SUBMISSION form (the linkage between the two
+   * halves): the student's most recent COMPLETE enrollment supplies
+   * quarter/year and sponsor. Read-only; caller's own records only.
+   */
+  function enrollmentPrefill(payload, user) {
+    const rows = DataService.query(CONFIG.SHEETS.THESIS, ENROLL_TAB(), 'StudentEmail', user)
+      .filter(r => r.Stage === STAGE.COMPLETE)
+      .sort(function (a, b) {
+        return new Date(b.CreatedAt || 0).getTime() - new Date(a.CreatedAt || 0).getTime();
+      });
+    if (!rows.length) return { found: false };
+    const r = rows[0];
+    return {
+      found: true,
+      quarter: r.Quarter || '',
+      year: String(r.Year || ''),
+      sponsorEmail: r.SponsorEmail || '',
+      sponsorName: _facultyLabel(r.SponsorEmail),
+      term: (r.Quarter || '') + ' ' + (r.Year || ''),
+    };
+  }
+
+
+  // ── Sponsor actions ────────────────────────────────────────
+
+  /**
+   * The sponsor's enrollment list: every petition naming them, at any
+   * stage, newest first — SUBMITTED rows are the actionable ones.
+   * super_admin sees all.
+   */
+  function enrollSponsorQueue(payload, user, roles) {
+    const isSuper = (roles || []).indexOf('super_admin') !== -1;
+    return DataService.getAll(CONFIG.SHEETS.THESIS, ENROLL_TAB())
+      .filter(r => isSuper || _norm(r.SponsorEmail) === _norm(user))
+      .map(_enrPublicRecord)
+      .sort(_byCreatedDesc);
+  }
+
+  /**
+   * Sponsor approves a SUBMITTED enrollment petition. The SPONSOR NOTICE
+   * verification checkbox is REQUIRED — its statement is recorded and
+   * printed in the instructor approval block of the PDF. The sponsor may
+   * revise the two description fields, adjust the SR 760 hours split, and
+   * set the written-report requirement (all mirroring Individual Studies).
+   */
+  function enrollSponsorApprove(payload, user, roles) {
+    payload = payload || {};
+    const rec = _enrById(payload.enrollmentId);
+    if (!rec) throw new Error('Enrollment petition not found.');
+    _enrAssertSponsor(rec, user, roles);
+    if (rec.Stage !== STAGE.SUBMITTED) throw new Error('This petition is not awaiting a sponsor decision.');
+
+    // The verification gate — see ENROLL_SPONSOR_VERIFY_TEXT.
+    if (payload.sponsorVerified !== true && payload.sponsorVerified !== 'true') {
+      throw new Error('Confirm the verification statement before approving: approve ANTH 195S only if ' +
+        'the student will submit their completed final thesis by the end of this term. If they are ' +
+        'still conducting research, return the petition and direct them to ANTH 198.');
+    }
+
+    const courseDescription = payload.courseDescription !== undefined
+      ? String(payload.courseDescription || '').trim() : rec.CourseDescription;
+    const workToBeSubmitted = payload.workToBeSubmitted !== undefined
+      ? String(payload.workToBeSubmitted || '').trim() : rec.WorkToBeSubmitted;
+
+    const hoursPatch = {};
+    if (payload.hoursWithSponsor !== undefined) {
+      const split = _resolveHoursSplit(payload.hoursWithSponsor, rec.Credits, _enrRecTerm(rec));
+      hoursPatch.HoursWithSponsor = String(split.withSponsor);
+      hoursPatch.HoursIndependent = String(split.independent);
+    }
+
+    const reportPatch = {};
+    if (payload.reportRequired !== undefined) {
+      const req = payload.reportRequired === true || payload.reportRequired === 'true';
+      reportPatch.ReportRequired = req ? 'TRUE' : '';
+      reportPatch.ReportDueDate = req ? String(payload.reportDueDate || '').trim() : '';
+    }
+
+    DataService.update(CONFIG.SHEETS.THESIS, ENROLL_TAB(), 'EnrollmentID', rec.EnrollmentID, Object.assign({
+      SponsorVerified: 'TRUE',
+      SponsorComments: String(payload.comments || '').trim(),
+      CourseDescription: courseDescription,
+      WorkToBeSubmitted: workToBeSubmitted,
+      SponsorDecidedBy: user,
+      SponsorDecidedAt: new Date().toISOString(),
+      Stage: STAGE.PENDING_ADVISOR,
+    }, hoursPatch, reportPatch));
+
+    // Sponsor may attach/replace the syllabus as part of their review.
+    _enrMaybeSaveSyllabus(rec.EnrollmentID, payload);
+
+    Tasks.resolveForSource('thesis', rec.EnrollmentID, { resolvedBy: user });
+    _enrRouteToAdvisor(rec.EnrollmentID, _enrById(rec.EnrollmentID));
+    EventBus.emit('thesis.enrollment_sponsor_approved', { enrollmentId: rec.EnrollmentID }, { user: user });
+    return { enrollmentId: rec.EnrollmentID, stage: STAGE.PENDING_ADVISOR };
+  }
+
+  /** Sponsor returns the enrollment petition to the student for revision. */
+  function enrollSponsorReturn(payload, user, roles) {
+    const rec = _enrById((payload || {}).enrollmentId);
+    if (!rec) throw new Error('Enrollment petition not found.');
+    _enrAssertSponsor(rec, user, roles);
+    if (rec.Stage !== STAGE.SUBMITTED) throw new Error('This petition is not awaiting a sponsor decision.');
+
+    const note = String((payload || {}).note || '').trim();
+    if (!note) throw new Error('Add a note telling the student what to revise.');
+
+    DataService.update(CONFIG.SHEETS.THESIS, ENROLL_TAB(), 'EnrollmentID', rec.EnrollmentID, {
+      Stage: STAGE.RETURNED, ReturnNote: note,
+    });
+
+    Tasks.resolveForSource('thesis', rec.EnrollmentID, { resolvedBy: user });
+    Tasks.create({
+      module: 'thesis', sourceType: ENROLL_SOURCE_TYPE, sourceId: rec.EnrollmentID,
+      label: 'Your ANTH 195S enrollment petition needs revisions',
+      assignedTo: rec.StudentEmail, staleAfterDays: 14,
+    });
+    _notify(rec.StudentEmail, 'Your ANTH 195S enrollment petition was returned',
+      'Your ANTH 195S enrollment petition was returned by ' + _facultyLabel(user) + ' for revision.\n\n' +
+      'What to revise: ' + note + '\n\n' +
+      'If you are still conducting research and will not finish the thesis this term, ' +
+      'file for ANTH 198 in the Individual Studies module instead.' +
+      _actionTextFallback(rec.EnrollmentID, 'Revise and resubmit'));
+    EventBus.emit('thesis.enrollment_returned', { enrollmentId: rec.EnrollmentID }, { user: user });
+    return { enrollmentId: rec.EnrollmentID, stage: STAGE.RETURNED };
+  }
+
+
+  // ── Advisor actions ────────────────────────────────────────
+
+  /** Enrollment petitions awaiting a class number (PENDING_ADVISOR). */
+  function enrollAdvisorQueue(payload, user, roles) {
+    _enrAssertAdvisor(roles);
+    return DataService.query(CONFIG.SHEETS.THESIS, ENROLL_TAB(), 'Stage', STAGE.PENDING_ADVISOR)
+      .map(_enrPublicRecord)
+      .sort(_byCreatedDesc);
+  }
+
+  /**
+   * Advisor completes the enrollment: records the class number (confirmed
+   * prefill, pool pick, or reassignment), the major-authorization decision
+   * when over the cap, generates the canonical PDF, and marks COMPLETE.
+   * @param {Object} payload - { enrollmentId, classNumber, classSection?,
+   *   classNumberSource?, confirmReassign?, majorAuthorized?, comments? }
+   */
+  function enrollAdvisorComplete(payload, user, roles) {
+    _enrAssertAdvisor(roles);
+    payload = payload || {};
+    const rec = _enrById(payload.enrollmentId);
+    if (!rec) throw new Error('Enrollment petition not found.');
+    if (rec.Stage !== STAGE.PENDING_ADVISOR) throw new Error('This petition is not awaiting advisor processing.');
+
+    const classNumber = String(payload.classNumber || '').trim();
+    if (!classNumber) throw new Error('A class number is required to complete the enrollment.');
+
+    const source = String(payload.classNumberSource || '').trim();
+    if (source === 'reassigned' && payload.confirmReassign !== true) {
+      throw new Error('Reassigning a class number listed under another instructor requires confirmation.');
+    }
+
+    // Major-department authorization: the term total is computed ACROSS
+    // this tab AND the Individual Studies petitions. Over the cap, the
+    // advisor must authorize.
+    const ctx = _enrAdvisorContext(rec);
+    const overCap = ctx.creditTotal > SPECIAL_STUDY_CREDIT_CAP;
+    if (overCap && payload.majorAuthorized !== true) {
+      throw new Error('This student has ' + ctx.creditTotal + ' special-study credits this term (over ' +
+        SPECIAL_STUDY_CREDIT_CAP + '). Department authorization is required to complete.');
+    }
+
+    const now = new Date().toISOString();
+    DataService.update(CONFIG.SHEETS.THESIS, ENROLL_TAB(), 'EnrollmentID', rec.EnrollmentID, {
+      ClassNumber: classNumber,
+      ClassSection: String(payload.classSection || '').trim(),
+      ClassNumberSource: source,
+      TotalSpecialStudyCredits: String(ctx.creditTotal),
+      MajorAuthRequired: _boolStr(overCap),
+      MajorAuthorized: _boolStr(overCap ? true : false),
+      AdvisorComments: String(payload.comments || '').trim(),
+      AdvisorProcessedBy: user,
+      AdvisorProcessedAt: now,
+      Stage: STAGE.COMPLETE,
+    });
+
+    // Generate the canonical PDF. Best-effort — a generation failure must
+    // not strand the record; it is COMPLETE regardless and regenerable.
+    const finalRec = _enrById(rec.EnrollmentID);
+    let pdf = null;
+    try {
+      pdf = _enrGeneratePdf(finalRec, user);
+      if (pdf && pdf.fileId) {
+        _enrFilePdf(pdf.fileId);   // move into the 195S folder (id survives)
+        DataService.update(CONFIG.SHEETS.THESIS, ENROLL_TAB(), 'EnrollmentID', rec.EnrollmentID, {
+          DriveFileID: pdf.fileId, DocumentLink: pdf.url || '', FileName: pdf.fileName || '',
+        });
+        _enrGrantViewerQuiet(pdf.fileId, finalRec.StudentEmail);
+      }
+    } catch (e) {
+      Logger.log('ThesisModule.enrollAdvisorComplete: PDF generation failed for ' + rec.EnrollmentID + ': ' + e);
+    }
+
+    Tasks.resolveForSource('thesis', rec.EnrollmentID, { resolvedBy: user });
+
+    const lines = [
+      'Your ANTH 195S enrollment petition is complete.',
+      '',
+      'Class number: ' + classNumber,
+      'Enroll in ANTH 195S in MyUCSC using the class number above.',
+      '',
+      'Reminder: to receive a passing grade in ANTH 195S, your final thesis must be finished ' +
+        'and submitted (via the Senior Thesis module) by the end of this course.',
+    ];
+    if (String(finalRec.AdvisorComments || '').trim()) {
+      lines.push('', 'Note from the undergraduate advisor:', String(finalRec.AdvisorComments).trim());
+    }
+    if (pdf && pdf.url) lines.push('', 'Your completed petition (PDF): ' + pdf.url);
+    _notify(rec.StudentEmail, 'Your ANTH 195S enrollment is complete',
+      lines.join('\n') + _actionTextFallback(rec.EnrollmentID, 'View your enrollment'));
+
+    EventBus.emit('thesis.enrollment_completed', { enrollmentId: rec.EnrollmentID }, { user: user });
+    return { enrollmentId: rec.EnrollmentID, stage: STAGE.COMPLETE,
+             documentLink: pdf ? pdf.url : '' };
+  }
+
+  /** Advisor returns the enrollment to the SPONSOR, clearing the recorded
+   *  approval (including the verification — a re-approval re-attests). */
+  function enrollAdvisorReturn(payload, user, roles) {
+    _enrAssertAdvisor(roles);
+    const rec = _enrById((payload || {}).enrollmentId);
+    if (!rec) throw new Error('Enrollment petition not found.');
+    if (rec.Stage !== STAGE.PENDING_ADVISOR) throw new Error('This petition is not awaiting advisor processing.');
+
+    const note = String((payload || {}).note || '').trim();
+    if (!note) throw new Error('Add a note telling the sponsor what to reconsider.');
+
+    DataService.update(CONFIG.SHEETS.THESIS, ENROLL_TAB(), 'EnrollmentID', rec.EnrollmentID, {
+      Stage: STAGE.SUBMITTED,
+      SponsorVerified: '', SponsorComments: '',
+      SponsorDecidedBy: '', SponsorDecidedAt: '',
+      ReturnNote: note,
+    });
+
+    Tasks.resolveForSource('thesis', rec.EnrollmentID, { resolvedBy: user });
+    const profile = Auth.getProfile(rec.StudentEmail) || {};
+    Tasks.create({
+      module: 'thesis', sourceType: ENROLL_SOURCE_TYPE, sourceId: rec.EnrollmentID,
+      label: 'ANTH 195S enrollment awaiting sponsor re-review: ' + _studentLabel(profile),
+      assignedTo: rec.SponsorEmail, staleAfterDays: 14,
+    });
+    _notify(rec.SponsorEmail, 'ANTH 195S enrollment returned for your re-review',
+      _facultyLabel(user) + ' has returned this enrollment petition to you for re-review. ' +
+      'Your previous approval (including the completion verification) has been cleared — ' +
+      'please review and decide again.\n\n' +
+      'Note: ' + note + '\n\n' +
+      'Student: ' + _studentLabel(profile) +
+      _actionTextFallback(rec.EnrollmentID, 'Re-review this petition'));
+    EventBus.emit('thesis.enrollment_advisor_returned', { enrollmentId: rec.EnrollmentID }, { user: user });
+    return { enrollmentId: rec.EnrollmentID, stage: STAGE.SUBMITTED };
+  }
+
+  /**
+   * Advisor (or super_admin) nudges whoever an enrollment is waiting on:
+   * the sponsor (SUBMITTED), the advisor pool (PENDING_ADVISOR), or the
+   * student (RETURNED). A deliberate manual reminder always sends.
+   */
+  function enrollRemind(payload, user, roles) {
+    _enrAssertAdvisor(roles);
+    const rec = _enrById(String((payload || {}).enrollmentId || '').trim());
+    if (!rec) throw new Error('Enrollment petition not found.');
+
+    let to, ask;
+    if (rec.Stage === STAGE.SUBMITTED) {
+      to = [rec.SponsorEmail]; ask = 'review it as the faculty sponsor';
+    } else if (rec.Stage === STAGE.PENDING_ADVISOR) {
+      to = _advisors().map(function (a) { return a.email; }); ask = 'assign a class number and complete it';
+    } else if (rec.Stage === STAGE.RETURNED) {
+      to = [rec.StudentEmail]; ask = 'revise and resubmit it';
+    } else {
+      throw new Error('This enrollment is not waiting on anyone to remind.');
+    }
+    to = (to || []).filter(function (e) { return String(e || '').trim(); });
+    if (!to.length) throw new Error('No one is assigned at this stage to remind.');
+
+    to.forEach(function (addr) {
+      _notify(addr, 'Reminder: ANTH 195S enrollment awaiting your action',
+        'A reminder from ' + _facultyLabel(user) + ': the ANTH 195S enrollment petition for ' +
+        _facultyLabel(rec.StudentEmail) + ' is waiting for you to ' + ask + '.' +
+        _actionTextFallback(rec.EnrollmentID, 'Open this petition'),
+        null, /*force*/ true);
+    });
+    EventBus.emit('thesis.enrollment_reminded', { enrollmentId: rec.EnrollmentID, remindedTo: to }, { user: user });
+    return { enrollmentId: rec.EnrollmentID, remindedTo: to };
+  }
+
+  /**
+   * Permanently deletes an enrollment petition: resolves its tasks,
+   * trashes its generated PDF and syllabus (best-effort), removes the
+   * row. super_admin only — test cleanup; irreversible.
+   */
+  function enrollDelete(payload, user, roles) {
+    if ((roles || []).indexOf('super_admin') === -1) {
+      throw new Error('Only a super admin can delete an enrollment petition.');
+    }
+    const rec = _enrById(String((payload || {}).enrollmentId || '').trim());
+    if (!rec) throw new Error('Enrollment petition not found.');
+
+    Tasks.resolveForSource('thesis', rec.EnrollmentID, { resolvedBy: user });
+    [rec.DriveFileID, rec.SyllabusFileID].forEach(function (fid) {
+      const id = String(fid || '').trim();
+      if (!id) return;
+      try { DriveApp.getFileById(id).setTrashed(true); }
+      catch (err) { Logger.log('enrollDelete: could not trash file ' + id + ' (' + err + ')'); }
+    });
+
+    const removed = DataService.remove(CONFIG.SHEETS.THESIS, ENROLL_TAB(), 'EnrollmentID', rec.EnrollmentID);
+    if (!removed) throw new Error('Delete failed — the record could not be removed.');
+
+    EventBus.emit('thesis.enrollment_deleted', { enrollmentId: rec.EnrollmentID }, { user: user });
+    return { enrollmentId: rec.EnrollmentID, deleted: true };
+  }
+
+
+  // ── Enrollment: routing, context, PDF, helpers ─────────────
+
+  function _enrRouteToSponsor(enrollmentId, sponsorEmail, studentProfile, resubmitted) {
+    Tasks.create({
+      module: 'thesis', sourceType: ENROLL_SOURCE_TYPE, sourceId: enrollmentId,
+      label: 'ANTH 195S enrollment awaiting sponsor review: ' + _studentLabel(studentProfile),
+      assignedTo: sponsorEmail, staleAfterDays: 14,
+    });
+    const studentName = (studentProfile && (studentProfile.name || studentProfile.email)) || 'A student';
+    _notify(sponsorEmail,
+      resubmitted ? 'ANTH 195S enrollment resubmitted for your review'
+                  : 'ANTH 195S enrollment awaiting your review',
+      (resubmitted ? studentName + ' has revised and resubmitted' : studentName + ' has submitted') +
+      ' an ANTH 195S (senior thesis) enrollment petition naming you as faculty sponsor.\n\n' +
+      'The student has confirmed they will finish and submit their final thesis this term. ' +
+      'Before approving, please verify the project is at the writing stage — a student still ' +
+      'conducting research belongs in ANTH 198 instead.' +
+      _actionTextFallback(enrollmentId, 'Review this petition'));
+  }
+
+  function _enrRouteToAdvisor(enrollmentId, rec) {
+    Tasks.create({
+      module: 'thesis', sourceType: ENROLL_SOURCE_TYPE, sourceId: enrollmentId,
+      label: 'ANTH 195S enrollment awaiting class number: ' + _facultyLabel(rec.StudentEmail),
+      assignedRole: ADVISOR_ROLE, staleAfterDays: 14,
+    });
+    _advisors().forEach(function (adv) {
+      _notify(adv.email, 'ANTH 195S enrollment awaiting class number',
+        'An ANTH 195S enrollment petition has been approved by its sponsor and is ready for a class number.\n\n' +
+        'Student: ' + _facultyLabel(rec.StudentEmail) +
+        _actionTextFallback(enrollmentId, 'Process this petition'));
+    });
+  }
+
+  /**
+   * Decision-support context at the advisor stage: the special-study
+   * credit total ACROSS BOTH this tab and the Individual Studies
+   * petitions for the term (with the >7 flag), plus the class-number
+   * options for ANTH 195S from the ClassSchedule service.
+   */
+  function _enrAdvisorContext(rec) {
+    const term = _enrRecTerm(rec);
+    const credits = _toNum(rec.Credits);
+
+    let creditTotal = 0;
+    const others = [];
+
+    // This tab: the student's 195S enrollments for the term (normally just
+    // this record — the duplicate guard allows one per term).
+    DataService.query(CONFIG.SHEETS.THESIS, ENROLL_TAB(), 'StudentEmail', rec.StudentEmail)
+      .filter(function (r) { return _enrRecTerm(r) === term && r.Stage !== STAGE.RETURNED; })
+      .forEach(function (r) {
+        const c = _toNum(r.Credits);
+        creditTotal += c;
+        if (String(r.EnrollmentID) !== String(rec.EnrollmentID)) {
+          others.push({ recordId: r.EnrollmentID, course: r.Course || ENROLL_COURSE, credits: c,
+            stage: r.Stage, sponsorName: _facultyLabel(r.SponsorEmail), module: 'thesis' });
+        }
+      });
+
+    // Individual Studies: the student's petitions for the same term count
+    // toward the same campus cap. Read via DataService against that
+    // module's sheet; tolerant of the sheet/tab not existing yet.
+    try {
+      const isSheet = CONFIG.SHEETS.INDIVIDUAL_STUDIES;
+      const isTab = (CONFIG.TABS && CONFIG.TABS.INDIVIDUAL_STUDIES) || 'Petitions';
+      if (isSheet) {
+        DataService.query(isSheet, isTab, 'StudentEmail', rec.StudentEmail)
+          .filter(function (r) {
+            const t = String(r.TermCode || '').trim();
+            return t === term && r.Stage !== STAGE.RETURNED;
+          })
+          .forEach(function (r) {
+            const c = _toNum(r.Credits);
+            creditTotal += c;
+            others.push({ recordId: r.PetitionID, course: r.Course, credits: c,
+              stage: r.Stage, sponsorName: _facultyLabel(r.SponsorEmail), module: 'individual_studies' });
+          });
+      }
+    } catch (e) {
+      Logger.log('ThesisModule._enrAdvisorContext: Individual Studies lookup failed: ' + e);
+    }
+
+    // Class-number options for ANTH 195S from the ClassSchedule service.
+    let preassigned = null, allSections = [], sectionsMatchedCredits = true;
+    try {
+      const pre = ClassSchedule.findPreassigned(term, ENROLL_COURSE, rec.SponsorEmail);
+      preassigned = pre ? {
+        classNbr: pre.ClassNbr, section: pre.Section, course: pre.Course,
+        instructorRaw: pre.InstructorRaw, instructorEmail: pre.InstructorEmail,
+        instructorName: pre.InstructorEmail ? _facultyLabel(pre.InstructorEmail) : (pre.InstructorRaw || 'Staff'),
+        matchMethod: pre.MatchMethod,
+      } : null;
+
+      const res = ClassSchedule.sectionsForCourse(term, ENROLL_COURSE, { units: credits });
+      sectionsMatchedCredits = res.matchedCredits;
+      allSections = (res.sections || []).map(function (s) {
+        return {
+          classNbr: s.classNbr, section: s.section, units: s.units,
+          instructorRaw: s.instructorRaw, instructorEmail: s.instructorEmail,
+          instructorName: s.instructorEmail ? _facultyLabel(s.instructorEmail) : (s.instructorRaw || 'Staff'),
+          isStaff: s.isStaff, isAssigned: s.isAssigned,
+          matchMethod: s.matchMethod,
+        };
+      });
+    } catch (e) {
+      Logger.log('ThesisModule._enrAdvisorContext: ClassSchedule lookup failed: ' + e);
+    }
+
+    return {
+      term: term,
+      termLabel: _enrTermLabel(rec),
+      credits: credits,
+      course: ENROLL_COURSE,
+      creditTotal: creditTotal,
+      creditCap: SPECIAL_STUDY_CREDIT_CAP,
+      overCap: creditTotal > SPECIAL_STUDY_CREDIT_CAP,
+      otherPetitions: others,
+      preassigned: preassigned,
+      sections: allSections,
+      sectionsMatchedCredits: sectionsMatchedCredits,
+    };
+  }
+
+  // ── Enrollment: PDF (campus-form layout, at COMPLETE) ──
+
+  function _enrGeneratePdf(rec, user) {
+    const student = Auth.getProfile(rec.StudentEmail) || {};
+    return ReportService.generate({
+      module: 'thesis',
+      reportKey: 'enrollment',
+      title: 'ANTH 195S Enrollment Petition — ' + (student.name || rec.StudentEmail),
+      sourceId: rec.EnrollmentID,
+      params: { enrollmentId: rec.EnrollmentID, term: _enrRecTerm(rec), course: ENROLL_COURSE },
+      html: _enrPdfHtml(rec, student),
+      fileName: _enrBuildFileName(rec, student),
+      orientation: 'portrait',
+      letterhead: false,        // self-contained campus-form layout
+      footerText: '',
+    }, user);
+  }
+
+  /** Filename: <Year>-<Quarter>_<StudentID>-ENR-ANTH195S_Last-First.pdf */
+  function _enrBuildFileName(rec, student) {
+    const last = (student.lastName || '').trim() || 'Student';
+    const first = (student.firstName || '').trim() || '';
+    const who = first ? (last + '-' + first) : last;
+    return rec.Year + '-' + rec.Quarter + '_' + (student.studentId || 'NOID') +
+           '-ENR-ANTH195S_' + who + '.pdf';
+  }
+
+  /** Best-effort: file a generated enrollment PDF into the 195S folder.
+   *  A Drive move keeps the file id, so the Reports archive index (and
+   *  the stored DriveFileID) stay valid. */
+  function _enrFilePdf(fileId) {
+    const folderId = String((CONFIG.THESIS && CONFIG.THESIS.ENROLLMENT_DRIVE_FOLDER_ID) || '').trim();
+    const id = String(fileId || '').trim();
+    if (!folderId || !id) return;
+    try {
+      DriveApp.getFileById(id).moveTo(DriveApp.getFolderById(folderId));
+    } catch (e) {
+      Logger.log('ThesisModule._enrFilePdf: could not move ' + id + ' into ' + folderId + ' (' + e + ')');
+    }
+  }
+
+  /**
+   * Grants the student read access WITHOUT Drive's "shared with you"
+   * email (the completion email already links the PDF). Mirrors the
+   * Individual Studies / Transcript implementation. Best-effort.
+   */
+  function _enrGrantViewerQuiet(fileId, studentEmail) {
+    const id = String(fileId || '').trim();
+    const email = String(studentEmail || '').trim();
+    if (!id || !email) return;
+    try {
+      if (typeof Drive !== 'undefined' && Drive && Drive.Permissions) {
+        if (typeof Drive.Permissions.create === 'function') {          // v3
+          Drive.Permissions.create(
+            { role: 'reader', type: 'user', emailAddress: email },
+            id, { sendNotificationEmail: false });
+          return;
+        }
+        if (typeof Drive.Permissions.insert === 'function') {          // v2
+          Drive.Permissions.insert(
+            { role: 'reader', type: 'user', value: email },
+            id, { sendNotificationEmails: false });
+          return;
+        }
+      }
+      DriveApp.getFileById(id).addViewer(email);   // last resort: does notify
+    } catch (e) {
+      Logger.log('ThesisModule._enrGrantViewerQuiet: could not share ' + id + ' with ' + email + ': ' + e);
+    }
+  }
+
+  /**
+   * Renders the enrollment petition as HTML mirroring the campus
+   * individual-studies form (195S IS an individual-studies course):
+   * student block, proposed-work blocks, and the approval blocks, with
+   * name/email/timestamp in lieu of each signature. The two REQUIRED
+   * attestations are printed inside the student and instructor blocks.
+   */
+  function _enrPdfHtml(rec, student) {
+    const navy = (CONFIG.BRAND && CONFIG.BRAND.NAVY) || '#003C6C';
+    const e = _esc;
+    const studentName = student.name || rec.StudentEmail;
+    const sponsorName = _facultyLabel(rec.SponsorEmail);
+    const advisorName = rec.AdvisorProcessedBy ? _facultyLabel(rec.AdvisorProcessedBy) : '';
+
+    const row = function (label, value) {
+      return '<tr><td style="padding:3px 10px 3px 0;color:#555;white-space:nowrap;vertical-align:top;">' + e(label) +
+        '</td><td style="padding:3px 0;vertical-align:top;">' + (value || '&mdash;') + '</td></tr>';
+    };
+    const sig = function (who, email, at) {
+      if (!who && !email) return '&mdash;';
+      return e(who || email) + (email ? ' &lt;' + e(email) + '&gt;' : '') +
+             (at ? '<br><span style="color:#777;font-size:9pt;">Approved ' + e(_enrFmtDate(at)) + '</span>' : '');
+    };
+    const attest = function (text) {
+      return '<div style="margin:0 0 6px;font-style:italic;color:#333;">&ldquo;' + e(text) + '&rdquo;</div>';
+    };
+
+    return ''
+      + '<div style="font-family:Arial,Helvetica,sans-serif;color:#1a1a1a;font-size:10pt;line-height:1.4;">'
+      + '<div style="border-bottom:3px solid ' + navy + ';padding-bottom:8px;margin-bottom:12px;">'
+      +   '<div style="font-size:9pt;color:#555;">University of California, Santa Cruz &middot; Department of Anthropology</div>'
+      +   '<div style="font-size:15pt;font-weight:bold;color:' + navy + ';">Petition for Senior Thesis Enrollment &mdash; ANTH 195S</div>'
+      +   '<div style="font-size:8.5pt;color:#777;">Academic Senate, Santa Cruz Regulation 6.5, 9.1</div>'
+      + '</div>'
+
+      // Student / context block
+      + '<table style="width:100%;border-collapse:collapse;margin-bottom:10px;">'
+      +   row('Name', e(studentName))
+      +   row('Student ID', e(student.studentId || ''))
+      +   row('Email', e(rec.StudentEmail))
+      +   row('College', e(rec.College))
+      +   row('Status', e(rec.MajorStatus) + (rec.ClassLevel ? ' &middot; ' + e(rec.ClassLevel) : ''))
+      +   row('Quarter / Year', e(rec.Quarter) + ' ' + e(rec.Year))
+      +   row('Course', e(rec.Course || ENROLL_COURSE))
+      +   row('Course sponsoring agency', 'Anthropology')
+      +   row('Faculty sponsor', e(sponsorName))
+      +   row('Study site address', e(rec.StudySiteAddress))
+      + '</table>'
+
+      // Proposed work
+      + _enrBlock('Thesis title and description', e(rec.Title) +
+          (rec.CourseDescription ? '<br><br>' + e(rec.CourseDescription) : ''))
+      + _enrBlock('Evidence of preparation for special study', e(rec.EvidenceOfPreparation))
+      + _enrBlock('Description of work to be submitted', e(rec.WorkToBeSubmitted))
+      + (String(rec.SyllabusLink || '').trim()
+          ? _enrBlock('Syllabus', '<a href="' + e(rec.SyllabusLink) + '">' +
+              e(rec.SyllabusName || 'View syllabus') + '</a>')
+          : '')
+
+      + '<table style="width:100%;border-collapse:collapse;margin-bottom:10px;">'
+      +   row('Written report required', _isTrueStr(rec.ReportRequired) ? 'Yes' : 'No')
+      +   (_isTrueStr(rec.ReportRequired) && rec.ReportDueDate ? row('Report due', e(rec.ReportDueDate)) : '')
+      +   row('Hours per week &mdash; with faculty sponsor', e(rec.HoursWithSponsor))
+      +   row('Hours per week &mdash; independently', e(rec.HoursIndependent))
+      + '</table>'
+
+      // Student signature — includes the 195S confirmation attestation.
+      + _enrApprovalBlock('Student',
+          attest(ENROLL_STUDENT_CONFIRM_TEXT)
+          + sig(studentName, rec.StudentEmail, rec.StudentConfirmedAt || rec.CreatedAt))
+
+      // Instructor approval — includes the sponsor verification.
+      + _enrApprovalBlock('Instructor approval (faculty sponsor)',
+          attest(ENROLL_SPONSOR_VERIFY_TEXT)
+          + '<table style="width:100%;border-collapse:collapse;">'
+          + row('Credits', e(rec.Credits))
+          + row('Grade option', e(rec.GradeOption))
+          + (rec.SponsorComments ? row('Comments', e(rec.SponsorComments)) : '')
+          + row('Signed', sig(sponsorName, rec.SponsorEmail, rec.SponsorDecidedAt))
+          + '</table>')
+
+      // Course sponsoring agency approval — class number (advisor)
+      + _enrApprovalBlock('Course sponsoring agency approval',
+          '<table style="width:100%;border-collapse:collapse;">'
+          + row('Class number', e(rec.ClassNumber))
+          + row('Course ID', e(rec.Course || ENROLL_COURSE) + (rec.ClassSection ? ' &middot; sec ' + e(rec.ClassSection) : ''))
+          + row('Signed', sig(advisorName, rec.AdvisorProcessedBy, rec.AdvisorProcessedAt))
+          + '</table>')
+
+      // Major department approval — only meaningful when over the cap
+      + _enrApprovalBlock('Major department approval',
+          '<table style="width:100%;border-collapse:collapse;">'
+          + row('Total special-study credits', e(rec.TotalSpecialStudyCredits))
+          + row('Authorization required', _isTrueStr(rec.MajorAuthRequired) ? 'Yes (over ' + SPECIAL_STUDY_CREDIT_CAP + ' credits)' : 'No')
+          + (_isTrueStr(rec.MajorAuthRequired)
+              ? row('Authorized by', sig(advisorName, rec.AdvisorProcessedBy, rec.AdvisorProcessedAt))
+              : '')
+          + '</table>')
+
+      + '</div>';
+  }
+
+  function _enrBlock(label, value) {
+    const navy = (CONFIG.BRAND && CONFIG.BRAND.NAVY) || '#003C6C';
+    return '<div style="margin-bottom:10px;">'
+      + '<div style="font-size:9pt;font-weight:bold;color:' + navy + ';text-transform:uppercase;letter-spacing:0.4px;">' + _esc(label) + '</div>'
+      + '<div style="padding:4px 0;">' + (value || '&mdash;') + '</div>'
+      + '</div>';
+  }
+
+  function _enrApprovalBlock(label, innerHtml) {
+    const navy = (CONFIG.BRAND && CONFIG.BRAND.NAVY) || '#003C6C';
+    return '<div style="border:1px solid #ccc;border-left:3px solid ' + navy + ';padding:8px 10px;margin-bottom:8px;">'
+      + '<div style="font-size:9pt;font-weight:bold;color:' + navy + ';text-transform:uppercase;letter-spacing:0.4px;margin-bottom:4px;">' + _esc(label) + '</div>'
+      + innerHtml
+      + '</div>';
+  }
+
+  // ── Enrollment: syllabus (optional supporting document) ──
+
+  /**
+   * Saves an optional syllabus upload onto an enrollment petition, if one
+   * is present in the payload (syllabusBase64 + syllabusName). Files go to
+   * the 195S folder. Replace-in-place best effort; grants the student
+   * viewer. Never blocks the submit/approve it rides along with.
+   */
+  function _enrMaybeSaveSyllabus(enrollmentId, payload) {
+    const b64 = String((payload && payload.syllabusBase64) || '').trim();
+    if (!b64) return;
+    try {
+      const rec = _enrById(enrollmentId);
+      if (!rec) return;
+      const folderId = String((CONFIG.THESIS && CONFIG.THESIS.ENROLLMENT_DRIVE_FOLDER_ID) || '').trim();
+      if (!folderId) { Logger.log('ThesisModule: no 195S enrollment folder configured.'); return; }
+
+      const name = String(payload.syllabusName || ('syllabus-' + enrollmentId + '.pdf')).trim();
+      const bytes = Utilities.base64Decode(b64);
+      const blob = Utilities.newBlob(bytes, payload.syllabusMimeType || 'application/pdf', name);
+      const folder = DriveApp.getFolderById(folderId);
+
+      // Replace: trash the prior file (if any) and create fresh, since
+      // DriveApp can't overwrite bytes without Advanced Drive.
+      const existingId = String(rec.SyllabusFileID || '').trim();
+      if (existingId) {
+        try { DriveApp.getFileById(existingId).setTrashed(true); } catch (e) {}
+      }
+      const file = folder.createFile(blob);
+      file.setName(name);
+      const fileId = file.getId();
+
+      DataService.update(CONFIG.SHEETS.THESIS, ENROLL_TAB(), 'EnrollmentID', enrollmentId, {
+        SyllabusFileID: fileId,
+        SyllabusLink: 'https://drive.google.com/file/d/' + fileId + '/view',
+        SyllabusName: name,
+      });
+      _enrGrantViewerQuiet(fileId, rec.StudentEmail);
+    } catch (e) {
+      Logger.log('ThesisModule._enrMaybeSaveSyllabus failed for ' + enrollmentId + ': ' + e);
+    }
+  }
+
+  // ── Enrollment: record shaping + small helpers ──
+
+  function _enrById(enrollmentId) {
+    const id = String(enrollmentId || '').trim();
+    if (!id) return null;
+    const found = DataService.query(CONFIG.SHEETS.THESIS, ENROLL_TAB(), 'EnrollmentID', id);
+    return found && found.length ? found[0] : null;
+  }
+
+  function _enrAssertSponsor(rec, user, roles) {
+    if ((roles || []).indexOf('super_admin') !== -1) return;
+    if (_norm(rec.SponsorEmail) !== _norm(user)) {
+      throw new Error('Only the petition\'s faculty sponsor can act on it.');
+    }
+  }
+
+  function _enrAssertAdvisor(roles) {
+    if ((roles || []).indexOf('super_admin') !== -1) return;
+    if ((roles || []).indexOf(ADVISOR_ROLE) === -1) {
+      throw new Error('Only the undergraduate advisor can perform this action.');
+    }
+  }
+
+  /** ANTH 195S (with credits) in a term's schedule, or null. */
+  function _enrCourseForTerm(termCode) {
+    try {
+      return ClassSchedule.coursesForTerm(termCode, { allowlist: [ENROLL_COURSE] })
+        .filter(function (c) { return c.credits !== null && c.credits !== undefined; })
+        .find(function (c) {
+          return String(c.course).trim().toUpperCase() === ENROLL_COURSE.toUpperCase();
+        }) || null;
+    } catch (e) {
+      Logger.log('ThesisModule._enrCourseForTerm failed: ' + e);
+      return null;
+    }
+  }
+
+  /** Canonical term code of an enrollment record (always written on
+   *  insert; the encode fallback mirrors IS for safety). */
+  function _enrRecTerm(r) {
+    const code = String(r.TermCode || '').trim();
+    if (code) return code;
+    const q = { 'winter': '0', 'spring': '2', 'summer': '4', 'fall': '8' };
+    const qd = q[String(r.Quarter || '').trim().toLowerCase()];
+    const y = String(r.Year || '').trim();
+    if (!qd || !/^\d{4}$/.test(y)) return '';
+    return '2' + y.slice(2) + qd;
+  }
+
+  function _enrTermLabel(r) {
+    const q = String(r.Quarter || '').trim();
+    const y = String(r.Year || '').trim();
+    if (q && y) return q + ' ' + y;
+    try { return ClassSchedule.decodeTermCode(_enrRecTerm(r)).label; } catch (e) { return ''; }
+  }
+
+  function _enrPublicRecord(r) {
+    const student = Auth.getProfile(r.StudentEmail);
+    return {
+      enrollmentId: r.EnrollmentID,
+      studentEmail: r.StudentEmail,
+      studentName: student ? (student.nameLastFirst || student.name) : r.StudentEmail,
+      studentId: student ? student.studentId : '',
+      termCode: _enrRecTerm(r),
+      quarter: r.Quarter, year: r.Year,
+      term: _enrTermLabel(r),
+      course: r.Course || ENROLL_COURSE,
+      sponsorEmail: r.SponsorEmail,
+      sponsorName: _facultyLabel(r.SponsorEmail),
+      studySiteAddress: r.StudySiteAddress,
+      title: r.Title,
+      courseDescription: r.CourseDescription,
+      evidenceOfPreparation: r.EvidenceOfPreparation,
+      workToBeSubmitted: r.WorkToBeSubmitted,
+      reportRequired: _isTrueStr(r.ReportRequired),
+      reportDueDate: r.ReportDueDate,
+      hoursWithSponsor: r.HoursWithSponsor,
+      hoursIndependent: r.HoursIndependent,
+      college: r.College, majorStatus: r.MajorStatus, classLevel: r.ClassLevel,
+      credits: r.Credits, gradeOption: r.GradeOption,
+      studentConfirmed: _isTrueStr(r.StudentConfirmed),
+      sponsorVerified: _isTrueStr(r.SponsorVerified),
+      sponsorComments: r.SponsorComments,
+      sponsorDecidedAt: r.SponsorDecidedAt ? _enrFmtDate(r.SponsorDecidedAt) : '',
+      classNumber: r.ClassNumber, classSection: r.ClassSection,
+      totalSpecialStudyCredits: r.TotalSpecialStudyCredits,
+      majorAuthRequired: _isTrueStr(r.MajorAuthRequired),
+      majorAuthorized: _isTrueStr(r.MajorAuthorized),
+      advisorComments: r.AdvisorComments,
+      advisorName: r.AdvisorProcessedBy ? _facultyLabel(r.AdvisorProcessedBy) : '',
+      advisorProcessedAt: r.AdvisorProcessedAt ? _enrFmtDate(r.AdvisorProcessedAt) : '',
+      stage: r.Stage,
+      documentLink: r.DocumentLink || '',
+      syllabusLink: r.SyllabusLink || '',
+      syllabusName: r.SyllabusName || '',
+      returnNote: r.ReturnNote || '',
+      createdAt: r.CreatedAt ? _enrFmtDate(r.CreatedAt) : '',
+      _created: r.CreatedAt ? new Date(r.CreatedAt).getTime() : 0,
+    };
+  }
+
+  function _toNum(v) { const n = Number(v); return isFinite(n) ? n : 0; }
+  function _boolStr(v) { return (v === true || v === 'true' || v === 'TRUE') ? 'TRUE' : 'FALSE'; }
+  function _isTrueStr(v) { return String(v).toUpperCase() === 'TRUE'; }
+
+  function _enrFmtDate(v) {
+    if (!v) return '';
+    const d = (v instanceof Date) ? v : new Date(v);
+    if (isNaN(d.getTime())) return String(v);
+    return Utilities.formatDate(d, Session.getScriptTimeZone(), 'MMM d, yyyy');
+  }
+
+
   // ── Operational settings (module-owned) ────────────────────
   // NOTIFY_ON_HANDOFF / SEND_CERTIFICATE live in the ThesisSettings store and
   // are surfaced through the module's own Settings tab — mirroring how the
@@ -1420,6 +2541,11 @@ const ThesisModule = (() => {
     sponsorDecision, readerDecision, advisorComplete, returnToStudent, returnToSponsor,
     gradQueue, remindResponsible, repairAdvisorTasks, deleteThesis,
     getSettings, saveSettings,
+    // ANTH 195S enrollment (front half of the lifecycle)
+    enrollFormData, enrollMine, enrollGet, enrollSubmit, enrollWithdraw,
+    enrollSponsorQueue, enrollSponsorApprove, enrollSponsorReturn,
+    enrollAdvisorQueue, enrollAdvisorComplete, enrollAdvisorReturn,
+    enrollRemind, enrollDelete, enrollmentPrefill,
   };
 
 })();

@@ -30,7 +30,8 @@
 //     non-sponsoring instructor's number (with confirmation).
 //   - The >7-credit "Major Department Approval" is the advisor's: the credit
 //     total is computed ACROSS the student's individual-studies petitions
-//     for the term, surfaced at the advisor stage.
+//     for the term — AND their ANTH 195S enrollments (Thesis module), which
+//     count toward the same campus cap — surfaced at the advisor stage.
 //   - The canonical PDF is generated ONCE, at COMPLETE, via ReportService
 //     (campus-form layout, name/email/timestamp in lieu of signatures). No
 //     upload anywhere. The student is granted document-level view on the
@@ -1059,8 +1060,10 @@ const IndividualStudiesModule = (() => {
     const credits = _toNum(rec.Credits);
     const course = String(courseOverride || '').trim() || rec.Course;
 
-    // The student's individual-studies petitions for this term (this module
-    // only — the grad/thesis credit picture is out of scope here).
+    // The student's individual-studies petitions for this term. ANTH 195S
+    // enrollments (Thesis module) are counted below as of the 195S
+    // enrollment build — they draw on the same campus special-study cap;
+    // graduate special study remains out of scope.
     const studentTermPetitions = DataService.query(SHEET(), TAB(), 'StudentEmail', rec.StudentEmail)
       .filter(r => _recTerm(r) === term && r.Stage !== STAGE.RETURNED);
 
@@ -1076,6 +1079,35 @@ const IndividualStudiesModule = (() => {
         });
       }
     });
+
+    // ANTH 195S enrollments (Thesis module) count toward the same
+    // special-study cap. RETURNED enrollments are excluded (not live);
+    // everything else — in flight or complete — counts. Read via
+    // DataService against the thesis sheet by header name; tolerant of the
+    // ThesisEnrollment tab not existing yet (before setUp() has run), so
+    // deploy order between the two modules doesn't matter.
+    try {
+      const enrSheet = CONFIG.SHEETS.THESIS;
+      const enrTab = (CONFIG.TABS && CONFIG.TABS.THESIS_ENROLLMENT) || 'ThesisEnrollment';
+      if (enrSheet) {
+        DataService.query(enrSheet, enrTab, 'StudentEmail', rec.StudentEmail)
+          .filter(r => String(r.TermCode || '').trim() === term && r.Stage !== STAGE.RETURNED)
+          .forEach(r => {
+            const c = _toNum(r.Credits);
+            creditTotal += c;
+            others.push({
+              petitionId: r.EnrollmentID,
+              course: r.Course || 'ANTH 195S',
+              credits: c,
+              stage: r.Stage,
+              sponsorName: _facultyLabel(r.SponsorEmail),
+            });
+          });
+      }
+    } catch (e) {
+      // Tab missing or unreadable: the IS-only total stands. Logged, never fatal.
+      Logger.log('IndividualStudiesModule._advisorContext: 195S enrollment lookup failed: ' + e);
+    }
 
     // Class-number options from the ClassSchedule service, for the
     // EFFECTIVE course (the petition's own, or the candidate correction).

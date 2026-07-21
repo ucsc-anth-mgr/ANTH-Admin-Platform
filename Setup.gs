@@ -178,6 +178,38 @@ const SETUP_SCHEMA = {
               'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
     seed: [],
   },
+  THESIS_ENROLLMENT: {
+    tab: 'ThesisEnrollment',
+    // ANTH 195S enrollment petitions (Thesis module — the front half of
+    // the thesis lifecycle). One petition per (student, term); the course
+    // is fixed at ANTH 195S, so IS's four-part key collapses to two.
+    // StudentEmail / SponsorEmail are routing keys — names and Student ID
+    // come from Auth at display time; petition-specific facts (College,
+    // MajorStatus, ClassLevel, StudySiteAddress…) are stored here.
+    // StudentConfirmed/At and SponsorVerified record the two REQUIRED
+    // attestations (195S-vs-198), printed on the generated PDF. TermCode
+    // is the canonical registrar key; Quarter/Year are display labels.
+    // Credits come from the imported schedule. The canonical PDF is
+    // generated at COMPLETE via ReportService and filed into
+    // CONFIG.THESIS.ENROLLMENT_DRIVE_FOLDER_ID (DriveFileID/DocumentLink
+    // filled then). Meta columns filled by DataService.
+    headers: ['EnrollmentID', 'StudentEmail', 'TermCode', 'Quarter', 'Year', 'Course', 'SponsorEmail',
+              'StudySiteAddress', 'Title', 'CourseDescription', 'EvidenceOfPreparation',
+              'WorkToBeSubmitted', 'ReportRequired', 'ReportDueDate',
+              'HoursWithSponsor', 'HoursIndependent',
+              'College', 'MajorStatus', 'ClassLevel',
+              'Stage',
+              'Credits', 'GradeOption',
+              'StudentConfirmed', 'StudentConfirmedAt',
+              'SponsorVerified', 'SponsorComments', 'SponsorDecidedBy', 'SponsorDecidedAt',
+              'ClassNumber', 'ClassSection', 'ClassNumberSource',
+              'TotalSpecialStudyCredits', 'MajorAuthRequired', 'MajorAuthorized',
+              'AdvisorComments', 'AdvisorProcessedBy', 'AdvisorProcessedAt',
+              'SyllabusFileID', 'SyllabusLink', 'SyllabusName',
+              'DriveFileID', 'FileName', 'DocumentLink', 'ReturnNote',
+              'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
   ARTICULATIONS: {
     tab: 'Articulations',
     // Trusted, clean 1:1 UCSC Anthropology articulations, one row per
@@ -645,8 +677,10 @@ function setUp() {
   _setupTab(platformSS, SETUP_SCHEMA.TASKS);
   _setupTab(platformSS, SETUP_SCHEMA.REPORTS);
 
-  // Senior Thesis spreadsheet gets the Thesis tab
+  // Senior Thesis spreadsheet gets the Thesis tab and the ANTH 195S
+  // ThesisEnrollment tab (the enrollment front half of the lifecycle)
   _setupTab(thesisSS, SETUP_SCHEMA.THESIS);
+  _setupTab(thesisSS, SETUP_SCHEMA.THESIS_ENROLLMENT);
   _tidyDefaultSheet(thesisSS);
 
   // Transcript / ASSIST-articulation spreadsheet gets its tabs
@@ -848,7 +882,7 @@ function checkSetup() {
     ['AUDIT_LOG',    CONFIG.SHEETS.AUDIT_LOG,    [SETUP_SCHEMA.AUDIT.tab]],
     ['SUBMISSIONS',  CONFIG.SHEETS.SUBMISSIONS,  []],
     ['PLATFORM',     CONFIG.SHEETS.PLATFORM,     [SETUP_SCHEMA.TASKS.tab, SETUP_SCHEMA.REPORTS.tab]],
-    ['THESIS',       CONFIG.SHEETS.THESIS,       [SETUP_SCHEMA.THESIS.tab]],
+    ['THESIS',       CONFIG.SHEETS.THESIS,       [SETUP_SCHEMA.THESIS.tab, SETUP_SCHEMA.THESIS_ENROLLMENT.tab]],
     ['TRANSCRIPT',   CONFIG.SHEETS.TRANSCRIPT,   [SETUP_SCHEMA.ARTICULATIONS.tab, SETUP_SCHEMA.ARTICULATION_REVIEW.tab, SETUP_SCHEMA.TRANSCRIPTS.tab, SETUP_SCHEMA.TRANSCRIPT_SETTINGS.tab]],
     ['CLASS_SCHEDULE', CONFIG.SHEETS.CLASS_SCHEDULE, [SETUP_SCHEMA.CLASS_SCHEDULE.tab, SETUP_SCHEMA.CLASS_SCHEDULE_IMPORTS.tab]],
     ['INDIVIDUAL_STUDIES', CONFIG.SHEETS.INDIVIDUAL_STUDIES, [SETUP_SCHEMA.INDIVIDUAL_STUDIES.tab, SETUP_SCHEMA.INDIVIDUAL_STUDIES_TEMPLATES.tab]],
@@ -895,6 +929,7 @@ function _schemaPlacement() {
     { sheetKey: 'PLATFORM',     def: SETUP_SCHEMA.TASKS },
     { sheetKey: 'PLATFORM',     def: SETUP_SCHEMA.REPORTS },
     { sheetKey: 'THESIS',       def: SETUP_SCHEMA.THESIS },
+    { sheetKey: 'THESIS',       def: SETUP_SCHEMA.THESIS_ENROLLMENT },
     { sheetKey: 'TRANSCRIPT',   def: SETUP_SCHEMA.ARTICULATIONS },
     { sheetKey: 'TRANSCRIPT',   def: SETUP_SCHEMA.ARTICULATION_REVIEW },
     { sheetKey: 'TRANSCRIPT',   def: SETUP_SCHEMA.TRANSCRIPTS },
