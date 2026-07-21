@@ -2,16 +2,32 @@
 <!-- Two tabs: Roster (default, read-only faculty list + detail) and Import. -->
 <div id="personnel-module">
 
-  <!-- Tab bar — rendered from the TabRegistry (Admin → Modules → Tabs).
-       Only the tabs this user's roles may see are printed. -->
-  <div class="module-tabs" role="tablist" style="margin-bottom:16px;">
-    <? var persTabs = JSON.parse(visibleTabs); ?>
-    <? persTabs.forEach(function(t, i) { ?>
-    <button class="module-tab<?= i === 0 ? ' active' : '' ?>" data-tab="<?= t.key ?>" role="tab"
-      onclick="PersonnelUI.showTab('<?= t.key ?>')">
-      <i class="ti <?= t.icon ?>"></i> <?= t.label ?>
+  <!-- Tab bar -->
+  <div class="tab-bar" style="display:flex;gap:8px;margin-bottom:16px;border-bottom:1px solid #e3e6ea;">
+    <button class="btn btn-tab" id="tab-roster" onclick="PersonnelUI.showTab('roster')"
+      style="border:none;background:none;padding:8px 14px;border-bottom:2px solid transparent;cursor:pointer;font-weight:600;">
+      <i class="ti ti-users"></i> Roster
     </button>
-    <? }); ?>
+    <button class="btn btn-tab" id="tab-import" onclick="PersonnelUI.showTab('import')"
+      style="border:none;background:none;padding:8px 14px;border-bottom:2px solid transparent;cursor:pointer;font-weight:600;">
+      <i class="ti ti-file-upload"></i> Import rank &amp; step
+    </button>
+    <button class="btn btn-tab" id="tab-cases" onclick="PersonnelUI.showTab('cases')"
+      style="border:none;background:none;padding:8px 14px;border-bottom:2px solid transparent;cursor:pointer;font-weight:600;">
+      <i class="ti ti-clipboard-list"></i> Cases
+    </button>
+    <button class="btn btn-tab" id="tab-anticipated" onclick="PersonnelUI.showTab('anticipated')"
+      style="border:none;background:none;padding:8px 14px;border-bottom:2px solid transparent;cursor:pointer;font-weight:600;">
+      <i class="ti ti-crystal-ball"></i> Anticipated Call
+    </button>
+    <button class="btn btn-tab" id="tab-comms" onclick="PersonnelUI.showTab('comms')"
+      style="border:none;background:none;padding:8px 14px;border-bottom:2px solid transparent;cursor:pointer;font-weight:600;">
+      <i class="ti ti-mail"></i> Communications
+    </button>
+    <button class="btn btn-tab" id="tab-settings" onclick="PersonnelUI.showTab('settings')"
+      style="border:none;background:none;padding:8px 14px;border-bottom:2px solid transparent;cursor:pointer;font-weight:600;">
+      <i class="ti ti-calendar-cog"></i> Calendar
+    </button>
   </div>
 
   <!-- ============================ ROSTER TAB ============================ -->
@@ -353,8 +369,10 @@ Assistant Professor	Hernandez Garavito	Carla	5	o	6	2	17	Reappt with salary incre
       <div class="card-title"><i class="ti ti-mail"></i> Draft a message to the committee</div>
       <p class="text-muted text-sm" style="margin:-8px 0 12px;">
         The module writes the first draft — assignments merged per member, the working schedule, or a
-        policy notice — and you edit before anything goes anywhere. Send through the portal, or copy
-        into your own mail client; either way it lands in the log below.
+        policy notice — and you edit before anything goes anywhere. <strong>Save to Gmail drafts</strong>
+        puts each message in this account's Gmail Drafts folder to review and send from the mailbox
+        (policy-document links included); Send now dispatches immediately through the portal; Copy puts
+        it on the clipboard. Every path lands in the log below.
       </p>
       <div class="form-row">
         <div class="form-group">
@@ -522,34 +540,29 @@ Assistant Professor	Hernandez Garavito	Carla	5	o	6	2	17	Reappt with salary incre
 <script>
 window.PersonnelUI = (() => {
 
-  // The tabs the registry granted this user, injected by the platform
-  // (Code.gs -> TabRegistry.visibleTabs). _hasTab guards every showTab call.
-  const _tabs = <?!= visibleTabs ?>;
-  const _hasTab = {};
-  _tabs.forEach(t => { _hasTab[t.key] = true; });
-
   let _csv = null;
   let _roster = [];           // full roster from the server
   let _sortKey = 'nameLastFirst';
   let _sortDir = 1;           // 1 = asc, -1 = desc
 
   function init() {
-    // Land on the first tab the registry granted (its case self-loads).
-    if (_tabs.length) showTab(_tabs[0].key);
+    showTab('roster');
+    loadRoster();
   }
 
-  // ── Tabs (visibility comes from the TabRegistry) ───────────
+  // ── Tabs ───────────────────────────────────────────────────
   function showTab(which) {
-    if (!_hasTab[which]) return;   // not one of this user's tabs
     const views = { roster: 'view-roster', import: 'view-import', cases: 'view-cases',
                     anticipated: 'view-anticipated', comms: 'view-comms', settings: 'view-settings' };
+    const tabs  = { roster: 'tab-roster', import: 'tab-import', cases: 'tab-cases',
+                    anticipated: 'tab-anticipated', comms: 'tab-comms', settings: 'tab-settings' };
+    const on  = '2px solid var(--ucsc-navy, #003C6C)';
+    const off = '2px solid transparent';
     Object.keys(views).forEach(k => {
       document.getElementById(views[k]).style.display = (k === which) ? 'block' : 'none';
+      document.getElementById(tabs[k]).style.borderBottom = (k === which) ? on : off;
     });
-    document.querySelectorAll('#personnel-module .module-tab').forEach(b => {
-      b.classList.toggle('active', b.dataset.tab === which);
-    });
-    if (which === 'roster') { backToRoster(); loadRoster(); }
+    if (which === 'roster') backToRoster();
     if (which === 'cases') { backToCases(); loadCases(); }
     if (which === 'anticipated') loadAnticipated();
     if (which === 'settings') loadSettings();
@@ -893,7 +906,8 @@ window.PersonnelUI = (() => {
             <div class="text-sm"><strong>To:</strong> ${d.name} &lt;${d.email}&gt;</div>
             <div style="display:flex;gap:8px;">
               <button class="btn btn-secondary btn-sm" onclick="PersonnelUI.copyDraft(${i})"><i class="ti ti-copy"></i> Copy</button>
-              <button class="btn btn-primary btn-sm" id="send-btn-${i}" onclick="PersonnelUI.sendDraft(${i})"><i class="ti ti-send"></i> Send</button>
+              <button class="btn btn-secondary btn-sm" id="send-btn-${i}" onclick="PersonnelUI.sendDraft(${i})" title="Sends immediately through the portal — no review step"><i class="ti ti-send"></i> Send now</button>
+              <button class="btn btn-primary btn-sm" id="gdraft-btn-${i}" onclick="PersonnelUI.draftDraft(${i})"><i class="ti ti-mail-plus"></i> Save to Gmail drafts</button>
             </div>
           </div>
           <div class="form-group" style="margin-top:8px;">
@@ -906,11 +920,16 @@ window.PersonnelUI = (() => {
         </div>`).join('');
       out.innerHTML = `
         ${res.hint ? `<div class="alert alert-info text-sm" style="margin-top:10px;">${res.hint}</div>` : ''}
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;">
-          <span class="text-sm text-muted">${_commDrafts.length} draft(s) — edit freely, then send or copy each.</span>
-          <button class="btn btn-primary btn-sm" id="send-all-btn" onclick="PersonnelUI.sendAllDrafts()">
-            <i class="ti ti-send"></i> Send all
-          </button>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;flex-wrap:wrap;gap:8px;">
+          <span class="text-sm text-muted">${_commDrafts.length} draft(s) — edit freely, then save to Gmail drafts to review and send from the mailbox.</span>
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-secondary btn-sm" id="send-all-btn" onclick="PersonnelUI.sendAllDrafts()" title="Sends immediately through the portal — no review step">
+              <i class="ti ti-send"></i> Send all now
+            </button>
+            <button class="btn btn-primary btn-sm" id="gdraft-all-btn" onclick="PersonnelUI.draftAllDrafts()">
+              <i class="ti ti-mail-plus"></i> Save all to Gmail drafts
+            </button>
+          </div>
         </div>
         ${cards}`;
     }, () => {
@@ -965,6 +984,45 @@ window.PersonnelUI = (() => {
         });
         loadCommLog();
       }, () => FormHelper.setLoading('send-all-btn', false));
+  }
+
+  function draftDraft(i) {
+    const kind = document.getElementById('comm-kind').value;
+    const year = document.getElementById('comm-year').value.trim();
+    FormHelper.setLoading('gdraft-btn-' + i, true);
+    App.call('personnel', 'draftCommunications',
+      { kind: kind, academicYear: year, drafts: [_draftFromScreen(i)] }, res => {
+        FormHelper.setLoading('gdraft-btn-' + i, false);
+        const ok = (res.drafted || []).length === 1;
+        document.getElementById('draft-status-' + i).innerHTML = ok
+          ? '<span class="badge badge-navy">in Gmail drafts</span> <span class="text-sm text-muted">review and send from the mailbox</span>'
+          : `<span class="badge badge-danger">failed</span> ${(res.failed[0] && res.failed[0].reason) || ''}`;
+        if (ok) Toast.show('Saved to Gmail drafts.', 'success');
+        loadCommLog();
+      }, () => FormHelper.setLoading('gdraft-btn-' + i, false));
+  }
+
+  function draftAllDrafts() {
+    const kind = document.getElementById('comm-kind').value;
+    const year = document.getElementById('comm-year').value.trim();
+    const drafts = _commDrafts.map((d, i) => _draftFromScreen(i));
+    FormHelper.setLoading('gdraft-all-btn', true);
+    App.call('personnel', 'draftCommunications',
+      { kind: kind, academicYear: year, drafts: drafts }, res => {
+        FormHelper.setLoading('gdraft-all-btn', false);
+        const s = (res.drafted || []).length, f = (res.failed || []).length;
+        Toast.show(s + ' saved to Gmail drafts' + (f ? ', ' + f + ' failed' : '') + '.', f ? 'error' : 'success');
+        _commDrafts.forEach((d, i) => {
+          const el = document.getElementById('draft-status-' + i);
+          if (!el) return;
+          if ((res.drafted || []).indexOf(d.email) !== -1) el.innerHTML = '<span class="badge badge-navy">in Gmail drafts</span>';
+          else {
+            const fail = (res.failed || []).find(x => x.email === d.email);
+            if (fail) el.innerHTML = `<span class="badge badge-danger">failed</span> ${fail.reason || ''}`;
+          }
+        });
+        loadCommLog();
+      }, () => FormHelper.setLoading('gdraft-all-btn', false));
   }
 
   function copyDraft(i) {
@@ -1110,7 +1168,9 @@ window.PersonnelUI = (() => {
             <td class="text-sm">${r.recipient || ''}</td>
             <td class="text-sm">${r.subject || ''}</td>
             <td class="text-sm text-muted">${r.kind || ''}</td>
-            <td>${r.method === 'sent' ? '<span class="badge badge-navy">sent</span>' : '<span class="badge">copied</span>'}</td>
+            <td>${r.method === 'sent' ? '<span class="badge badge-navy">sent</span>'
+                  : r.method === 'drafted' ? '<span class="badge badge-gold">drafted</span>'
+                  : '<span class="badge">copied</span>'}</td>
           </tr>`).join('')}</tbody>
       </table></div>`;
     }, () => {});
@@ -2567,7 +2627,7 @@ window.PersonnelUI = (() => {
     searchDeadlines, chooseDeadline, previewCycleSchedule, setLettersDate,
     proposeCycleDate, toggleCycleCalendar, exportCycleSchedule,
     loadComms, loadTemplateEditor, saveTemplate, generateDrafts,
-    sendDraft, sendAllDrafts, copyDraft, loadCommLog,
+    sendDraft, sendAllDrafts, draftDraft, draftAllDrafts, copyDraft, loadCommLog,
     addPolicyDocRow, removePolicyDocRow, savePolicyDocs,
   };
 

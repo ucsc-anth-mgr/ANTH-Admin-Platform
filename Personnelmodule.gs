@@ -66,8 +66,8 @@ const PersonnelModule = (() => {
     { key: 'comms', label: 'Communications', icon: 'ti-mail',
       roles: [], floor: 'super_admin',
       actions: ['getCommTemplates', 'saveCommTemplate', 'previewCommunication',
-                'sendCommunications', 'logCopiedCommunication', 'listCommunicationsLog',
-                'listPolicyDocs', 'savePolicyDocs'] },
+                'sendCommunications', 'draftCommunications', 'logCopiedCommunication',
+                'listCommunicationsLog', 'listPolicyDocs', 'savePolicyDocs'] },
     { key: 'settings', label: 'Calendar', icon: 'ti-calendar-cog',
       roles: [], floor: 'super_admin',
       actions: ['getSchedulerSettings', 'saveSchedulerSettings', 'getCycle',
@@ -3654,6 +3654,52 @@ const PersonnelModule = (() => {
     return { sent: sent, failed: failed };
   }
 
+  /**
+   * Create the messages as DRAFTS in Gmail — the primary delivery path.
+   * Drafts land in the DEPLOYING account's Gmail Drafts folder (the account
+   * the portal runs as — for this department, the shared staff account),
+   * where they can be reviewed, edited, and sent from the real mailbox.
+   * Policy-document names carry their links natively in the draft's HTML —
+   * no clipboard machinery involved. Each is logged with method 'drafted'.
+   * @param {Object} payload - { kind, academicYear, drafts: [{email, subject, body}] }
+   */
+  function draftCommunications(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const p = payload || {};
+    const kind = String(p.kind || '').trim();
+    if (COMM_KINDS.indexOf(kind) === -1) throw new Error('Unknown message kind: ' + kind);
+    const year = String(p.academicYear || '').trim();
+    const drafts = Array.isArray(p.drafts) ? p.drafts : [];
+    if (!drafts.length) throw new Error('Nothing to draft.');
+
+    // Light HTML for the draft body: escaped text with line breaks, policy
+    // document names linkified. Deliberately NOT the branded notification
+    // shell — a draft is going to be edited in Gmail, and a heavy wrapper
+    // makes that awkward. What you see in Gmail is what you'd write there.
+    const docs = _policyDocs();
+    const toHtml = body => _linkifyPolicyDocs(
+      _commEscape(body).replace(/\r?\n/g, '<br>'), docs);
+
+    const drafted = [], failed = [];
+    drafts.forEach(d => {
+      const email = _email(d.email);
+      const subject = String(d.subject || '').trim();
+      const body = String(d.body || '').trim();
+      if (!email || !subject || !body) {
+        failed.push({ email: email || '(blank)', reason: 'missing recipient, subject, or body' });
+        return;
+      }
+      try {
+        GmailApp.createDraft(email, subject, body, { htmlBody: toHtml(body) });
+        drafted.push(email);
+        _logComm(kind, year, email, subject, body, 'drafted', user);
+      } catch (err) {
+        failed.push({ email: email, reason: String(err && err.message || err) });
+      }
+    });
+    return { drafted: drafted, failed: failed };
+  }
+
   /** Log a draft the user copied into their own mail client. */
   function logCopiedCommunication(payload, user, roles) {
     _requireSuperAdmin(roles);
@@ -4135,6 +4181,7 @@ const PersonnelModule = (() => {
   }
 
 
+  // Only these names are dispatchable.
   // Only these names are dispatchable (TABS is the tab manifest, not an action).
   return {
     TABS: TABS,
@@ -4181,6 +4228,7 @@ const PersonnelModule = (() => {
     saveCommTemplate,
     previewCommunication,
     sendCommunications,
+    draftCommunications,
     logCopiedCommunication,
     listCommunicationsLog,
     listPolicyDocs,
