@@ -137,6 +137,7 @@
             <select class="form-select" id="en-term" onchange="ThesisUI.onEnrollTermChange()">
               <option value="">— Loading terms… —</option>
             </select>
+            <div class="form-hint">Only terms whose imported class schedule offers ANTH 195S are listed.</div>
             <div class="form-hint" id="en-term-hint"></div>
             <div class="form-error"></div>
           </div>
@@ -152,17 +153,38 @@
         <div class="form-row">
           <div class="form-group">
             <label class="form-label" for="en-college">College</label>
-            <input class="form-input" type="text" id="en-college" placeholder="e.g. Merrill">
+            <select class="form-select" id="en-college">
+              <option value="">— Select your college —</option>
+              <option value="Cowell">Cowell</option>
+              <option value="Stevenson">Stevenson</option>
+              <option value="Crown">Crown</option>
+              <option value="Merrill">Merrill</option>
+              <option value="Porter">Porter</option>
+              <option value="Kresge">Kresge</option>
+              <option value="Oakes">Oakes</option>
+              <option value="Rachel Carson">Rachel Carson</option>
+              <option value="College Nine">College Nine</option>
+              <option value="John R. Lewis">John R. Lewis</option>
+            </select>
           </div>
           <div class="form-group">
             <label class="form-label" for="en-major">Major status</label>
-            <input class="form-input" type="text" id="en-major" placeholder="e.g. Anthropology B.A.">
+            <select class="form-select" id="en-major">
+              <option value="">— Select your status —</option>
+              <option value="Declared Major">Declared Major</option>
+              <option value="Proposed Major">Proposed Major</option>
+              <option value="Minor">Minor</option>
+              <option value="Non-Major">Non-Major</option>
+            </select>
           </div>
           <div class="form-group">
             <label class="form-label" for="en-level">Class level</label>
             <select class="form-select" id="en-level">
-              <option value="">— Select —</option>
-              <option>FR</option><option>SO</option><option>JR</option><option>SR</option>
+              <option value="">—</option>
+              <option value="FR">Freshman</option>
+              <option value="SO">Sophomore</option>
+              <option value="JR">Junior</option>
+              <option value="SR">Senior</option>
             </select>
           </div>
         </div>
@@ -173,8 +195,8 @@
         </div>
 
         <div class="form-group">
-          <label class="form-label" for="en-title">Thesis title <span class="required" aria-hidden="true">*</span></label>
-          <input class="form-input" type="text" id="en-title" placeholder="Working title is fine">
+          <label class="form-label" for="en-title">Thesis title <span class="text-muted">(optional)</span></label>
+          <input class="form-input" type="text" id="en-title" placeholder="A working title is fine">
         </div>
 
         <div class="form-group">
@@ -196,15 +218,28 @@
         </div>
 
         <div class="form-group">
-          <label class="form-label" for="en-hours">Hours per week with your faculty sponsor</label>
-          <input class="form-input" type="number" id="en-hours" min="0" step="1" value="0" style="max-width:140px;"
-            oninput="ThesisUI.onEnrollHoursInput()">
-          <div class="form-hint" id="en-hours-hint">Select a term to see the required weekly total (Senate Regulation 760).</div>
+          <label class="form-label">Hours per week (Senate Regulation 760)</label>
+          <p class="form-hint" id="en-hours-policy" style="margin-top:0;">
+            Select a term to see the required weekly hours.
+          </p>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label" for="en-hours">With faculty sponsor</label>
+              <input class="form-input" id="en-hours" inputmode="numeric" oninput="ThesisUI.onEnrollHoursInput()">
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="en-hours-indep">Independent <span class="text-muted">(auto)</span></label>
+              <input class="form-input" id="en-hours-indep" inputmode="numeric" readonly
+                style="background:var(--color-surface-2,#f4f5f7);">
+            </div>
+          </div>
+          <p class="form-hint" id="en-hours-derived" style="display:none;"></p>
         </div>
 
         <div class="form-group">
-          <label class="form-label" for="en-syllabus">Syllabus / study plan (optional, PDF)</label>
-          <input class="form-input" type="file" id="en-syllabus" accept="application/pdf">
+          <label class="form-label" for="en-syllabus">Syllabus <span class="text-muted">(optional)</span></label>
+          <input class="form-input" type="file" id="en-syllabus" accept=".pdf,application/pdf">
+          <div class="form-hint">Optional supporting document; it will be linked on the completed petition.</div>
           <div class="form-error" id="en-syllabus-error"></div>
         </div>
 
@@ -356,7 +391,32 @@
         <button class="btn btn-primary" id="save-thesis-settings-btn" onclick="ThesisUI.saveSettings()"><i class="ti ti-device-floppy"></i> Save settings</button>
       </div>
     </div>
+
+    <!-- ── Student notifications: 195S enrollment (editable message templates) ── -->
+    <div class="card" style="max-width:640px;">
+      <div class="card-title"><i class="ti ti-mail"></i> Student notifications — 195S enrollment</div>
+      <p class="text-sm text-muted" style="margin-bottom:14px;">
+        The message emailed to a student when their ANTH 195S enrollment petition is completed
+        or returned for revision. Tokens <code>{FirstName}</code> and <code>{Course}</code> are
+        filled in automatically. The essentials are always appended below the message and cannot
+        be edited away: the class number and enrollment instructions, the 195S pass reminder,
+        the advisor's note, and the PDF link (completion); the sponsor's return note, the
+        ANTH 198 pointer, and the resubmission link (returned).
+      </p>
+      <div class="form-group">
+        <label class="form-label" for="th-enr-tmpl-complete">"Petition complete" message</label>
+        <textarea class="form-textarea" id="th-enr-tmpl-complete" rows="4"></textarea>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="th-enr-tmpl-returned">"Returned for revision" message</label>
+        <textarea class="form-textarea" id="th-enr-tmpl-returned" rows="4"></textarea>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-primary btn-sm" id="save-enr-notify-btn" onclick="ThesisUI.saveEnrollNotifySettings()"><i class="ti ti-device-floppy"></i> Save notifications</button>
+      </div>
+    </div>
     <div id="th-deeplink-card"></div>
+    <div id="th-enroll-deeplink-card"></div>
   </div>
 
   <!-- Detail / action modal -->
@@ -502,6 +562,14 @@ window.ThesisUI = (() => {
     const enSyl = document.getElementById('en-syllabus');
     if (enSyl) enSyl.addEventListener('change', _onEnrollSyllabusChange);
 
+    // Deep-link target for the 195S ENROLLMENT form (?focus=enroll — the
+    // Settings tab's shareable link). The Enroll tab is data-gated, so the
+    // landing decision waits for the enrollMine result below: no petition
+    // in flight → the form; otherwise → My enrollment, where the existing
+    // petition (and its Revise button, if returned) lives.
+    const ffPeek = window.__focus;
+    const wantEnrollForm = !!(ffPeek && ffPeek.sourceId === 'enroll' && _isStudent && _hasTab.enroll);
+
     // 195S enrollment tab gating (students): the Enroll button stays
     // hidden while an enrollment is in flight (SUBMITTED / PENDING_ADVISOR
     // / RETURNED — a RETURNED record reaches the form via its Revise
@@ -518,6 +586,14 @@ window.ThesisUI = (() => {
         if (!inFlight) {
           const btn = document.getElementById('tab-btn-enroll');
           if (btn) btn.style.display = '';
+        }
+        if (wantEnrollForm) {
+          if (!inFlight) {
+            switchTab('enroll');
+          } else if (_hasTab.myenroll) {
+            switchTab('myenroll');
+            Toast.show('You already have an ANTH 195S enrollment petition in progress — it\'s listed here.', 'info');
+          }
         }
       });
     }
@@ -550,7 +626,10 @@ window.ThesisUI = (() => {
     // land on their work queue (Graduation queue); other reviewers on the
     // Review queue.
     const _isAdvisorRole = _roles.indexOf('staff_undergrad') !== -1;
-    if (_isStudent && _hasTab.mine) {
+    if (wantEnrollForm) {
+      // Landing is decided in the enrollMine callback above; skip the
+      // default-tab logic so the two async arrivals don't fight.
+    } else if (_isStudent && _hasTab.mine) {
       // The Submit tab starts hidden; decide the layout from the student's
       // data behind the busy overlay, then reveal the right tab. On a
       // failed load, fail open to Submit — the server's per-term rule is
@@ -591,7 +670,7 @@ window.ThesisUI = (() => {
     // record is actionable and the viewer works the matching queue, land
     // on that tab first — it is where the action lives.
     const f = window.__focus;
-    if (f && f.sourceId && f.sourceId !== 'form') {
+    if (f && f.sourceId && f.sourceId !== 'form' && f.sourceId !== 'enroll') {
       if (String(f.sourceId).indexOf('ENR') === 0) {
         _busy('Loading enrollment…');
         App.call('thesis', 'enrollGet', { enrollmentId: f.sourceId }, rec => {
@@ -1316,9 +1395,12 @@ window.ThesisUI = (() => {
       }
       const gradeSel = document.getElementById('en-grade');
       if (gradeSel) {
-        gradeSel.innerHTML = '<option value="">— Select —</option>'
+        // Values are the server's GRADE_OPTIONS; labels mirror the IS form
+        // ('Pass/No Pass' displays as 'Pass / No Pass').
+        gradeSel.innerHTML = '<option value="">—</option>'
           + (_enrollData.gradeOptions || []).map(g =>
-              '<option value="' + _esc(g) + '">' + _esc(g) + '</option>').join('');
+              '<option value="' + _esc(g) + '">'
+              + _esc(g === 'Pass/No Pass' ? 'Pass / No Pass' : g) + '</option>').join('');
       }
       _fillFacultySelect(document.getElementById('en-sponsor'), _enrollData.sponsors || []);
       onEnrollTermChange();
@@ -1340,37 +1422,53 @@ window.ThesisUI = (() => {
     return Math.round((Number(t.hoursPerCredit || 30) * c) / Number(t.weeks || 10));
   }
 
+  // Mirrors the IS form's SR 760 block: the policy paragraph explains the
+  // fixed total; the student enters only the with-sponsor portion, the
+  // independent field derives (input clamped to the total), and the derived
+  // line restates the split.
   function onEnrollTermChange() {
     const t = _enrollSelectedTerm();
     const hint = document.getElementById('en-term-hint');
     if (hint) {
       hint.textContent = t
-        ? 'ANTH 195S · ' + t.credits + ' credits' + (t.isSummer ? ' · summer (5-week) term' : '')
+        ? 'ANTH 195S is ' + t.credits + ' credit' + (Number(t.credits) === 1 ? '' : 's') + '.'
         : '';
+    }
+    const policy = document.getElementById('en-hours-policy');
+    if (policy) {
+      if (t) {
+        const total = _enrollHoursTotal(t);
+        policy.textContent = 'Per Senate Regulation 760, 1 credit = 30 hours of work over the term. '
+          + 'This ' + t.credits + '-credit course = ' + total + ' hours/week over a ' + t.weeks + '-week '
+          + (t.isSummer ? 'summer session' : 'quarter') + ' (' + (30 * Number(t.credits)) + ' hours total). '
+          + 'Enter the hours with your sponsor; the remainder is independent.';
+      } else {
+        policy.textContent = 'Select a term to see the required weekly hours.';
+      }
     }
     onEnrollHoursInput();
   }
 
   function onEnrollHoursInput() {
     const t = _enrollSelectedTerm();
-    const hint = document.getElementById('en-hours-hint');
-    if (!hint) return;
-    if (!t) {
-      hint.textContent = 'Select a term to see the required weekly total (Senate Regulation 760).';
-      return;
-    }
     const total = _enrollHoursTotal(t);
-    const input = document.getElementById('en-hours');
-    let ws = Number((input && input.value) || 0);
-    if (!isFinite(ws) || ws < 0) ws = 0;
-    if (ws > total) {
-      hint.innerHTML = '<span style="color:var(--color-danger);">Hours with your sponsor cannot exceed the '
-        + total + ' hours/week total for ' + _esc(t.credits) + ' credits (Senate Regulation 760).</span>';
+    const wsEl = document.getElementById('en-hours');
+    const indEl = document.getElementById('en-hours-indep');
+    const derived = document.getElementById('en-hours-derived');
+    if (!total) {
+      if (indEl) indEl.value = '';
+      if (derived) derived.style.display = 'none';
       return;
     }
-    hint.textContent = 'Senate Regulation 760: ' + total + ' hours/week total for '
-      + t.credits + ' credits' + (t.isSummer ? ' (summer)' : '') + ' — '
-      + ws + ' with your sponsor, ' + (total - ws) + ' independent.';
+    let ws = Number(((wsEl && wsEl.value) || '').toString().trim() || 0);
+    if (!isFinite(ws) || ws < 0) ws = 0;
+    if (ws > total) ws = total;
+    const ind = total - ws;
+    if (indEl) indEl.value = String(ind);
+    if (derived) {
+      derived.style.display = 'block';
+      derived.textContent = ws + ' with sponsor + ' + ind + ' independent = ' + total + ' hours/week.';
+    }
   }
 
   function _onEnrollSyllabusChange(e) {
@@ -1403,7 +1501,6 @@ window.ThesisUI = (() => {
     const grade = document.getElementById('en-grade').value;
     if (!grade) { Toast.show('Choose a grade option.', 'error'); return; }
     const title = document.getElementById('en-title').value.trim();
-    if (!title) { Toast.show('Enter a thesis title (a working title is fine).', 'error'); return; }
     const desc = document.getElementById('en-desc').value.trim();
     if (!desc) { Toast.show('Describe the thesis work you will complete this term.', 'error'); return; }
     const work = document.getElementById('en-work').value.trim();
@@ -1462,7 +1559,11 @@ window.ThesisUI = (() => {
     ['en-college', 'en-major', 'en-site', 'en-title', 'en-desc', 'en-evidence', 'en-work'].forEach(id => {
       const el = document.getElementById(id); if (el) el.value = '';
     });
-    const hours = document.getElementById('en-hours'); if (hours) hours.value = '0';
+    ['en-hours', 'en-hours-indep'].forEach(id => {
+      const el = document.getElementById(id); if (el) el.value = '';
+    });
+    const derived = document.getElementById('en-hours-derived');
+    if (derived) derived.style.display = 'none';
     const syl = document.getElementById('en-syllabus'); if (syl) syl.value = '';
     const conf = document.getElementById('en-confirm'); if (conf) conf.checked = false;
     _enrollSyllabus = null; _enrollResubmitId = null;
@@ -1498,7 +1599,7 @@ window.ThesisUI = (() => {
       document.getElementById('en-desc').value = rec.courseDescription || '';
       document.getElementById('en-evidence').value = rec.evidenceOfPreparation || '';
       document.getElementById('en-work').value = rec.workToBeSubmitted || '';
-      document.getElementById('en-hours').value = rec.hoursWithSponsor || '0';
+      document.getElementById('en-hours').value = rec.hoursWithSponsor || '';
       document.getElementById('en-sponsor').value = rec.sponsorEmail || '';
       // Resubmission re-attests: the checkbox starts unchecked on purpose.
       document.getElementById('en-confirm').checked = false;
@@ -1665,6 +1766,9 @@ window.ThesisUI = (() => {
     // Sponsor deciding a submitted petition (super_admin may act too).
     if (rec.stage === 'SUBMITTED' && (isMe(rec.sponsorEmail, me) || isSuper)) {
       out.push(_enrollSponsorPanel(rec));
+      // Seed the SR 760 hint once the panel is in the DOM (mirrors IS).
+      const spTotal = Number(rec.hoursWithSponsor || 0) + Number(rec.hoursIndependent || 0);
+      setTimeout(function () { onEnrollSpHoursInput(spTotal); }, 50);
     }
 
     // Advisor assigning the class number.
@@ -1713,8 +1817,10 @@ window.ThesisUI = (() => {
       + '<div class="form-hint">You may revise the student\'s wording before approving.</div></div>'
       + '<div class="form-group"><label class="form-label">Description of work to be submitted</label>'
       + '<textarea class="form-textarea" id="en-sp-work" rows="2">' + _esc(rec.workToBeSubmitted || '') + '</textarea></div>'
-      + '<div class="form-group"><label class="form-label">Hours per week with you (of ' + _esc(total) + ' total, SR 760)</label>'
-      + '<input class="form-input" type="number" id="en-sp-hours" min="0" step="1" value="' + _esc(rec.hoursWithSponsor || '0') + '" style="max-width:140px;"></div>'
+      + '<div class="form-group"><label class="form-label">Hours/week — with sponsor (SR 760)</label>'
+      + '<input class="form-input" id="en-sp-hours" inputmode="numeric" value="' + _esc(rec.hoursWithSponsor || '') + '" '
+      + 'oninput="ThesisUI.onEnrollSpHoursInput(' + Number(total) + ')" style="max-width:140px;">'
+      + '<p class="form-hint" id="en-sp-hours-hint" style="margin-top:2px;"></p></div>'
       + '<div class="form-group"><label style="display:flex;align-items:center;gap:8px;font-weight:normal;cursor:pointer;">'
       + '<input type="checkbox" id="en-sp-report"' + (rec.reportRequired ? ' checked' : '') + '> Written report required</label>'
       + '<input class="form-input" type="text" id="en-sp-report-due" placeholder="Report due (e.g. last day of finals)" '
@@ -1739,6 +1845,19 @@ window.ThesisUI = (() => {
       + '<button class="btn btn-danger" onclick="ThesisUI.enrollSponsorReturn(\'' + _esc(rec.enrollmentId) + '\')">'
       + '<i class="ti ti-arrow-back-up"></i> Return to student</button>'
       + '</div></div>';
+  }
+
+  /** Live SR 760 hint in the sponsor panel: total is fixed by the record's
+   *  credits + term (passed in), the sponsor sets only the split. */
+  function onEnrollSpHoursInput(total) {
+    const el = document.getElementById('en-sp-hours');
+    const hint = document.getElementById('en-sp-hours-hint');
+    if (!hint) return;
+    if (!total) { hint.textContent = ''; return; }
+    let ws = Number(((el && el.value) || '').toString().trim() || 0);
+    if (!isFinite(ws) || ws < 0) ws = 0;
+    if (ws > total) { ws = total; if (el) el.value = String(total); }
+    hint.textContent = ws + ' with sponsor + ' + (total - ws) + ' independent = ' + total + ' hrs/week (SR 760).';
   }
 
   function _onEnrollSpSyllabusChange(input) {
@@ -1855,7 +1974,7 @@ window.ThesisUI = (() => {
       + '<textarea class="form-textarea" id="en-ad-comments" rows="2" placeholder="Included in the completion email and on the record."></textarea></div>'
       + '<div class="form-actions">'
       + '<button class="btn btn-primary" id="en-ad-save" onclick="ThesisUI.enrollAdvisorComplete(\'' + _esc(rec.enrollmentId) + '\', ' + (ctx.overCap ? 'true' : 'false') + ')">'
-      + '<i class="ti ti-check"></i> Complete enrollment</button>'
+      + '<i class="ti ti-check"></i> Complete petition</button>'
       + '<button class="btn btn-secondary" onclick="ThesisUI.enrollAdvisorReturn(\'' + _esc(rec.enrollmentId) + '\')">'
       + '<i class="ti ti-arrow-back-up"></i> Return to sponsor</button>'
       + '</div></div>';
@@ -1894,7 +2013,7 @@ window.ThesisUI = (() => {
     }
     FormHelper.setLoading('en-ad-save', true, 'Saving…');
     App.call('thesis', 'enrollAdvisorComplete', payload, res => {
-      Toast.show('Enrollment completed — the student has been sent class number ' + classNumber + '.', 'success');
+      Toast.show('Petition complete — the student has been sent class number ' + classNumber + '.', 'success');
       closeModal(); _afterAction();
     }, () => FormHelper.setLoading('en-ad-save', false));
   }
@@ -1952,6 +2071,11 @@ window.ThesisUI = (() => {
       document.getElementById('th-notify-handoff').checked = !!(s && s.notifyOnHandoff);
       const cert = document.getElementById('th-send-cert');
       if (cert) cert.checked = !!(s && s.sendCertificate);
+      const tc = document.getElementById('th-enr-tmpl-complete');
+      if (tc) tc.value = (s && s.NOTIFY_ENROLL_COMPLETE) || '';
+      const tr = document.getElementById('th-enr-tmpl-returned');
+      if (tr) tr.value = (s && s.NOTIFY_ENROLL_RETURNED) || '';
+      _renderEnrollDeepLinkCard((s && s.enrollFormLink) || '');
     });
     // Standardized deep-link card: direct link to the student submission form.
     const dl = document.getElementById('th-deeplink-card');
@@ -1970,6 +2094,55 @@ window.ThesisUI = (() => {
       FormHelper.setLoading('save-thesis-settings-btn', false);
       Toast.show('Thesis settings saved.', 'success');
     }, () => FormHelper.setLoading('save-thesis-settings-btn', false));
+  }
+
+  /** Renders the 195S enrollment-form deep link card in Settings.
+   *  Mirrors the standardized deep-link card the platform renders for the
+   *  submission form (which is built by App.deepLinkCard around focus=form;
+   *  the enrollment form uses its own focus=enroll token, so this card is
+   *  rendered here from the server-built link in getSettings). */
+  function _renderEnrollDeepLinkCard(url) {
+    const el = document.getElementById('th-enroll-deeplink-card');
+    if (!el) return;
+    if (!url) { el.innerHTML = ''; return; }
+    el.innerHTML = '<div class="card" style="max-width:640px;">'
+      + '<div class="card-title"><i class="ti ti-link"></i> Student 195S enrollment link</div>'
+      + '<p class="text-sm text-muted" style="margin:-4px 0 10px;">Send students straight to the ANTH 195S '
+      + 'enrollment petition form. Visible to undergraduate students; a student with a petition already in '
+      + 'progress lands on My enrollment instead.</p>'
+      + '<div style="display:flex;gap:8px;align-items:center;">'
+      + '<input class="form-input" id="th-enroll-link-input" readonly value="' + _esc(url) + '" style="flex:1;" '
+      + 'onclick="this.select()">'
+      + '<button class="btn btn-secondary btn-sm" onclick="ThesisUI.copyEnrollLink()"><i class="ti ti-copy"></i> Copy</button>'
+      + '</div></div>';
+  }
+
+  function copyEnrollLink() {
+    const input = document.getElementById('th-enroll-link-input');
+    if (!input || !input.value) return;
+    const done = () => Toast.show('Enrollment link copied.', 'success');
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(input.value).then(done, () => {
+        input.select(); document.execCommand('copy'); done();
+      });
+    } else {
+      input.select(); document.execCommand('copy'); done();
+    }
+  }
+
+  /** Saves the 195S enrollment notification templates (own button, so the
+   *  toggles and templates save independently — mirrors the IS module's
+   *  separate "Save notifications" control). */
+  function saveEnrollNotifySettings() {
+    const payload = {
+      NOTIFY_ENROLL_COMPLETE: (document.getElementById('th-enr-tmpl-complete') || {}).value || '',
+      NOTIFY_ENROLL_RETURNED: (document.getElementById('th-enr-tmpl-returned') || {}).value || '',
+    };
+    FormHelper.setLoading('save-enr-notify-btn', true, 'Saving…');
+    App.call('thesis', 'saveSettings', payload, () => {
+      FormHelper.setLoading('save-enr-notify-btn', false);
+      Toast.show('Notification settings saved.', 'success');
+    }, () => FormHelper.setLoading('save-enr-notify-btn', false));
   }
 
   function closeModal() {
@@ -2023,10 +2196,10 @@ window.ThesisUI = (() => {
     addRegion, removeRegion,
     loadMine, loadQueue, loadSponsored, loadGradQueue, markDocViewed, remind, rowKey, deleteThesis, open, closeModal,
     submitSponsor, submitReader, advisorComplete, returnThesis, returnToSponsor,
-    loadSettings, saveSettings,
+    loadSettings, saveSettings, saveEnrollNotifySettings, copyEnrollLink,
     _toggleReader, _onCommentFileChange,
     // ANTH 195S enrollment
-    loadEnrollForm, onEnrollTermChange, onEnrollHoursInput,
+    loadEnrollForm, onEnrollTermChange, onEnrollHoursInput, onEnrollSpHoursInput,
     submitEnroll, cancelEnrollResubmit, startEnrollResubmit,
     loadMyEnrollments, loadEnrollQueue, loadEnrollAdvisor,
     openEnroll, enrollRowKey,

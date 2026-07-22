@@ -1456,6 +1456,52 @@ const ThesisModule = (() => {
     'By approving this petition, I verify that this student is prepared to ' +
     'complete and submit their final thesis by the end of this enrollment period.';
 
+  // Student-notification message templates for the 195S enrollment
+  // workflow (UI-managed in the Settings tab), mirroring the Individual
+  // Studies module: the template is the MESSAGE ONLY, with tokens
+  // {FirstName} and {Course} filled at send time. The structural,
+  // load-bearing lines (class number + enrollment instructions, the
+  // 195S pass reminder, the return note and 198 pointer, advisor note,
+  // PDF link, portal links) are appended in code and cannot be edited
+  // away. Stored key/value in the existing ThesisSettings tab alongside
+  // NOTIFY_ON_HANDOFF / SEND_CERTIFICATE; these defaults are the
+  // fallback until a value is saved (or if the tab is unreadable).
+  const ENROLL_NOTIFY_DEFAULTS = {
+    NOTIFY_ENROLL_COMPLETE: 'Your {Course} senior-thesis petition is complete.',
+    NOTIFY_ENROLL_RETURNED: 'Your {Course} enrollment petition was returned for revision.',
+  };
+
+  /** The effective enrollment template for a key: saved value, else default. */
+  function _enrNotifyTemplate(key) {
+    let v = '';
+    try {
+      const rows = DataService.query(CONFIG.SHEETS.USERS_CONFIG,
+        CONFIG.TABS.THESIS_SETTINGS || 'ThesisSettings', 'Key', key);
+      if (rows && rows.length) v = String(rows[0].Value != null ? rows[0].Value : '').trim();
+    } catch (e) { Logger.log('ThesisModule._enrNotifyTemplate failed for ' + key + ': ' + e); }
+    return v || ENROLL_NOTIFY_DEFAULTS[key] || '';
+  }
+
+  /** Fills {FirstName} and {Course} from the enrollment record + profile. */
+  function _enrFillNotifyTokens(tmpl, rec) {
+    const profile = Auth.getProfile(rec.StudentEmail);
+    const firstName = profile ? (profile.firstName || profile.name || '') : '';
+    return String(tmpl || '')
+      .replace(/\{FirstName\}/g, firstName)
+      .replace(/\{Course\}/g, rec.Course || ENROLL_COURSE);
+  }
+
+  /** Upserts one enrollment template row in the ThesisSettings tab. */
+  function _enrWriteNotifySetting(key, value) {
+    const tab = CONFIG.TABS.THESIS_SETTINGS || 'ThesisSettings';
+    const existing = DataService.query(CONFIG.SHEETS.USERS_CONFIG, tab, 'Key', key);
+    if (existing.length) {
+      DataService.update(CONFIG.SHEETS.USERS_CONFIG, tab, 'Key', key, { Value: value });
+    } else {
+      DataService.insert(CONFIG.SHEETS.USERS_CONFIG, tab, { Key: key, Value: value });
+    }
+  }
+
   // Senate Regulation 760: 1 credit = 30 hours of work over the term.
   // Weekly load = (30 x credits) / weeks; quarters run 10 weeks, summer 5.
   // The total is fixed by policy — students and sponsors only set the
@@ -1708,7 +1754,7 @@ const ThesisModule = (() => {
       throw new Error('You can only withdraw your own enrollment petition.');
     }
     if (rec.Stage === STAGE.COMPLETE) {
-      throw new Error('A completed enrollment cannot be withdrawn. Contact the undergraduate advisor.');
+      throw new Error('A completed petition cannot be withdrawn. Contact the undergraduate advisor.');
     }
     Tasks.resolveForSource('thesis', rec.EnrollmentID, { resolvedBy: user, note: 'Withdrawn' });
     DataService.remove(CONFIG.SHEETS.THESIS, ENROLL_TAB(), 'EnrollmentID', rec.EnrollmentID);
@@ -1835,7 +1881,8 @@ const ThesisModule = (() => {
       assignedTo: rec.StudentEmail, staleAfterDays: 14,
     });
     _notify(rec.StudentEmail, 'Your ANTH 195S enrollment petition was returned',
-      'Your ANTH 195S enrollment petition was returned by ' + _facultyLabel(user) + ' for revision.\n\n' +
+      _enrFillNotifyTokens(_enrNotifyTemplate('NOTIFY_ENROLL_RETURNED'), rec) + '\n\n' +
+      'Returned by: ' + _facultyLabel(user) + '\n' +
       'What to revise: ' + note + '\n\n' +
       'If you are still conducting research and will not finish the thesis this term, ' +
       'file for ANTH 198 in the Individual Studies module instead.' +
@@ -1921,10 +1968,10 @@ const ThesisModule = (() => {
     Tasks.resolveForSource('thesis', rec.EnrollmentID, { resolvedBy: user });
 
     const lines = [
-      'Your ANTH 195S enrollment petition is complete.',
+      _enrFillNotifyTokens(_enrNotifyTemplate('NOTIFY_ENROLL_COMPLETE'), finalRec),
       '',
       'Class number: ' + classNumber,
-      'Enroll in ANTH 195S in MyUCSC using the class number above.',
+      'Enroll in this course in MyUCSC using the class number above.',
       '',
       'Reminder: to receive a passing grade in ANTH 195S, your final thesis must be finished ' +
         'and submitted (via the Senior Thesis module) by the end of this course.',
@@ -1933,7 +1980,7 @@ const ThesisModule = (() => {
       lines.push('', 'Note from the undergraduate advisor:', String(finalRec.AdvisorComments).trim());
     }
     if (pdf && pdf.url) lines.push('', 'Your completed petition (PDF): ' + pdf.url);
-    _notify(rec.StudentEmail, 'Your ANTH 195S enrollment is complete',
+    _notify(rec.StudentEmail, 'Your ANTH 195S petition is complete',
       lines.join('\n') + _actionTextFallback(rec.EnrollmentID, 'View your enrollment'));
 
     EventBus.emit('thesis.enrollment_completed', { enrollmentId: rec.EnrollmentID }, { user: user });
@@ -2522,16 +2569,39 @@ const ThesisModule = (() => {
     throw new Error('Only the undergraduate advisor can change thesis settings.');
   }
 
-  /** Returns the thesis operational settings for the Settings tab. */
+  /** Returns the thesis operational settings for the Settings tab,
+   *  including the 195S enrollment notification templates. */
   function getSettings(payload, user, roles) {
     _assertSettingsManager(user, roles);
-    return ThesisSettings.get();
+    const out = ThesisSettings.get();
+    Object.keys(ENROLL_NOTIFY_DEFAULTS).forEach(function (k) {
+      out[k] = _enrNotifyTemplate(k);
+    });
+    // Shareable deep link straight to the 195S enrollment form
+    // (?focus=enroll, routed in the module UI's init). Built server-side
+    // via the Links service so it uses the public alias when configured.
+    try { out.enrollFormLink = Links.deepLink('thesis', 'enroll') || ''; }
+    catch (e) { out.enrollFormLink = ''; }
+    return out;
   }
 
-  /** Saves the thesis operational settings from the Settings tab. */
+  /** Saves the thesis operational settings from the Settings tab. The
+   *  enrollment notification templates are written directly to the
+   *  ThesisSettings key/value tab; the toggles go through the
+   *  ThesisSettings service as before. A template key absent from the
+   *  payload is left untouched. */
   function saveSettings(payload, user, roles) {
     _assertSettingsManager(user, roles);
-    return ThesisSettings.save(payload || {});
+    payload = payload || {};
+    Object.keys(ENROLL_NOTIFY_DEFAULTS).forEach(function (key) {
+      if (payload[key] === undefined) return;
+      _enrWriteNotifySetting(key, String(payload[key]));
+    });
+    const toggles = {};
+    if (payload.notifyOnHandoff !== undefined) toggles.notifyOnHandoff = payload.notifyOnHandoff;
+    if (payload.sendCertificate !== undefined) toggles.sendCertificate = payload.sendCertificate;
+    ThesisSettings.save(toggles);
+    return getSettings(payload, user, roles);
   }
 
 
