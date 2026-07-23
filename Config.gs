@@ -44,7 +44,7 @@ const CONFIG = {
     // Class schedule service — its OWN spreadsheet (per-tier storage).
     // Tabs: ClassSchedule, ClassScheduleImports. Blank until setUp()
     // creates it and logs the id to paste back here.
-    CLASS_SCHEDULE: '1ioSQAEqax-dEROzHMaXvszFatp1FmABFt39QH7xFpzE',
+    CLASS_SCHEDULE: '1XFZQuNMIkr0wjhhDFWXfSqggWAk9shjN3rxEGXqSB9s',
     // Undergraduate Individual Studies module — its OWN spreadsheet
     // (per-module storage tier). Tab: Petitions. Blank until setUp()
     // creates it and logs the id to paste back here.

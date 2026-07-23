@@ -367,11 +367,63 @@ const SETUP_SCHEMA = {
     // at apply time. ReportRequired/ReportDueText are sponsor-owned and ride
     // silently onto the petition at submit. Lives in the same spreadsheet as
     // Petitions. Meta columns filled by DataService.
-    headers: ['TemplateID', 'SponsorEmail', 'Name', 'IsDefault',
+    // Audience ('undergrad' | 'grad'; blank = undergrad, covering rows
+    // written before the column existed) switches which form a template
+    // serves — and, for grad templates, reinterprets the generic
+    // columns: Title<-Subject, WorkToBeSubmitted<-WorkOutline,
+    // HoursWithSponsor<-WeeklyContactHours, ReportRequired<-
+    // FinalPaperRequired. Run addMissingColumns() to append it to an
+    // existing tab.
+    headers: ['TemplateID', 'SponsorEmail', 'Name', 'IsDefault', 'Audience',
               'Course', 'Title', 'CourseDescription', 'WorkToBeSubmitted',
               'EvidenceOfPreparation', 'GradeOption', 'HoursWithSponsor',
               'ReportRequired', 'ReportDueText', 'RoomAccessRoom', 'Active',
               'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
+
+  INDIVIDUAL_STUDIES_GRAD: {
+    tab: 'GradPetitions',
+    // Graduate Individual Studies petitions (GIS-prefixed ids; same
+    // module, parallel audience). Fixed course/unit pairs (ANTH
+    // 297A–299C — Units is intrinsic to the course, not read from the
+    // schedule); no grade option, no credit cap, no SR 760 split —
+    // WeeklyContactHours is a single number. Subject/WorkOutline
+    // replace the undergrad text fields; Outline* hold the optional
+    // attached outline document (replace-in-place, like the undergrad
+    // syllabus). DeadlineDate is the term's enrollment/fee-payment
+    // deadline resolved from the calendar at submission;
+    // LateSubmission flags a submission after it (calendar failure
+    // degrades to blank/FALSE). The canonical PDF is generated at
+    // COMPLETE via ReportService. Meta columns filled by DataService.
+    headers: ['PetitionID', 'StudentEmail', 'TermCode', 'Quarter', 'Year', 'Course', 'Units', 'SponsorEmail',
+              'StudySite', 'Subject', 'WorkOutline',
+              'WeeklyContactHours', 'FinalPaperRequired',
+              'Stage', 'LateSubmission', 'DeadlineDate',
+              'SponsorComments', 'SponsorDecidedBy', 'SponsorDecidedAt',
+              'ClassNumber', 'ClassSection', 'ClassNumberSource',
+              'AdvisorComments', 'AdvisorProcessedBy', 'AdvisorProcessedAt',
+              'OutlineFileID', 'OutlineLink', 'OutlineName',
+              'RoomAccessRequested', 'RoomAccessRoom', 'RoomAccessNote',
+              'RoomAccessRequestedBy', 'RoomAccessRequestedAt',
+              'DriveFileID', 'FileName', 'DocumentLink', 'ReturnNote',
+              'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
+
+  INDIVIDUAL_STUDIES_SETTINGS: {
+    tab: 'PetitionSettings',
+    // Individual Studies — UI-managed key/value settings, mirroring
+    // ThesisSettings / TranscriptSettings. The module already reads and
+    // writes this tab (getSettings/saveSettings: the two student
+    // notification templates); this schema entry gives it a real home —
+    // without it, setUp() never created the tab and saving from the
+    // Settings tab failed. No seed: blank/missing keys fall back to the
+    // module's NOTIFY_DEFAULTS in code, which is the correct starting
+    // state. The graduate build will add its keys (deadline pattern,
+    // grad notify templates) to this same tab. Lives in the same
+    // spreadsheet as Petitions. Meta columns filled by DataService.
+    headers: ['Key', 'Value'],
     seed: [],
   },
 
@@ -695,9 +747,12 @@ function setUp() {
   _setupTab(classScheduleSS, SETUP_SCHEMA.CLASS_SCHEDULE_IMPORTS);
   _tidyDefaultSheet(classScheduleSS);
 
-  // Individual Studies module spreadsheet gets the Petitions tab
+  // Individual Studies module spreadsheet gets Petitions + Templates +
+  // PetitionSettings (the module's UI-managed key/value settings tab)
   _setupTab(indStudiesSS, SETUP_SCHEMA.INDIVIDUAL_STUDIES);
   _setupTab(indStudiesSS, SETUP_SCHEMA.INDIVIDUAL_STUDIES_TEMPLATES);
+  _setupTab(indStudiesSS, SETUP_SCHEMA.INDIVIDUAL_STUDIES_SETTINGS);
+  _setupTab(indStudiesSS, SETUP_SCHEMA.INDIVIDUAL_STUDIES_GRAD);
   _tidyDefaultSheet(indStudiesSS);
 
   // Academic Personnel module spreadsheet gets the PersonAttributes + Cases tabs
@@ -885,7 +940,9 @@ function checkSetup() {
     ['THESIS',       CONFIG.SHEETS.THESIS,       [SETUP_SCHEMA.THESIS.tab, SETUP_SCHEMA.THESIS_ENROLLMENT.tab]],
     ['TRANSCRIPT',   CONFIG.SHEETS.TRANSCRIPT,   [SETUP_SCHEMA.ARTICULATIONS.tab, SETUP_SCHEMA.ARTICULATION_REVIEW.tab, SETUP_SCHEMA.TRANSCRIPTS.tab, SETUP_SCHEMA.TRANSCRIPT_SETTINGS.tab]],
     ['CLASS_SCHEDULE', CONFIG.SHEETS.CLASS_SCHEDULE, [SETUP_SCHEMA.CLASS_SCHEDULE.tab, SETUP_SCHEMA.CLASS_SCHEDULE_IMPORTS.tab]],
-    ['INDIVIDUAL_STUDIES', CONFIG.SHEETS.INDIVIDUAL_STUDIES, [SETUP_SCHEMA.INDIVIDUAL_STUDIES.tab, SETUP_SCHEMA.INDIVIDUAL_STUDIES_TEMPLATES.tab]],
+    ['INDIVIDUAL_STUDIES', CONFIG.SHEETS.INDIVIDUAL_STUDIES,
+     [SETUP_SCHEMA.INDIVIDUAL_STUDIES.tab, SETUP_SCHEMA.INDIVIDUAL_STUDIES_TEMPLATES.tab,
+      SETUP_SCHEMA.INDIVIDUAL_STUDIES_SETTINGS.tab, SETUP_SCHEMA.INDIVIDUAL_STUDIES_GRAD.tab]],
     ['PERSONNEL',    CONFIG.SHEETS.PERSONNEL,    [SETUP_SCHEMA.PERSON_ATTRIBUTES.tab, SETUP_SCHEMA.CASES.tab, SETUP_SCHEMA.REVIEW_HISTORY.tab, SETUP_SCHEMA.COMPONENTS.tab, SETUP_SCHEMA.CYCLES.tab, SETUP_SCHEMA.PERSONNEL_SETTINGS.tab, SETUP_SCHEMA.COMMUNICATIONS_LOG.tab]],
     ['SERVICE',      CONFIG.SHEETS.SERVICE,
      [SETUP_SCHEMA.SERVICE_CATALOG.tab, SETUP_SCHEMA.SERVICE_ASSIGNMENTS.tab,
@@ -938,6 +995,8 @@ function _schemaPlacement() {
     { sheetKey: 'CLASS_SCHEDULE', def: SETUP_SCHEMA.CLASS_SCHEDULE_IMPORTS },
     { sheetKey: 'INDIVIDUAL_STUDIES', def: SETUP_SCHEMA.INDIVIDUAL_STUDIES },
     { sheetKey: 'INDIVIDUAL_STUDIES', def: SETUP_SCHEMA.INDIVIDUAL_STUDIES_TEMPLATES },
+    { sheetKey: 'INDIVIDUAL_STUDIES', def: SETUP_SCHEMA.INDIVIDUAL_STUDIES_SETTINGS },
+    { sheetKey: 'INDIVIDUAL_STUDIES', def: SETUP_SCHEMA.INDIVIDUAL_STUDIES_GRAD },
     { sheetKey: 'PERSONNEL',    def: SETUP_SCHEMA.PERSON_ATTRIBUTES },
     { sheetKey: 'PERSONNEL',    def: SETUP_SCHEMA.CASES },
     { sheetKey: 'PERSONNEL',    def: SETUP_SCHEMA.REVIEW_HISTORY },

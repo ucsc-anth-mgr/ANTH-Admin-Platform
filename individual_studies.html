@@ -13,6 +13,13 @@
       <i class="ti ti-list"></i> My Petitions
     </button> 
     <? } ?>
+    <? if (isRoles.includes('graduate_student') || isRoles.includes('super_admin')) { ?>
+    <button class="module-tab" data-tab="gnew" onclick="IndividualStudiesUI.switchTab('gnew')">
+      <i class="ti ti-file-plus"></i> New Grad Petition
+    </button><button class="module-tab" data-tab="gmine" onclick="IndividualStudiesUI.switchTab('gmine')">
+      <i class="ti ti-list"></i> My Grad Petitions
+    </button>
+    <? } ?>
     <? if (isRoles.includes('individual_studies_sponsor') || isRoles.includes('super_admin')) { ?>
     <button class="module-tab" data-tab="review" onclick="IndividualStudiesUI.switchTab('review')">
       <i class="ti ti-gavel"></i> Review Queue
@@ -20,8 +27,26 @@
     <button class="module-tab" data-tab="sponsored" onclick="IndividualStudiesUI.switchTab('sponsored')">
       <i class="ti ti-user-check"></i> Sponsored
     </button>
+    <? } ?>
+    <? if (isRoles.includes('grad_individual_studies_sponsor') || isRoles.includes('super_admin')) { ?>
+    <button class="module-tab" data-tab="greview" onclick="IndividualStudiesUI.switchTab('greview')">
+      <i class="ti ti-gavel"></i> Grad Review
+    </button>
+    <button class="module-tab" data-tab="gsponsored" onclick="IndividualStudiesUI.switchTab('gsponsored')">
+      <i class="ti ti-user-check"></i> Grad Sponsored
+    </button>
+    <? } ?>
+    <? if (isRoles.includes('individual_studies_sponsor') || isRoles.includes('grad_individual_studies_sponsor') || isRoles.includes('super_admin')) { ?>
     <button class="module-tab" data-tab="templates" onclick="IndividualStudiesUI.switchTab('templates')">
       <i class="ti ti-template"></i> My Templates
+    </button>
+    <? } ?>
+    <? if (isRoles.includes('staff_grad') || isRoles.includes('super_admin')) { ?>
+    <button class="module-tab" data-tab="gadvisor" onclick="IndividualStudiesUI.switchTab('gadvisor')">
+      <i class="ti ti-clipboard-check"></i> Grad Advisor Queue
+    </button>
+    <button class="module-tab" data-tab="gsettings" onclick="IndividualStudiesUI.switchTab('gsettings')">
+      <i class="ti ti-settings"></i> Grad Settings
     </button>
     <? } ?>
     <? if (isRoles.includes('staff_undergrad') || isRoles.includes('super_admin')) { ?>
@@ -288,6 +313,14 @@
           <label class="form-label" for="is-tpl-course">Course</label>
           <input class="form-input" id="is-tpl-course" placeholder="e.g. ANTH 197F">
         </div>
+        <div class="form-group">
+          <label class="form-label" for="is-tpl-audience">Audience</label>
+          <select class="form-select" id="is-tpl-audience">
+            <option value="undergrad">Undergraduate</option>
+            <option value="grad">Graduate</option>
+          </select>
+          <div class="form-hint">Graduate templates appear on the grad form: "Course title" prefills the subject, "Work to be submitted" prefills the work outline, "Hours/week" the weekly contact hours, and "Report required" the final-paper checkbox. Other fields are ignored.</div>
+        </div>
       </div>
       <div class="form-group">
         <label style="display:inline-flex;align-items:center;gap:8px;font-weight:normal;cursor:pointer;">
@@ -409,7 +442,7 @@
     <div id="is-deeplink-card"></div>
   </div>
 
-  <!-- ── Tab: Class Schedule (advisor import) ────────── -->
+  <!-- ── Tab: Class Schedule (advisor import + export) ── -->
   <div id="is-tab-schedule" class="tab-panel" style="display:none;">
     <div class="card" style="margin-top:20px;">
       <div class="card-title"><i class="ti ti-table-import"></i> Import class schedule</div>
@@ -431,12 +464,191 @@
       <div id="is-import-preview" style="margin-top:14px;"></div>
     </div>
 
+    <!-- ── Export a term's table as CSV (generated in the browser) ── -->
+    <div class="card">
+      <div class="card-title"><i class="ti ti-download"></i> Export term</div>
+      <p class="text-muted" style="font-size:13px;margin-top:0;">
+        Download a term's imported sections as a CSV — the registrar's columns plus the
+        resolved instructor name, email, and how the match was made. The file is generated
+        in your browser and opens directly in Excel or Sheets; nothing is written to Drive.
+      </p>
+      <div class="form-row" style="align-items:flex-end;">
+        <div class="form-group">
+          <label class="form-label" for="is-export-term">Term</label>
+          <select class="form-select" id="is-export-term">
+            <option value="">— Select a term —</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <button class="btn btn-primary" id="is-export-btn" onclick="IndividualStudiesUI.exportTermCsv()">
+            <i class="ti ti-download"></i> Export CSV
+          </button>
+        </div>
+      </div>
+    </div>
+
     <div class="card">
       <div class="card-title" style="justify-content:space-between;">
         <span><i class="ti ti-history"></i> Import history</span>
         <button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.loadImportHistory()" aria-label="Refresh"><i class="ti ti-refresh"></i></button>
       </div>
       <div id="is-import-history"><div class="empty-state">No imports yet.</div></div>
+    </div>
+  </div>
+
+  <!-- ══════════ GRADUATE: New Petition ══════════ -->
+  <div id="is-tab-gnew" class="tab-panel" style="display:none;">
+    <div class="card">
+      <div class="card-title"><i class="ti ti-file-plus"></i> Petition for a Graduate Individual Studies Course</div>
+      <div id="is-g-resubmit-banner" class="alert alert-info" style="display:none;">
+        <i class="ti ti-refresh"></i> You are revising a returned petition.
+        <span id="is-g-resubmit-note" style="display:block;margin-top:4px;font-style:italic;"></span>
+      </div>
+      <div id="is-g-noid-warning" class="alert alert-warning" style="display:none;">
+        <i class="ti ti-alert-triangle"></i> Your profile has no Student ID on file. Contact the department before submitting.
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label" for="is-g-term">Quarter *</label>
+          <select class="form-select" id="is-g-term" onchange="IndividualStudiesUI.onGradTermChange()"><option value="">Loading…</option></select>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="is-g-course">Course *</label>
+          <select class="form-select" id="is-g-course"><option value="">Select a course…</option></select>
+          <div class="form-hint">Units are fixed by the course (A/B/C = 5/10/15).</div>
+        </div>
+      </div>
+      <div id="is-g-deadline-warning" class="alert alert-warning" style="display:none;"></div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label" for="is-g-sponsor">Faculty sponsor *</label>
+          <select class="form-select" id="is-g-sponsor" onchange="IndividualStudiesUI.onGradSponsorChange()"><option value="">Select a sponsor…</option></select>
+        </div>
+        <div class="form-group" id="is-g-template-wrap" style="display:none;">
+          <label class="form-label" for="is-g-template">Sponsor's template (optional)</label>
+          <select class="form-select" id="is-g-template" onchange="IndividualStudiesUI.onGradTemplatePick()"><option value="">No template</option></select>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="is-g-subject">Subject of proposed study *</label>
+        <input class="form-input" type="text" id="is-g-subject" maxlength="200">
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="is-g-outline">Outline of the work to be completed *</label>
+        <textarea class="form-textarea" id="is-g-outline" rows="5"></textarea>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="is-g-outline-file">Attach an outline document (optional, PDF preferred)</label>
+        <input type="file" id="is-g-outline-file" accept=".pdf,.doc,.docx" onchange="IndividualStudiesUI.onGradOutlineChange()">
+        <div class="form-hint" id="is-g-outline-file-name"></div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label" for="is-g-site">Study site (if off campus)</label>
+          <input class="form-input" type="text" id="is-g-site" maxlength="200">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="is-g-hours">Weekly contact hours with sponsor *</label>
+          <input class="form-input" type="number" id="is-g-hours" min="0" step="0.5">
+        </div>
+      </div>
+      <div class="form-group">
+        <label style="font-weight:normal;">
+          <input type="checkbox" id="is-g-paper"> A final paper is required
+        </label>
+      </div>
+
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn btn-primary" id="is-g-submit-btn" onclick="IndividualStudiesUI.gradSubmit()">
+          <i class="ti ti-send"></i> <span id="is-g-submit-label">Submit petition</span>
+        </button>
+        <button class="btn btn-secondary" onclick="IndividualStudiesUI.gradResetForm()">Clear</button>
+        <button class="btn btn-secondary" id="is-g-cancel-resubmit" style="display:none;" onclick="IndividualStudiesUI.gradCancelResubmit()">Cancel revision</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════ GRADUATE: My Petitions ══════════ -->
+  <div id="is-tab-gmine" class="tab-panel" style="display:none;">
+    <div class="card">
+      <div class="card-title" style="justify-content:space-between;">
+        <span><i class="ti ti-list"></i> My graduate petitions</span>
+        <button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.loadGradMine()" aria-label="Refresh"><i class="ti ti-refresh"></i></button>
+      </div>
+      <div id="is-gmine-list"><div class="empty-state">Loading…</div></div>
+    </div>
+  </div>
+
+  <!-- ══════════ GRADUATE: Sponsor review queue ══════════ -->
+  <div id="is-tab-greview" class="tab-panel" style="display:none;">
+    <div class="card">
+      <div class="card-title" style="justify-content:space-between;">
+        <span><i class="ti ti-gavel"></i> Graduate petitions awaiting your review</span>
+        <button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.loadGradReview()" aria-label="Refresh"><i class="ti ti-refresh"></i></button>
+      </div>
+      <div id="is-greview-list"><div class="empty-state">Loading…</div></div>
+    </div>
+  </div>
+
+  <!-- ══════════ GRADUATE: Sponsored ══════════ -->
+  <div id="is-tab-gsponsored" class="tab-panel" style="display:none;">
+    <div class="card">
+      <div class="card-title" style="justify-content:space-between;">
+        <span><i class="ti ti-user-check"></i> Graduate petitions you sponsor</span>
+        <button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.loadGradSponsored()" aria-label="Refresh"><i class="ti ti-refresh"></i></button>
+      </div>
+      <div id="is-gsponsored-list"><div class="empty-state">Loading…</div></div>
+    </div>
+  </div>
+
+  <!-- ══════════ GRADUATE: Advisor queue ══════════ -->
+  <div id="is-tab-gadvisor" class="tab-panel" style="display:none;">
+    <div class="card">
+      <div class="card-title" style="justify-content:space-between;">
+        <span><i class="ti ti-clipboard-check"></i> Graduate petitions awaiting a class number</span>
+        <button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.loadGradAdvisor()" aria-label="Refresh"><i class="ti ti-refresh"></i></button>
+      </div>
+      <div id="is-gadvisor-list"><div class="empty-state">Loading…</div></div>
+    </div>
+  </div>
+
+  <!-- ══════════ GRADUATE: Settings ══════════ -->
+  <div id="is-tab-gsettings" class="tab-panel" style="display:none;">
+    <div class="card">
+      <div class="card-title" style="justify-content:space-between;">
+        <span><i class="ti ti-database"></i> All graduate petitions</span>
+        <button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.loadGradAll()" aria-label="Refresh"><i class="ti ti-refresh"></i></button>
+      </div>
+      <div id="is-gall-list"><div class="empty-state">Loading…</div></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><i class="ti ti-calendar-due"></i> Enrollment deadline anchor</div>
+      <p class="text-muted" style="margin-top:0;">Grad petitions submitted after each term's matching calendar entry are flagged late. Blank pattern disables the warning entirely.</p>
+      <div class="form-group">
+        <label class="form-label" for="is-g-set-pattern">Calendar entry title contains</label>
+        <input class="form-input" type="text" id="is-g-set-pattern" maxlength="200">
+      </div>
+      <div id="is-g-deadlines"><div class="empty-state">Loading…</div></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><i class="ti ti-mail-cog"></i> Graduate notification wording</div>
+      <p class="text-muted" style="margin-top:0;">Tokens: {Course} {Quarter} {Year} {ClassNumber}.</p>
+      <div class="form-group">
+        <label class="form-label" for="is-g-set-complete">Completed petition — first line</label>
+        <textarea class="form-textarea" id="is-g-set-complete" rows="2"></textarea>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="is-g-set-returned">Returned petition — first line</label>
+        <textarea class="form-textarea" id="is-g-set-returned" rows="2"></textarea>
+      </div>
+      <button class="btn btn-primary" onclick="IndividualStudiesUI.saveGradSettings()"><i class="ti ti-device-floppy"></i> Save grad settings</button>
+      <span id="is-g-set-status" style="margin-left:10px;"></span>
     </div>
   </div>
 
@@ -505,6 +717,9 @@ window.IndividualStudiesUI = (() => {
   const _isSponsor = _roles.indexOf('individual_studies_sponsor') !== -1;
   const _isAdvisor = _roles.indexOf('staff_undergrad') !== -1;
   const _isSuper   = _roles.indexOf('super_admin') !== -1;
+  const _isGradStudent = _roles.indexOf('graduate_student') !== -1;
+  const _isGradSponsor = _roles.indexOf('grad_individual_studies_sponsor') !== -1;
+  const _isGradStaff   = _roles.indexOf('staff_grad') !== -1;
 
   const STAGE_META = {
     SUBMITTED:       { cls: 'badge-navy',    label: 'Awaiting sponsor' },
@@ -525,6 +740,7 @@ window.IndividualStudiesUI = (() => {
   let _carriedReport = null;  // { required, dueText } carried silently from a template (student never sees it)
   let _csvPayload = null;     // { csvBase64 }
   let _preview = null;        // parsed import preview being resolved
+  let _exportTerms = [];      // terms with a committed schedule (export picker)
   let _lastFocus = null;
   let _lastDetailRec = null;  // record currently shown in the detail modal (for prefills)
 
@@ -567,6 +783,12 @@ window.IndividualStudiesUI = (() => {
       switchTab('review');
     } else if (_isAdvisor) {
       switchTab('advisor');
+    } else if (_isGradStudent) {
+      switchTab('gmine');
+    } else if (_isGradSponsor) {
+      switchTab('greview');
+    } else if (_isGradStaff) {
+      switchTab('gadvisor');
     } else if (_isSuper) {
       switchTab('advisor');
     }
@@ -598,7 +820,13 @@ window.IndividualStudiesUI = (() => {
     if (tab === 'advisor')   loadAdvisor();
     if (tab === 'settings')  { loadAll(); loadNotifySettings(); _renderDeepLinkCard(); }
     if (tab === 'templates') loadTemplates();
-    if (tab === 'schedule')  loadImportHistory();
+    if (tab === 'schedule')  { loadImportHistory(); loadExportTerms(); }
+    if (tab === 'gnew')       _gradEnsureFormData();
+    if (tab === 'gmine')      loadGradMine();
+    if (tab === 'greview')    loadGradReview();
+    if (tab === 'gsponsored') loadGradSponsored();
+    if (tab === 'gadvisor')   loadGradAdvisor();
+    if (tab === 'gsettings')  { loadGradAll(); loadGradSettings(); loadGradDeadlines(); }
   }
 
   // ── Form bootstrap ────────────────────────────────
@@ -1185,7 +1413,9 @@ window.IndividualStudiesUI = (() => {
       const meta = STAGE_META[r.stage] || { cls: 'badge-neutral', label: r.stage };
       body += '<tr tabindex="0" style="cursor:pointer;" onclick="IndividualStudiesUI.open(\'' + esc(r.petitionId) + '\')" '
         + 'onkeydown="IndividualStudiesUI.rowKey(event,\'' + esc(r.petitionId) + '\')">'
-        + '<td><strong>' + esc(r.course) + '</strong><div class="text-sm text-muted">' + esc(r.term) + '</div></td>'
+        + '<td><strong>' + esc(r.course) + '</strong>'
+        + (r.late ? ' <span class="badge badge-danger">Late</span>' : '')
+        + '<div class="text-sm text-muted">' + esc(r.term) + '</div></td>'
         + (showWho ? '<td>' + esc(r.studentName) + '</td>' : '<td>' + esc(r.sponsorName) + '</td>')
         + '<td><span class="badge ' + meta.cls + '">' + esc(meta.label) + '</span></td>'
         + '</tr>';
@@ -1213,6 +1443,7 @@ window.IndividualStudiesUI = (() => {
   }
 
   function _openDetail(rec) {
+    if (rec && rec.audience === 'grad') { _openGradDetail(rec); return; }
     _lastFocus = document.activeElement;
     _lastDetailRec = rec;
     const meta = STAGE_META[rec.stage] || { cls: 'badge-neutral', label: rec.stage };
@@ -1717,7 +1948,63 @@ window.IndividualStudiesUI = (() => {
       _preview = null; _csvPayload = null;
       const csv = document.getElementById('is-csv'); if (csv) csv.value = '';
       loadImportHistory();
+      loadExportTerms();   // a fresh commit may add a term to the export picker
     }, function () { _idle(); });
+  }
+
+  // ── Term export (client-side CSV) ─────────────────
+  // The server returns the term's shaped rows; the CSV is assembled and
+  // downloaded here — instant, no Drive clutter. A Drive-archive option
+  // can be added later without changing the server shape.
+  function loadExportTerms() {
+    App.call('individual_studies', 'scheduleTerms', {}, function (terms) {
+      _exportTerms = terms || [];
+      const sel = document.getElementById('is-export-term');
+      if (!sel) return;
+      const cur = sel.value;
+      let opts = '<option value="">— Select a term —</option>';
+      _exportTerms.forEach(function (t) {
+        opts += '<option value="' + esc(t.term) + '">' + esc(t.label) + '</option>';
+      });
+      sel.innerHTML = opts;
+      if (cur) sel.value = cur;
+    }, function () { /* picker stays empty; Export will prompt for a term */ });
+  }
+
+  function _csvCell(v) {
+    const s = String(v == null ? '' : v);
+    return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }
+
+  function exportTermCsv() {
+    const sel = document.getElementById('is-export-term');
+    const term = sel ? sel.value : '';
+    if (!term) { Toast.show('Select a term to export.', 'error'); return; }
+    const t = _exportTerms.find(function (x) { return x.term === term; });
+    FormHelper.setLoading('is-export-btn', true, 'Exporting…');
+    App.call('individual_studies', 'exportTerm', { term: term }, function (rows) {
+      FormHelper.setLoading('is-export-btn', false);
+      rows = rows || [];
+      if (!rows.length) { Toast.show('Nothing to export for that term.', 'info'); return; }
+      const header = ['Term', 'Subject Cat Nbr', 'Class Title', 'Section', 'Class Nbr', 'Units',
+        'Component', 'Instructor', 'Resolved Instructor', 'Resolved Email', 'Match Method'];
+      const lines = [header.map(_csvCell).join(',')];
+      rows.forEach(function (r) {
+        lines.push([r.term, r.course, r.title, r.section, r.classNbr, r.units,
+          r.component, r.instructorRaw, r.instructorName, r.instructorEmail, r.matchMethod]
+          .map(_csvCell).join(','));
+      });
+      const label = t && t.label ? t.label.replace(/\s+/g, '-') : term;
+      const blob = new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'class-schedule_' + term + '_' + label + '.csv';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+      Toast.show('Exported ' + rows.length + ' sections for ' + (t ? t.label : term) + '.', 'success');
+    }, function () { FormHelper.setLoading('is-export-btn', false); });
   }
 
   // ── My Templates ──────────────────────────────────
@@ -1737,7 +2024,7 @@ window.IndividualStudiesUI = (() => {
     let body = '';
     _templates.forEach(function (t) {
       body += '<tr>'
-        + '<td><strong>' + esc(t.name) + '</strong>' + (t.isDefault ? ' <span class="badge badge-success">Default</span>' : '') + '</td>'
+        + '<td><strong>' + esc(t.name) + '</strong>' + (t.isDefault ? ' <span class="badge badge-success">Default</span>' : '') + (t.audience === 'grad' ? ' <span class="badge badge-navy">Grad</span>' : '') + '</td>'
         + '<td>' + esc(t.course || '—') + (t.title ? ' · ' + esc(t.title) : '') + '</td>'
         + (_isSuper ? '<td>' + esc(t.sponsorName) + '</td>' : '')
         + '<td style="white-space:nowrap;text-align:right;">'
@@ -1754,6 +2041,7 @@ window.IndividualStudiesUI = (() => {
   function _tplFields() {
     return {
       name: document.getElementById('is-tpl-name').value.trim(),
+      audience: document.getElementById('is-tpl-audience').value || 'undergrad',
       course: document.getElementById('is-tpl-course').value.trim(),
       title: document.getElementById('is-tpl-title').value.trim(),
       courseDescription: document.getElementById('is-tpl-desc').value.trim(),
@@ -1771,6 +2059,7 @@ window.IndividualStudiesUI = (() => {
     t = t || {};
     _setVal('is-tpl-id', t.templateId || '');
     _setVal('is-tpl-name', t.name === '(untitled)' ? '' : (t.name || ''));
+    _setVal('is-tpl-audience', t.audience === 'grad' ? 'grad' : 'undergrad');
     _setVal('is-tpl-course', t.course || '');
     _setVal('is-tpl-title', t.title || '');
     _setVal('is-tpl-desc', t.courseDescription || '');
@@ -1890,6 +2179,609 @@ window.IndividualStudiesUI = (() => {
       el.innerHTML = '<div style="overflow-x:auto;"><table class="data-table"><thead><tr>'
         + '<th>Term</th><th>Sections</th><th>Matched/Unmatched/Staff</th><th>By</th>'
         + '</tr></thead><tbody>' + body + '</tbody></table></div>';
+    }, function () {
+      // Hardening: a failed call no longer leaves the silent "No imports
+      // yet" placeholder — the failure is stated and retry is offered.
+      const el = document.getElementById('is-import-history');
+      if (el) el.innerHTML = '<div class="empty-state">Couldn\'t load the import history. Use the refresh button to try again.</div>';
+    });
+  }
+
+  // ══════════════════════════════════════════════════
+  // GRADUATE audience. GIS-prefixed records; the shared endpoints
+  // (get / withdraw / sponsorReturn / advisorReturn / requestRoomAccess
+  // / deletePetition / saveAsTemplate) branch server-side on the id
+  // prefix, so their UI functions above are reused verbatim. Only the
+  // form, the lists, the detail renderer, and the two decision panels
+  // are grad-specific.
+  // ══════════════════════════════════════════════════
+
+  let _gradFormData = null;
+  let _gradTermsByCode = {};
+  let _gradTemplates = [];
+  let _gradResubmitId = '';
+  let _gradOutline = null;        // student's attached outline (held until submit)
+  let _gradSponsorOutline = null; // sponsor's attach/replace (held until approve)
+
+  function _gradLoadFormData(cb) {
+    App.call('individual_studies', 'gradFormData', {}, function (data) {
+      _gradFormData = data;
+      _gradTermsByCode = {};
+      (data.terms || []).forEach(function (t) { _gradTermsByCode[t.term] = t; });
+      _gradPopulateForm(data);
+      if (cb) cb();
+    }, function () { if (cb) cb(); });
+  }
+  function _gradEnsureFormData(cb) {
+    if (_gradFormData) { if (cb) cb(); return; }
+    _busy('Loading petition form…');
+    _gradLoadFormData(function () { _idle(); if (cb) cb(); });
+  }
+
+  function _gradPopulateForm(data) {
+    const termSel = document.getElementById('is-g-term');
+    if (termSel) {
+      termSel.innerHTML = '<option value="">— Select a term —</option>'
+        + (data.terms || []).map(function (t) {
+            return '<option value="' + esc(t.term) + '">' + esc(t.label) + '</option>';
+          }).join('');
+    }
+    const courseSel = document.getElementById('is-g-course');
+    if (courseSel) {
+      courseSel.innerHTML = '<option value="">— Select a course —</option>'
+        + (data.courses || []).map(function (c) {
+            return '<option value="' + esc(c.course) + '">' + esc(c.course) + ' — ' + esc(c.units) + ' units</option>';
+          }).join('');
+    }
+    const spSel = document.getElementById('is-g-sponsor');
+    if (spSel) {
+      spSel.innerHTML = '<option value="">— Select a sponsor —</option>'
+        + (data.sponsors || []).map(function (s) {
+            return '<option value="' + esc(s.email) + '">' + esc(s.name) + '</option>';
+          }).join('');
+    }
+    const warn = document.getElementById('is-g-noid-warning');
+    if (warn) warn.style.display = (data.profile && data.profile.hasStudentId) ? 'none' : 'block';
+  }
+
+  // Term picked: warn when this term's resolved deadline has passed.
+  // No resolved deadline = no warning (agreed degrade); the server
+  // flags nothing either in that case.
+  function onGradTermChange() {
+    const term = document.getElementById('is-g-term').value;
+    const el = document.getElementById('is-g-deadline-warning');
+    if (!el) return;
+    const t = _gradTermsByCode[term];
+    if (t && t.deadline && t.deadline.date && t.deadlinePassed) {
+      el.innerHTML = '<i class="ti ti-alert-triangle"></i> The enrollment and fee payment deadline for '
+        + esc(t.label) + ' was <strong>' + esc(t.deadline.date) + '</strong>. You can still submit, '
+        + 'but the petition will be marked as a late submission.';
+      el.style.display = 'block';
+    } else {
+      el.style.display = 'none';
+    }
+  }
+
+  function onGradSponsorChange() {
+    const sponsor = document.getElementById('is-g-sponsor').value;
+    const wrap = document.getElementById('is-g-template-wrap');
+    const sel = document.getElementById('is-g-template');
+    if (!wrap || !sel) return;
+    wrap.style.display = 'none';
+    sel.innerHTML = '<option value="">No template</option>';
+    if (!sponsor) return;
+    App.call('individual_studies', 'templatesForSponsor', { sponsorEmail: sponsor, audience: 'grad' }, function (rows) {
+      rows = rows || [];
+      _gradTemplates = rows;
+      if (!rows.length) return;
+      sel.innerHTML = '<option value="">No template</option>'
+        + rows.map(function (t) {
+            return '<option value="' + esc(t.templateId) + '">' + esc(t.name) + (t.isDefault ? ' (default)' : '') + '</option>';
+          }).join('');
+      wrap.style.display = 'block';
+      const def = rows.find(function (t) { return t.isDefault; });
+      if (def) { sel.value = def.templateId; onGradTemplatePick(); }
+    }, function () {});
+  }
+
+  // Grad template mapping (Templates columns reinterpreted for
+  // Audience='grad'): title -> subject, workToBeSubmitted -> work
+  // outline, hoursWithSponsor -> weekly contact hours, reportRequired
+  // -> final paper, roomAccessRoom -> study-site prefill.
+  function onGradTemplatePick() {
+    const id = document.getElementById('is-g-template').value;
+    const t = _gradTemplates.find(function (x) { return x.templateId === id; });
+    if (!t) return;
+    if (t.course) {
+      const cs = document.getElementById('is-g-course');
+      if (cs && Array.prototype.some.call(cs.options, function (o) { return o.value === t.course; })) cs.value = t.course;
+    }
+    if (t.title) _setVal('is-g-subject', t.title);
+    if (t.workToBeSubmitted) _setVal('is-g-outline', t.workToBeSubmitted);
+    if (t.hoursWithSponsor) _setVal('is-g-hours', t.hoursWithSponsor);
+    if (t.roomAccessRoom) _setVal('is-g-site', t.roomAccessRoom);
+    document.getElementById('is-g-paper').checked = !!t.reportRequired;
+    Toast.show('Template applied — review every field before submitting.', 'info');
+  }
+
+  function onGradOutlineChange() {
+    _gradOutline = null;
+    const input = document.getElementById('is-g-outline-file');
+    const nameEl = document.getElementById('is-g-outline-file-name');
+    const file = input.files && input.files[0];
+    if (nameEl) nameEl.textContent = file ? file.name : '';
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function () {
+      _gradOutline = {
+        outlineBase64: String(reader.result).split(',')[1] || '',
+        outlineName: file.name,
+        outlineMimeType: file.type || 'application/pdf',
+      };
+    };
+    reader.onerror = function () { Toast.show('Could not read that file.', 'error'); };
+    reader.readAsDataURL(file);
+  }
+
+  function gradSubmit() {
+    const payload = {
+      termCode: document.getElementById('is-g-term').value,
+      course: document.getElementById('is-g-course').value,
+      sponsorEmail: document.getElementById('is-g-sponsor').value,
+      subject: document.getElementById('is-g-subject').value.trim(),
+      workOutline: document.getElementById('is-g-outline').value.trim(),
+      studySite: document.getElementById('is-g-site').value.trim(),
+      weeklyContactHours: document.getElementById('is-g-hours').value.trim(),
+      finalPaperRequired: document.getElementById('is-g-paper').checked,
+    };
+    if (!payload.termCode) { Toast.show('Select a term.', 'error'); return; }
+    if (!payload.course)   { Toast.show('Select a course.', 'error'); return; }
+    if (!payload.sponsorEmail) { Toast.show('Select a faculty sponsor.', 'error'); return; }
+    if (!payload.subject)  { Toast.show('Enter the subject of the proposed study.', 'error'); return; }
+    if (!payload.workOutline) { Toast.show('Outline the work to be completed.', 'error'); return; }
+    if (payload.weeklyContactHours === '') { Toast.show('Enter the weekly contact hours.', 'error'); return; }
+    if (_gradOutline) {
+      payload.outlineBase64 = _gradOutline.outlineBase64;
+      payload.outlineName = _gradOutline.outlineName;
+      payload.outlineMimeType = _gradOutline.outlineMimeType;
+    }
+    if (_gradResubmitId) payload.petitionId = _gradResubmitId;
+
+    _busy(_gradResubmitId ? 'Resubmitting petition…' : 'Submitting petition…');
+    App.call('individual_studies', 'gradSubmit', payload, function (res) {
+      _idle();
+      Toast.show(res && res.resubmitted ? 'Petition resubmitted to your sponsor.' : 'Petition submitted to your sponsor.', 'success');
+      if (res && res.late) {
+        Toast.show('Heads up: it was submitted after the enrollment deadline'
+          + (res.deadlineDate ? ' (' + res.deadlineDate + ')' : '') + ' and is flagged as late.', 'info');
+      }
+      gradResetForm();
+      switchTab('gmine');
+    }, function () { _idle(); });
+  }
+
+  function gradResetForm() {
+    ['is-g-term', 'is-g-course', 'is-g-sponsor', 'is-g-subject', 'is-g-outline',
+     'is-g-site', 'is-g-hours'].forEach(function (id) { _setVal(id, ''); });
+    document.getElementById('is-g-paper').checked = false;
+    const f = document.getElementById('is-g-outline-file'); if (f) f.value = '';
+    const fn = document.getElementById('is-g-outline-file-name'); if (fn) fn.textContent = '';
+    _gradOutline = null;
+    const tw = document.getElementById('is-g-template-wrap'); if (tw) tw.style.display = 'none';
+    const dw = document.getElementById('is-g-deadline-warning'); if (dw) dw.style.display = 'none';
+    gradCancelResubmit(true);
+  }
+
+  function gradCancelResubmit(silent) {
+    _gradResubmitId = '';
+    const b = document.getElementById('is-g-resubmit-banner'); if (b) b.style.display = 'none';
+    const c = document.getElementById('is-g-cancel-resubmit'); if (c) c.style.display = 'none';
+    const l = document.getElementById('is-g-submit-label'); if (l) l.textContent = 'Submit petition';
+    if (silent !== true) Toast.show('Revision cancelled — the form will file a new petition.', 'info');
+  }
+
+  function gradStartResubmitFromModal(rec) { closeModal(); gradStartResubmit(rec); }
+
+  function gradStartResubmit(rec) {
+    _gradEnsureFormData(function () {
+      switchTab('gnew');
+      _gradResubmitId = rec.petitionId;
+      _setVal('is-g-term', rec.termCode || '');
+      onGradTermChange();
+      _setVal('is-g-course', rec.course || '');
+      _setVal('is-g-sponsor', rec.sponsorEmail || '');
+      _setVal('is-g-subject', rec.subject || '');
+      _setVal('is-g-outline', rec.workOutline || '');
+      _setVal('is-g-site', rec.studySite || '');
+      _setVal('is-g-hours', rec.weeklyContactHours || '');
+      document.getElementById('is-g-paper').checked = !!rec.finalPaperRequired;
+      const b = document.getElementById('is-g-resubmit-banner'); if (b) b.style.display = 'block';
+      const n = document.getElementById('is-g-resubmit-note');
+      if (n) n.textContent = rec.returnNote ? 'Sponsor note: ' + rec.returnNote : '';
+      const c = document.getElementById('is-g-cancel-resubmit'); if (c) c.style.display = 'inline-flex';
+      const l = document.getElementById('is-g-submit-label'); if (l) l.textContent = 'Resubmit petition';
+    });
+  }
+
+  // ── Grad lists (shared renderer; grad rows carry the Late badge) ──
+  function loadGradMine() {
+    App.call('individual_studies', 'gradMine', {}, function (rows) {
+      _renderList('is-gmine-list', rows, 'mine');
+    }, function () { _renderList('is-gmine-list', [], 'mine'); });
+  }
+  function loadGradReview() {
+    App.call('individual_studies', 'gradSponsorQueue', {}, function (rows) {
+      _renderList('is-greview-list', rows, 'review');
+    }, function () { _renderList('is-greview-list', [], 'review'); });
+  }
+  function loadGradSponsored() {
+    App.call('individual_studies', 'gradSponsored', {}, function (rows) {
+      _renderList('is-gsponsored-list', rows, 'sponsored');
+    }, function () { _renderList('is-gsponsored-list', [], 'sponsored'); });
+  }
+  function loadGradAdvisor() {
+    App.call('individual_studies', 'gradAdvisorQueue', {}, function (rows) {
+      _renderList('is-gadvisor-list', rows, 'advisor');
+    }, function () { _renderList('is-gadvisor-list', [], 'advisor'); });
+  }
+
+  // All grad petitions (Grad Settings) — with a nudge per open row.
+  function loadGradAll() {
+    App.call('individual_studies', 'gradAllPetitions', {}, function (rows) {
+      const el = document.getElementById('is-gall-list');
+      if (!el) return;
+      rows = rows || [];
+      if (!rows.length) { el.innerHTML = '<div class="empty-state">No graduate petitions yet.</div>'; return; }
+      let body = '';
+      rows.forEach(function (r) {
+        const meta = STAGE_META[r.stage] || { cls: 'badge-neutral', label: r.stage };
+        const canNudge = r.stage !== 'COMPLETE';
+        body += '<tr>'
+          + '<td style="cursor:pointer;" onclick="IndividualStudiesUI.open(\'' + esc(r.petitionId) + '\')">'
+          +   '<strong>' + esc(r.course) + '</strong>'
+          +   (r.late ? ' <span class="badge badge-danger">Late</span>' : '')
+          +   '<div class="text-sm text-muted">' + esc(r.term) + '</div></td>'
+          + '<td>' + esc(r.studentName) + '</td>'
+          + '<td>' + esc(r.sponsorName) + '</td>'
+          + '<td><span class="badge ' + meta.cls + '">' + esc(meta.label) + '</span></td>'
+          + '<td>' + (canNudge
+              ? '<button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.gradRemind(\'' + esc(r.petitionId) + '\')"><i class="ti ti-bell"></i> Nudge</button>'
+              : '') + '</td>'
+          + '</tr>';
+      });
+      el.innerHTML = '<div style="overflow-x:auto;"><table class="data-table"><thead><tr>'
+        + '<th scope="col">Course</th><th scope="col">Student</th><th scope="col">Sponsor</th>'
+        + '<th scope="col">Status</th><th scope="col"></th>'
+        + '</tr></thead><tbody>' + body + '</tbody></table></div>';
+    }, function () {
+      const el = document.getElementById('is-gall-list');
+      if (el) el.innerHTML = '<div class="empty-state">Could not load petitions.</div>';
+    });
+  }
+
+  function gradRemind(petitionId) {
+    if (!window.confirm('Send a reminder email to whoever this petition is waiting on?')) return;
+    _busy('Sending reminder…');
+    App.call('individual_studies', 'remindResponsible', { petitionId: petitionId }, function (res) {
+      _idle(); Toast.show('Reminder sent to ' + ((res && res.remindedCount) || 0) + ' recipient(s).', 'success');
+    }, function () { _idle(); });
+  }
+
+  // ── Grad detail + panels ──
+  function _openGradDetail(rec) {
+    _lastFocus = document.activeElement;
+    _lastDetailRec = rec;
+    const meta = STAGE_META[rec.stage] || { cls: 'badge-neutral', label: rec.stage };
+    document.getElementById('is-modal-title').textContent = (rec.course || 'Petition') + ' — ' + (rec.term || '');
+
+    let html = '<dl class="is-detail-grid">'
+      + _row('Status', '<span class="badge ' + meta.cls + '">' + esc(meta.label) + '</span>'
+          + (rec.late ? ' <span class="badge badge-danger">Late submission</span>' : ''))
+      + _row('Student', esc(rec.studentName))
+      + _row('Course', esc(rec.course) + (rec.units ? ' · ' + esc(rec.units) + ' units' : ''))
+      + _row('Term', esc(rec.term))
+      + _row('Sponsor', esc(rec.sponsorName))
+      + (rec.subject ? _row('Subject', esc(rec.subject)) : '')
+      + (rec.workOutline ? _row('Work outline', esc(rec.workOutline)) : '')
+      + (rec.outlineLink ? _row('Outline document', '<a href="' + esc(rec.outlineLink) + '" target="_blank" rel="noopener">' + esc(rec.outlineName || 'View outline') + ' <i class="ti ti-external-link"></i></a>') : '')
+      + (rec.studySite ? _row('Study site', esc(rec.studySite)) : '')
+      + _row('Weekly contact hours', esc(rec.weeklyContactHours || '0'))
+      + _row('Final paper', rec.finalPaperRequired ? 'Required' : 'Not required')
+      + (rec.late && rec.deadlineDate ? _row('Enrollment deadline', esc(rec.deadlineDate) + ' — submitted after this date') : '')
+      + (rec.sponsorComments ? _row('Sponsor comments', esc(rec.sponsorComments)) : '')
+      + (rec.classNumber ? _row('Class number', esc(rec.classNumber) + (rec.classSection ? ' · sec ' + esc(rec.classSection) : '')) : '')
+      + (rec.advisorComments ? _row('Advisor note', esc(rec.advisorComments)) : '')
+      + (rec.documentLink ? _row('Completed petition', '<a href="' + esc(rec.documentLink) + '" target="_blank" rel="noopener">Open PDF <i class="ti ti-external-link"></i></a>') : '')
+      + (rec.roomAccessRequested ? _row('Room access', 'Requested' + (rec.roomAccessRoom ? ' — ' + esc(rec.roomAccessRoom) : '') + (rec.roomAccessNote ? ' (' + esc(rec.roomAccessNote) + ')' : '')) : '')
+      + (rec.returnNote && rec.stage === 'RETURNED' ? _row('Return note', esc(rec.returnNote)) : '')
+      + '</dl>';
+
+    html += _gradActionsFor(rec);
+    document.getElementById('is-modal-body').innerHTML = html;
+    document.getElementById('is-modal').style.display = 'flex';
+  }
+
+  function _gradActionsFor(rec) {
+    const out = [];
+
+    if (rec.stage === 'RETURNED' && _isMe(rec.studentEmail)) {
+      out.push('<button class="btn btn-primary" onclick=\'IndividualStudiesUI.gradStartResubmitFromModal(' + JSON.stringify(rec) + ')\'><i class="ti ti-refresh"></i> Revise &amp; resubmit</button>');
+    }
+    if (rec.stage !== 'COMPLETE' && _isMe(rec.studentEmail)) {
+      out.push('<button class="btn btn-secondary" onclick="IndividualStudiesUI.withdraw(\'' + esc(rec.petitionId) + '\')"><i class="ti ti-trash"></i> Withdraw</button>');
+    }
+    if (rec.stage === 'SUBMITTED' && (_isMe(rec.sponsorEmail) || _isSuper)) {
+      out.push(_gradSponsorPanel(rec));
+    }
+    if (rec.stage === 'PENDING_ADVISOR' && (_isGradStaff || _isSuper)) {
+      out.push('<div id="is-gadv-panel"><div class="text-sm text-muted">Loading class-number options…</div></div>');
+      setTimeout(function () { _loadGradAdvisorPanel(rec); }, 50);
+    }
+    // Room access catch-up path (post-SUBMITTED), as on the undergrad side.
+    if (rec.stage !== 'SUBMITTED' && (_isMe(rec.sponsorEmail) || _isSuper)) {
+      const label = rec.roomAccessRequested ? 'Update room access request' : 'Request room access';
+      out.push('<div style="margin-top:12px;">'
+        + '<button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.requestRoomAccess(\'' + esc(rec.petitionId) + '\')">'
+        + '<i class="ti ti-door"></i> ' + label + '</button></div>');
+    }
+    if (_isMe(rec.sponsorEmail) || _isSuper) {
+      out.push('<div style="margin-top:10px;">'
+        + '<button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.saveAsTemplate(\'' + esc(rec.petitionId) + '\')">'
+        + '<i class="ti ti-template"></i> Save as template</button>'
+        + ' <span class="text-muted" style="font-size:12px;">Reuse these fields for future studies.</span>'
+        + '</div>');
+    }
+    if (_isSuper) {
+      out.push('<div style="margin-top:16px;border-top:1px solid var(--color-border);padding-top:12px;">'
+        + '<button class="btn btn-danger btn-sm" onclick="IndividualStudiesUI.deletePetition(\'' + esc(rec.petitionId) + '\')">'
+        + '<i class="ti ti-trash"></i> Delete petition</button>'
+        + ' <span class="text-muted" style="font-size:12px;">Removes the record, its tasks, the PDF, and any outline. Irreversible.</span>'
+        + '</div>');
+    }
+    return out.length ? '<div style="margin-top:8px;">' + out.join(' ') + '</div>' : '';
+  }
+
+  // Grad sponsor review panel: revise subject/outline, adjust contact
+  // hours and the final-paper flag, comment, attach/replace the outline
+  // document, request room access. Approve goes through the SHARED
+  // sponsorApprove endpoint (grad-branched server-side).
+  function _gradSponsorPanel(rec) {
+    return '<div class="card" style="margin-top:8px;">'
+      + '<div class="card-title" style="font-size:14px;"><i class="ti ti-gavel"></i> Sponsor review</div>'
+      + '<div class="text-sm text-muted" style="margin-bottom:6px;">' + esc(rec.course)
+      +   (rec.units ? ' · ' + esc(rec.units) + ' units' : '')
+      +   (rec.late ? ' · <strong>late submission</strong>' : '') + '</div>'
+      + '<div class="form-group"><label class="form-label">Revise subject (optional)</label>'
+      +   '<input class="form-input" id="is-gsp-subject" value="' + esc(rec.subject || '') + '"></div>'
+      + '<div class="form-group"><label class="form-label">Revise work outline (optional)</label>'
+      +   '<textarea class="form-textarea" id="is-gsp-outline" rows="3">' + esc(rec.workOutline || '') + '</textarea></div>'
+      + '<div class="form-group"><label class="form-label">Weekly contact hours</label>'
+      +   '<input class="form-input" id="is-gsp-hours" inputmode="numeric" value="' + esc(rec.weeklyContactHours || '') + '"></div>'
+      + '<div class="form-group">'
+      +   '<label style="display:inline-flex;align-items:center;gap:8px;font-weight:normal;cursor:pointer;">'
+      +   '<input type="checkbox" id="is-gsp-paper"' + (rec.finalPaperRequired ? ' checked' : '') + '> A final paper is required</label></div>'
+      + '<div class="form-group"><label class="form-label">Comments</label>'
+      +   '<textarea class="form-textarea" id="is-gsp-comments" rows="2"></textarea></div>'
+      + '<div class="form-group"><label class="form-label">Attach / replace outline document (optional)</label>'
+      +   '<input class="form-input" type="file" id="is-gsp-outline-file" accept=".pdf,application/pdf" onchange="IndividualStudiesUI.onGradSponsorOutlineChange(event)"></div>'
+      + '<div class="form-group">'
+      +   '<label style="display:inline-flex;align-items:center;gap:8px;font-weight:normal;cursor:pointer;">'
+      +   '<input type="checkbox" id="is-gsp-roomreq" onchange="IndividualStudiesUI.onGradRoomReqToggle()"> Request room / lab-space access</label></div>'
+      + '<div class="form-group" id="is-gsp-room-group" style="display:none;">'
+      +   '<label class="form-label">Room / space</label>'
+      +   '<input class="form-input" id="is-gsp-room" value="' + esc(rec.roomAccessRoom || rec.studySite || '') + '">'
+      +   '<input class="form-input" id="is-gsp-room-note" style="margin-top:6px;" placeholder="Note for facilities (optional)"></div>'
+      + '<div class="form-actions">'
+      +   '<button class="btn btn-primary" onclick="IndividualStudiesUI.gradSponsorApprove(\'' + esc(rec.petitionId) + '\')"><i class="ti ti-check"></i> Approve</button>'
+      +   '<button class="btn btn-danger" onclick="IndividualStudiesUI.sponsorReturn(\'' + esc(rec.petitionId) + '\')"><i class="ti ti-arrow-back-up"></i> Return to student</button>'
+      + '</div></div>';
+  }
+
+  function onGradRoomReqToggle() {
+    const on = document.getElementById('is-gsp-roomreq').checked;
+    document.getElementById('is-gsp-room-group').style.display = on ? 'block' : 'none';
+  }
+
+  function onGradSponsorOutlineChange(e) {
+    _gradSponsorOutline = null;
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function () {
+      _gradSponsorOutline = {
+        outlineBase64: String(reader.result).split(',')[1] || '',
+        outlineName: file.name,
+        outlineMimeType: file.type || 'application/pdf',
+      };
+    };
+    reader.onerror = function () { Toast.show('Could not read that file.', 'error'); };
+    reader.readAsDataURL(file);
+  }
+
+  function gradSponsorApprove(petitionId) {
+    const payload = {
+      petitionId: petitionId,
+      subject: document.getElementById('is-gsp-subject').value.trim(),
+      workOutline: document.getElementById('is-gsp-outline').value.trim(),
+      comments: document.getElementById('is-gsp-comments').value.trim(),
+      finalPaperRequired: document.getElementById('is-gsp-paper').checked,
+    };
+    const h = document.getElementById('is-gsp-hours');
+    if (h && h.value.trim() !== '') payload.weeklyContactHours = h.value.trim();
+    if (_gradSponsorOutline) {
+      payload.outlineBase64 = _gradSponsorOutline.outlineBase64;
+      payload.outlineName = _gradSponsorOutline.outlineName;
+      payload.outlineMimeType = _gradSponsorOutline.outlineMimeType;
+    }
+    const roomReq = document.getElementById('is-gsp-roomreq');
+    if (roomReq && roomReq.checked) {
+      const room = document.getElementById('is-gsp-room').value.trim();
+      if (!room) { Toast.show('Enter the room or space access is needed for.', 'error'); return; }
+      payload.requestRoomAccess = true;
+      payload.roomAccessRoom = room;
+      payload.roomAccessNote = document.getElementById('is-gsp-room-note').value.trim();
+    }
+    _busy('Recording your approval…');
+    App.call('individual_studies', 'sponsorApprove', payload, function () {
+      _idle(); closeModal(); _gradSponsorOutline = null;
+      Toast.show('Approved — sent to the graduate advisor.', 'success');
+      _afterAction();
+    }, function () { _idle(); });
+  }
+
+  // Grad advisor panel: preassigned + section pool at the fixed unit
+  // value; complete or return. No course correction, no credit math.
+  function _loadGradAdvisorPanel(rec) {
+    App.call('individual_studies', 'gradAdvisorContext', { petitionId: rec.petitionId }, function (ctx) {
+      const panel = document.getElementById('is-gadv-panel');
+      if (!panel) return;
+      panel.innerHTML = _gradAdvisorPanelHtml(rec, ctx);
+      if (ctx.preassigned) {
+        _setVal('is-gadv-classnum', ctx.preassigned.classNbr);
+        _setVal('is-gadv-section', ctx.preassigned.section);
+        const src = document.getElementById('is-gadv-source'); if (src) src.value = 'preassigned';
+      }
+    }, function () {
+      const panel = document.getElementById('is-gadv-panel');
+      if (panel) panel.innerHTML = '<div class="text-sm text-muted">Could not load class-number options. You can still enter a number below.</div>'
+        + _gradAdvisorPanelHtml(rec, { sections: [] });
+    });
+  }
+
+  function _gradAdvisorPanelHtml(rec, ctx) {
+    ctx = ctx || {};
+    let late = '';
+    if (ctx.late) {
+      late = '<div class="alert alert-warning" style="margin:6px 0;"><i class="ti ti-alert-triangle"></i> Late submission — filed after the enrollment deadline'
+        + (ctx.deadlineDate ? ' (' + esc(ctx.deadlineDate) + ')' : '') + '.</div>';
+    }
+    let pre = '';
+    if (ctx.preassigned) {
+      pre = '<div class="is-classnum-opt"><strong>Pre-assigned to this sponsor:</strong> #' + esc(ctx.preassigned.classNbr)
+        + ' · sec ' + esc(ctx.preassigned.section) + ' — ' + esc(ctx.preassigned.instructorName)
+        + ' <button class="btn btn-secondary btn-sm" style="margin-left:6px;" onclick="IndividualStudiesUI.gradPickClass(\''
+        + esc(ctx.preassigned.classNbr) + '\',\'' + esc(ctx.preassigned.section) + '\',\'preassigned\')">Use</button></div>';
+    }
+    let list = '';
+    const secs = ctx.sections || [];
+    if (secs.length) {
+      if (ctx.sectionsMatchedCredits === false) {
+        list += '<div class="text-sm text-muted" style="margin:6px 0;">No sections match this course\'s units — showing all sections for the course.</div>';
+      }
+      list += secs.map(function (s) {
+        const who = s.isStaff ? 'Unassigned (Staff)' : esc(s.instructorName);
+        const src = s.isStaff ? 'pool' : 'reassigned';
+        return '<div class="is-section' + (s.isStaff ? ' is-unassigned' : '') + '">'
+          + '<span>#' + esc(s.classNbr) + ' · sec ' + esc(s.section)
+          + ' <span class="is-section-meta">' + esc(s.units) + ' units · ' + who + '</span></span>'
+          + '<button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.gradPickClass(\''
+          + esc(s.classNbr) + '\',\'' + esc(s.section) + '\',\'' + src + '\')">Use</button>'
+          + '</div>';
+      }).join('');
+    } else {
+      list = '<div class="text-sm text-muted" style="margin:6px 0;">No sections found for this course in the term schedule. Enter a class number manually.</div>';
+    }
+
+    return '<div class="card" style="margin-top:8px;">'
+      + '<div class="card-title" style="font-size:14px;"><i class="ti ti-hash"></i> Assign class number</div>'
+      + '<div class="text-sm text-muted" style="margin-bottom:4px;">' + esc(ctx.course || rec.course)
+        + (rec.units ? ' · ' + esc(rec.units) + ' units' : '') + '</div>'
+      + late + pre
+      + '<div style="margin:6px 0;">' + list + '</div>'
+      + '<div class="form-row">'
+      +   '<div class="form-group"><label class="form-label">Class number</label>'
+      +     '<input class="form-input" id="is-gadv-classnum"></div>'
+      +   '<div class="form-group"><label class="form-label">Section</label>'
+      +     '<input class="form-input" id="is-gadv-section"></div>'
+      + '</div>'
+      + '<input type="hidden" id="is-gadv-source" value="">'
+      + '<div class="form-group"><label class="form-label">Note to student <span class="text-muted">(optional — included in their completion email)</span></label>'
+      +   '<textarea class="form-textarea" id="is-gadv-comments" rows="2"></textarea></div>'
+      + '<div class="form-actions">'
+      +   '<button class="btn btn-primary" onclick="IndividualStudiesUI.gradAdvisorComplete(\'' + esc(rec.petitionId) + '\')"><i class="ti ti-check"></i> Complete petition</button>'
+      +   '<button class="btn btn-danger" onclick="IndividualStudiesUI.advisorReturn(\'' + esc(rec.petitionId) + '\')"><i class="ti ti-arrow-back-up"></i> Return to sponsor</button>'
+      + '</div></div>';
+  }
+
+  function gradPickClass(classNbr, section, source) {
+    _setVal('is-gadv-classnum', classNbr);
+    _setVal('is-gadv-section', section);
+    const src = document.getElementById('is-gadv-source'); if (src) src.value = source;
+    Toast.show('Class number ' + classNbr + ' selected (' + source + ').', 'info');
+  }
+
+  function gradAdvisorComplete(petitionId) {
+    const classNumber = document.getElementById('is-gadv-classnum').value.trim();
+    if (!classNumber) { Toast.show('Enter or select a class number.', 'error'); return; }
+    const source = document.getElementById('is-gadv-source').value;
+    const payload = {
+      petitionId: petitionId,
+      classNumber: classNumber,
+      classSection: document.getElementById('is-gadv-section').value.trim(),
+      classNumberSource: source,
+      comments: document.getElementById('is-gadv-comments').value.trim(),
+    };
+    if (source === 'reassigned') {
+      if (!window.confirm('This class number is listed under another instructor in the schedule. Reassign it to this petition?')) return;
+      payload.confirmReassign = true;
+    }
+    _busy('Completing petition…');
+    App.call('individual_studies', 'gradAdvisorComplete', payload, function () {
+      _idle(); closeModal();
+      Toast.show('Petition completed. The student has been notified.', 'success');
+      _afterAction();
+    }, function () { _idle(); });
+  }
+
+  // ── Grad Settings: deadline anchor + notification wording ──
+  function loadGradSettings() {
+    App.call('individual_studies', 'getSettings', {}, function (s) {
+      s = s || {};
+      _setVal('is-g-set-pattern', s.GRAD_DEADLINE_TITLE_PATTERN || '');
+      _setVal('is-g-set-complete', s.GRAD_NOTIFY_COMPLETE || '');
+      _setVal('is-g-set-returned', s.GRAD_NOTIFY_RETURNED || '');
+    }, function () {});
+  }
+
+  function saveGradSettings() {
+    const el = document.getElementById('is-g-set-status');
+    if (el) el.textContent = 'Saving…';
+    App.call('individual_studies', 'saveSettings', {
+      GRAD_DEADLINE_TITLE_PATTERN: document.getElementById('is-g-set-pattern').value.trim(),
+      GRAD_NOTIFY_COMPLETE: document.getElementById('is-g-set-complete').value.trim(),
+      GRAD_NOTIFY_RETURNED: document.getElementById('is-g-set-returned').value.trim(),
+    }, function () {
+      if (el) el.textContent = 'Saved.';
+      Toast.show('Grad settings saved.', 'success');
+      loadGradDeadlines();
+      setTimeout(function () { if (el) el.textContent = ''; }, 2500);
+    }, function () { if (el) el.textContent = ''; });
+  }
+
+  function loadGradDeadlines() {
+    const el = document.getElementById('is-g-deadlines');
+    if (!el) return;
+    el.innerHTML = '<div class="empty-state">Resolving…</div>';
+    App.call('individual_studies', 'gradDeadlines', {}, function (res) {
+      res = res || {};
+      const terms = res.terms || [];
+      if (!terms.length) {
+        el.innerHTML = '<div class="empty-state">No terms with an imported schedule yet.</div>';
+        return;
+      }
+      el.innerHTML = '<table class="data-table"><thead><tr>'
+        + '<th scope="col">Term</th><th scope="col">Resolved deadline</th></tr></thead><tbody>'
+        + terms.map(function (t) {
+            const d = t.deadline;
+            return '<tr><td>' + esc(t.label) + '</td><td>'
+              + (d ? esc(d.date) + (t.passed ? ' <span class="badge badge-danger">Passed</span>' : '')
+                     + '<div class="text-sm text-muted">' + esc(d.title) + '</div>'
+                   : '<span class="text-muted">Not found — check the calendar entry and the title pattern.</span>')
+              + '</td></tr>';
+          }).join('')
+        + '</tbody></table>';
+    }, function () {
+      el.innerHTML = '<div class="empty-state">Could not resolve deadlines.</div>';
     });
   }
 
@@ -1908,6 +2800,14 @@ window.IndividualStudiesUI = (() => {
     withdraw, deletePetition, onSponsorSyllabusChange, onRoomReqToggle, onSponsorHoursChange, onSponsorReportToggle, sponsorApprove, sponsorReturn, requestRoomAccess,
     pickClass, advisorComplete, advisorReturn, advisorCourseChanged,
     onCsvChange, previewImport, resolveInstructor, commitImport, loadImportHistory,
+    loadExportTerms, exportTermCsv,
+    // graduate audience
+    onGradTermChange, onGradSponsorChange, onGradTemplatePick, onGradOutlineChange,
+    gradSubmit, gradResetForm, gradCancelResubmit, gradStartResubmit, gradStartResubmitFromModal,
+    loadGradMine, loadGradReview, loadGradSponsored, loadGradAdvisor, loadGradAll, gradRemind,
+    onGradRoomReqToggle, onGradSponsorOutlineChange, gradSponsorApprove,
+    gradPickClass, gradAdvisorComplete,
+    loadGradSettings, saveGradSettings, loadGradDeadlines,
   };
 
 })();

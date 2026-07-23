@@ -516,10 +516,30 @@ const ClassSchedule = (() => {
     return _termHasRows(String(term || '').trim());
   }
 
-  /** The committed-import log rows (newest first), for an admin view. */
+  /**
+   * The committed-import log rows (newest first), for an admin view.
+   *
+   * SERIALIZATION FIX: raw DataService rows carry CreatedAt/UpdatedAt as
+   * Date objects, which google.script.run cannot return to the client —
+   * the call fails silently and the UI keeps showing its "No imports yet"
+   * placeholder. Every value is therefore shaped to a string (dates
+   * formatted, everything else stringified as-is), and rows are sorted by
+   * CreatedAt descending — real chronology, not sheet order.
+   */
   function importHistory() {
     const { sheetId, importsTab } = _cfg();
-    return DataService.getAll(sheetId, importsTab).slice().reverse();
+    const tz = Session.getScriptTimeZone();
+    return DataService.getAll(sheetId, importsTab)
+      .map(r => {
+        const o = {};
+        Object.keys(r).forEach(k => {
+          o[k] = (r[k] instanceof Date)
+            ? Utilities.formatDate(r[k], tz, 'yyyy-MM-dd HH:mm')
+            : r[k];
+        });
+        return o;
+      })
+      .sort((a, b) => String(b.CreatedAt || '').localeCompare(String(a.CreatedAt || '')));
   }
 
   /**

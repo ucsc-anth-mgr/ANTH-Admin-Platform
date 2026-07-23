@@ -41,6 +41,14 @@
 //     EventBus, Auth, DataService, ReportService. No SpreadsheetApp here.
 //   - Every privileged action allows super_admin.
 //
+// SERIALIZATION RULE (the Date landmine): google.script.run cannot return
+//   Date objects — the client call fails SILENTLY and the UI keeps its
+//   placeholder. Every action's return value must therefore be shaped to
+//   plain strings/numbers/booleans. Raw DataService rows (which carry
+//   CreatedAt/UpdatedAt Dates, and Dates in any cell Sheets coerced, e.g.
+//   a typed report due date) must never leave the server unshaped. Use
+//   _plainStr()/_fmtDate() on anything that could be a Date.
+//
 // REGISTRATION (Code.gs): add IndividualStudiesModule to getModuleHandler()
 //   and getRegisteredHandlers(), and add the Modules-sheet row (Admin →
 //   Modules). Keep both commented until this file ships.
@@ -87,7 +95,7 @@ const IndividualStudiesModule = (() => {
       roles: ['individual_studies_sponsor'],
       actions: ['sponsored', 'saveAsTemplate'] },
     { key: 'templates', label: 'My Templates', icon: 'ti-template',
-      roles: ['individual_studies_sponsor'],
+      roles: ['individual_studies_sponsor', 'grad_individual_studies_sponsor'],
       actions: ['myTemplates', 'saveTemplate', 'setDefaultTemplate', 'deleteTemplate'] },
     { key: 'advisor', label: 'Advisor Queue', icon: 'ti-clipboard-check',
       roles: ['staff_undergrad'], floor: 'staff_undergrad',
@@ -97,7 +105,27 @@ const IndividualStudiesModule = (() => {
       actions: ['allPetitions', 'remindResponsible', 'getSettings', 'saveSettings', 'deletePetition'] },
     { key: 'schedule', label: 'Class Schedule', icon: 'ti-table-import',
       roles: ['staff_undergrad'], floor: 'staff_undergrad',
-      actions: ['importPreview', 'importResolve', 'importCommit', 'importHistory'] },
+      actions: ['importPreview', 'importResolve', 'importCommit', 'importHistory',
+                'scheduleTerms', 'exportTerm'] },
+    // ── Graduate audience (parallel tabs; GIS-prefixed records) ──
+    { key: 'gnew', label: 'New Grad Petition', icon: 'ti-file-plus',
+      roles: ['graduate_student'],
+      actions: ['gradFormData', 'gradSubmit', 'templatesForSponsor'] },
+    { key: 'gmine', label: 'My Grad Petitions', icon: 'ti-list',
+      roles: ['graduate_student'],
+      actions: ['gradMine', 'get', 'withdraw'] },
+    { key: 'greview', label: 'Grad Review', icon: 'ti-gavel',
+      roles: ['grad_individual_studies_sponsor'],
+      actions: ['gradSponsorQueue', 'sponsorApprove', 'sponsorReturn', 'requestRoomAccess'] },
+    { key: 'gsponsored', label: 'Grad Sponsored', icon: 'ti-user-check',
+      roles: ['grad_individual_studies_sponsor'],
+      actions: ['gradSponsored', 'saveAsTemplate'] },
+    { key: 'gadvisor', label: 'Grad Advisor Queue', icon: 'ti-clipboard-check',
+      roles: ['staff_grad'], floor: 'staff_grad',
+      actions: ['gradAdvisorQueue', 'gradAdvisorContext', 'gradAdvisorComplete', 'advisorReturn'] },
+    { key: 'gsettings', label: 'Grad Settings', icon: 'ti-settings',
+      roles: ['staff_grad'], floor: 'staff_grad',
+      actions: ['gradAllPetitions', 'gradDeadlines', 'remindResponsible', 'getSettings', 'saveSettings', 'deletePetition'] },
   ];
 
   // Student-notification message templates (UI-managed in the Settings tab,
@@ -108,9 +136,18 @@ const IndividualStudiesModule = (() => {
   // Tokens {FirstName} and {Course} are filled at send time. These defaults
   // reproduce the module's original wording and also serve as the fallback
   // when the settings tab doesn't exist yet or a value is blank.
-  const NOTIFY_DEFAULTS = {
+  // (Renamed from NOTIFY_DEFAULTS when the map grew a non-notification
+  // key: it is now the defaults for EVERY PetitionSettings key.)
+  //   GRAD_DEADLINE_TITLE_PATTERN — the substring matched against the
+  //   calendar (CalendarService) to find each term's grad enrollment/
+  //   fee-payment deadline. UI-managed in Grad Settings; blank disables
+  //   the deadline anchor entirely (no warnings, no flags).
+  const SETTINGS_DEFAULTS = {
     NOTIFY_COMPLETE: 'Your {Course} individual-studies petition is complete.',
     NOTIFY_RETURNED: 'Your {Course} petition was returned for revision.',
+    GRAD_NOTIFY_COMPLETE: 'Your {Course} graduate individual-studies petition is complete.',
+    GRAD_NOTIFY_RETURNED: 'Your {Course} petition was returned for revision.',
+    GRAD_DEADLINE_TITLE_PATTERN: 'Graduate Student Enrollment and Fee Payment',
   };
 
   const STAGE = {
@@ -193,6 +230,31 @@ const IndividualStudiesModule = (() => {
   const ROOM_ACCESS_SOURCE_TYPE = 'individual_studies_room_access';
   function _roomAccessSourceId(petitionId) { return String(petitionId) + ':room'; }
 
+  // ── Graduate audience (GIS-prefixed records in their own tab) ──
+  // Same two-hop workflow, parallel tab, per the agreed schema: fixed
+  // course/unit pairs (units are intrinsic to the course, not read from
+  // the schedule); no grade option, no credit cap, no SR 760 split — a
+  // single WeeklyContactHours number; Subject + WorkOutline (with an
+  // optional attached outline document) replace the undergrad text
+  // fields; and a calendar-anchored deadline flags LateSubmission.
+  const GRAD_TAB = function () { return CONFIG.TABS.INDIVIDUAL_STUDIES_GRAD || 'GradPetitions'; };
+  const GRAD_SOURCE_TYPE = 'grad_individual_studies_petition';
+  const GRAD_SPONSOR_ROLE = 'grad_individual_studies_sponsor';
+  const GRAD_ADVISOR_ROLE = 'staff_grad';
+
+  // Fixed course/unit pairs, ANTH 297A–299C. The A/B/C suffix encodes
+  // the unit value (5/10/15) — VERIFY these pairs against the catalog
+  // before first real use; this constant is the single place to fix.
+  const GRAD_COURSES = [
+    { course: 'ANTH 297A', units: 5 }, { course: 'ANTH 297B', units: 10 }, { course: 'ANTH 297C', units: 15 },
+    { course: 'ANTH 298A', units: 5 }, { course: 'ANTH 298B', units: 10 }, { course: 'ANTH 298C', units: 15 },
+    { course: 'ANTH 299A', units: 5 }, { course: 'ANTH 299B', units: 10 }, { course: 'ANTH 299C', units: 15 },
+  ];
+
+  /** GIS-prefixed ids are graduate petitions; IS-prefixed, undergrad.
+   *  The prefix is the audience switch for every shared action. */
+  function _isGradId(id) { return /^GIS/i.test(String(id || '').trim()); }
+
 
   // ============================================================
   // STUDENT ACTIONS
@@ -258,7 +320,19 @@ const IndividualStudiesModule = (() => {
    * owns it, the sponsor on it, any advisor, or super_admin.
    */
   function get(payload, user, roles) {
-    const rec = _byId((payload || {}).petitionId);
+    const id = String((payload || {}).petitionId || '').trim();
+    // Audience-aware by id prefix: GIS = graduate, IS = undergraduate.
+    if (_isGradId(id)) {
+      const grec = _rowById(GRAD_TAB(), id);
+      if (!grec) throw new Error('Petition not found.');
+      if (!_canViewGrad(grec, user, roles)) throw new Error('You do not have access to this petition.');
+      const gpub = _gradPublicRecord(grec);
+      if (_isGradAdvisor(roles) || roles.includes('super_admin')) {
+        gpub.advisorContext = _gradAdvisorContext(grec);
+      }
+      return gpub;
+    }
+    const rec = _byId(id);
     if (!rec) throw new Error('Petition not found.');
     if (!_canView(rec, user, roles)) throw new Error('You do not have access to this petition.');
     const pub = _publicRecord(rec);
@@ -412,17 +486,21 @@ const IndividualStudiesModule = (() => {
 
   /** Student withdraws their own non-terminal petition. */
   function withdraw(payload, user, roles) {
-    const rec = _byId((payload || {}).petitionId);
+    const id = String((payload || {}).petitionId || '').trim();
+    const grad = _isGradId(id);
+    const tab = grad ? GRAD_TAB() : TAB();
+    const rec = _rowById(tab, id);
     if (!rec) throw new Error('Petition not found.');
     const isSuper = roles.includes('super_admin');
     if (!isSuper && _norm(rec.StudentEmail) !== _norm(user)) {
       throw new Error('You can only withdraw your own petition.');
     }
     if (rec.Stage === STAGE.COMPLETE) {
-      throw new Error('A completed petition cannot be withdrawn. Contact the undergraduate advisor.');
+      throw new Error('A completed petition cannot be withdrawn. Contact the '
+        + (grad ? 'graduate' : 'undergraduate') + ' advisor.');
     }
     Tasks.resolveForSource(MODULE, rec.PetitionID, { resolvedBy: user, note: 'Withdrawn' });
-    DataService.remove(SHEET(), TAB(), 'PetitionID', rec.PetitionID);
+    DataService.remove(SHEET(), tab, 'PetitionID', rec.PetitionID);
     EventBus.emit(MODULE + '.withdrawn', { recordId: rec.PetitionID }, { user: user });
     return { withdrawn: true };
   }
@@ -438,7 +516,9 @@ const IndividualStudiesModule = (() => {
     if (roles.indexOf('super_admin') === -1) {
       throw new Error('Only a super admin can delete a petition.');
     }
-    const rec = _byId(String((payload || {}).petitionId || '').trim());
+    const delId = String((payload || {}).petitionId || '').trim();
+    const delTab = _isGradId(delId) ? GRAD_TAB() : TAB();
+    const rec = _rowById(delTab, delId);
     if (!rec) throw new Error('Petition not found.');
 
     // Clear dashboard pointers first so nothing references a gone record.
@@ -446,15 +526,17 @@ const IndividualStudiesModule = (() => {
     // The room-access task uses a distinct source id; resolve it too.
     Tasks.resolveForSource(MODULE, _roomAccessSourceId(rec.PetitionID), { resolvedBy: user });
 
-    // Trash both Drive files if present; a missing file must not block deletion.
-    [rec.DriveFileID, rec.SyllabusFileID].forEach(fid => {
+    // Trash the record's Drive files if present (PDF + syllabus on the
+    // undergrad side, PDF + outline on the grad side); a missing file
+    // must never block deletion.
+    [rec.DriveFileID, rec.SyllabusFileID, rec.OutlineFileID].forEach(fid => {
       const id = String(fid || '').trim();
       if (!id) return;
       try { DriveApp.getFileById(id).setTrashed(true); }
       catch (err) { Logger.log('deletePetition: could not trash file ' + id + ' (' + err + ')'); }
     });
 
-    const removed = DataService.remove(SHEET(), TAB(), 'PetitionID', rec.PetitionID);
+    const removed = DataService.remove(SHEET(), delTab, 'PetitionID', rec.PetitionID);
     if (!removed) throw new Error('Delete failed — the record could not be removed.');
 
     EventBus.emit(MODULE + '.deleted', { recordId: rec.PetitionID }, { user: user });
@@ -490,6 +572,7 @@ const IndividualStudiesModule = (() => {
    * PENDING_ADVISOR.
    */
   function sponsorApprove(payload, user, roles) {
+    if (_isGradId((payload || {}).petitionId)) return _gradSponsorApprove(payload || {}, user, roles);
     const rec = _byId((payload || {}).petitionId);
     if (!rec) throw new Error('Petition not found.');
     _assertSponsor(rec, user, roles);
@@ -546,9 +629,61 @@ const IndividualStudiesModule = (() => {
     return { petitionId: rec.PetitionID, stage: STAGE.PENDING_ADVISOR };
   }
 
-  /** Sponsor returns the petition to the student for revision. */
+  /**
+   * Grad sponsor approval (reached through the shared sponsorApprove).
+   * The sponsor may revise the subject and work outline, adjust the
+   * weekly contact hours and the final-paper requirement, comment,
+   * attach/replace the outline document, and request room access.
+   * Units are fixed by the course; there is no grade option.
+   */
+  function _gradSponsorApprove(payload, user, roles) {
+    const rec = _rowById(GRAD_TAB(), payload.petitionId);
+    if (!rec) throw new Error('Petition not found.');
+    _assertSponsor(rec, user, roles);
+    if (rec.Stage !== STAGE.SUBMITTED) throw new Error('This petition is not awaiting a sponsor decision.');
+
+    const subject = payload.subject !== undefined
+      ? String(payload.subject || '').trim() : rec.Subject;
+    const workOutline = payload.workOutline !== undefined
+      ? String(payload.workOutline || '').trim() : rec.WorkOutline;
+
+    const patch = {};
+    if (payload.weeklyContactHours !== undefined) {
+      const h = Number(String(payload.weeklyContactHours == null ? '' : payload.weeklyContactHours).trim() || 0);
+      if (!isFinite(h) || h < 0) throw new Error('Enter a valid number of weekly contact hours.');
+      patch.WeeklyContactHours = String(h);
+    }
+    if (payload.finalPaperRequired !== undefined) {
+      patch.FinalPaperRequired = _boolStr(payload.finalPaperRequired === true || payload.finalPaperRequired === 'true');
+    }
+
+    DataService.update(SHEET(), GRAD_TAB(), 'PetitionID', rec.PetitionID, Object.assign({
+      Subject: subject,
+      WorkOutline: workOutline,
+      SponsorComments: String(payload.comments || '').trim(),
+      SponsorDecidedBy: user,
+      SponsorDecidedAt: new Date().toISOString(),
+      Stage: STAGE.PENDING_ADVISOR,
+    }, patch));
+
+    _maybeSaveOutline(rec.PetitionID, payload, user);
+    if (payload.requestRoomAccess === true) {
+      _fireRoomAccessRequest(_rowById(GRAD_TAB(), rec.PetitionID), user, payload.roomAccessRoom, payload.roomAccessNote);
+    }
+
+    Tasks.resolveForSource(MODULE, rec.PetitionID, { resolvedBy: user });
+    _gradRouteToAdvisor(rec.PetitionID, _rowById(GRAD_TAB(), rec.PetitionID));
+    EventBus.emit(MODULE + '.grad_sponsor_approved', { recordId: rec.PetitionID }, { user: user });
+    return { petitionId: rec.PetitionID, stage: STAGE.PENDING_ADVISOR };
+  }
+
+  /** Sponsor returns the petition to the student for revision.
+   *  Audience-aware: grad records go through the grad routing. */
   function sponsorReturn(payload, user, roles) {
-    const rec = _byId((payload || {}).petitionId);
+    const id = String((payload || {}).petitionId || '').trim();
+    const grad = _isGradId(id);
+    const tab = grad ? GRAD_TAB() : TAB();
+    const rec = _rowById(tab, id);
     if (!rec) throw new Error('Petition not found.');
     _assertSponsor(rec, user, roles);
     if (rec.Stage !== STAGE.SUBMITTED) throw new Error('This petition is not awaiting a sponsor decision.');
@@ -556,14 +691,15 @@ const IndividualStudiesModule = (() => {
     const note = String((payload || {}).note || '').trim();
     if (!note) throw new Error('Add a note telling the student what to revise.');
 
-    DataService.update(SHEET(), TAB(), 'PetitionID', rec.PetitionID, {
+    DataService.update(SHEET(), tab, 'PetitionID', rec.PetitionID, {
       Stage: STAGE.RETURNED,
       ReturnNote: note,
     });
 
     Tasks.resolveForSource(MODULE, rec.PetitionID, { resolvedBy: user });
-    _routeToStudent(rec.PetitionID, rec, note);
-    EventBus.emit(MODULE + '.returned', { recordId: rec.PetitionID }, { user: user });
+    if (grad) _gradRouteToStudent(rec.PetitionID, rec, note);
+    else _routeToStudent(rec.PetitionID, rec, note);
+    EventBus.emit(MODULE + (grad ? '.grad_returned' : '.returned'), { recordId: rec.PetitionID }, { user: user });
     return { petitionId: rec.PetitionID, stage: STAGE.RETURNED };
   }
 
@@ -574,7 +710,8 @@ const IndividualStudiesModule = (() => {
    * may also trigger it. The room/space is required so facilities can act.
    */
   function requestRoomAccess(payload, user, roles) {
-    const rec = _byId((payload || {}).petitionId);
+    const raId = String((payload || {}).petitionId || '').trim();
+    const rec = _rowById(_isGradId(raId) ? GRAD_TAB() : TAB(), raId);
     if (!rec) throw new Error('Petition not found.');
     if (roles.indexOf('super_admin') === -1 && _norm(rec.SponsorEmail) !== _norm(user)) {
       throw new Error('Only the petition\'s faculty sponsor can request room access.');
@@ -618,15 +755,17 @@ const IndividualStudiesModule = (() => {
    * reminder always goes out. Mirrors the thesis module's remindResponsible.
    */
   function remindResponsible(payload, user, roles) {
-    _assertAdvisor(roles);
-    const rec = _byId(String((payload || {}).petitionId || '').trim());
+    const remId = String((payload || {}).petitionId || '').trim();
+    const grad = _isGradId(remId);
+    if (grad) _assertGradAdvisor(roles); else _assertAdvisor(roles);
+    const rec = _rowById(grad ? GRAD_TAB() : TAB(), remId);
     if (!rec) throw new Error('Petition not found.');
 
     let to, ask;
     if (rec.Stage === STAGE.SUBMITTED) {
       to = [rec.SponsorEmail]; ask = 'review it as the faculty sponsor';
     } else if (rec.Stage === STAGE.PENDING_ADVISOR) {
-      to = _advisorEmails(); ask = 'assign a class number and complete it';
+      to = grad ? _gradAdvisorEmails() : _advisorEmails(); ask = 'assign a class number and complete it';
     } else if (rec.Stage === STAGE.RETURNED) {
       to = [rec.StudentEmail]; ask = 'revise and resubmit it';
     } else {
@@ -775,17 +914,21 @@ const IndividualStudiesModule = (() => {
              course: course, courseChanged: courseChanged };
   }
 
-  /** Advisor returns the petition to the sponsor, clearing the decision. */
+  /** Advisor returns the petition to the sponsor, clearing the decision.
+   *  Audience-aware: grad records require the graduate advisor. */
   function advisorReturn(payload, user, roles) {
-    _assertAdvisor(roles);
-    const rec = _byId((payload || {}).petitionId);
+    const arId = String((payload || {}).petitionId || '').trim();
+    const grad = _isGradId(arId);
+    if (grad) _assertGradAdvisor(roles); else _assertAdvisor(roles);
+    const tab = grad ? GRAD_TAB() : TAB();
+    const rec = _rowById(tab, arId);
     if (!rec) throw new Error('Petition not found.');
     if (rec.Stage !== STAGE.PENDING_ADVISOR) throw new Error('This petition is not awaiting advisor processing.');
 
     const note = String((payload || {}).note || '').trim();
     if (!note) throw new Error('Add a note telling the sponsor what to reconsider.');
 
-    DataService.update(SHEET(), TAB(), 'PetitionID', rec.PetitionID, {
+    DataService.update(SHEET(), tab, 'PetitionID', rec.PetitionID, {
       Stage: STAGE.SUBMITTED,
       SponsorComments: '',
       SponsorDecidedBy: '', SponsorDecidedAt: '',
@@ -793,14 +936,19 @@ const IndividualStudiesModule = (() => {
     });
 
     Tasks.resolveForSource(MODULE, rec.PetitionID, { resolvedBy: user });
-    _routeToSponsor(rec.PetitionID, rec.SponsorEmail, Auth.getProfile(rec.StudentEmail) || {}, rec.Course, /*resubmitted*/ false, note);
-    EventBus.emit(MODULE + '.advisor_returned', { recordId: rec.PetitionID }, { user: user });
+    if (grad) {
+      _gradRouteToSponsor(rec.PetitionID, rec.SponsorEmail, Auth.getProfile(rec.StudentEmail) || {},
+        rec.Course, /*resubmitted*/ false, note, _isTrueStr(rec.LateSubmission), { date: _plainStr(rec.DeadlineDate) });
+    } else {
+      _routeToSponsor(rec.PetitionID, rec.SponsorEmail, Auth.getProfile(rec.StudentEmail) || {}, rec.Course, /*resubmitted*/ false, note);
+    }
+    EventBus.emit(MODULE + (grad ? '.grad_advisor_returned' : '.advisor_returned'), { recordId: rec.PetitionID }, { user: user });
     return { petitionId: rec.PetitionID, stage: STAGE.SUBMITTED };
   }
 
 
   // ============================================================
-  // CLASS-SCHEDULE IMPORT (advisor admin) — thin wrappers over the service
+  // CLASS-SCHEDULE IMPORT + EXPORT (advisor admin) — wrappers over the service
   // ============================================================
 
   function importPreview(payload, user, roles) {
@@ -821,6 +969,730 @@ const IndividualStudiesModule = (() => {
   function importHistory(payload, user, roles) {
     _assertAdvisor(roles);
     return ClassSchedule.importHistory();
+  }
+
+  /**
+   * Terms with a committed schedule, for the export term picker. The
+   * service already shapes these to plain strings (term/quarter/year/
+   * label), newest first — nothing to reshape here.
+   */
+  function scheduleTerms(payload, user, roles) {
+    _assertAdvisor(roles);
+    return ClassSchedule.availableTerms();
+  }
+
+  /**
+   * One term's schedule rows for the client-side CSV export: the
+   * registrar's own columns plus the resolved instructor (display name,
+   * email, and how the match was made). The CSV itself is assembled in the
+   * browser — instant, no Drive clutter; a Drive-archive option can be
+   * added later without touching this shape.
+   *
+   * Every value is shaped to a string here — ClassSchedule.sectionsForTerm
+   * returns raw DataService rows whose CreatedAt/UpdatedAt are Date
+   * objects, the serialization landmine that silently kills the
+   * google.script.run return (see the module-header SERIALIZATION RULE).
+   */
+  function exportTerm(payload, user, roles) {
+    _assertAdvisor(roles);
+    const term = String((payload || {}).term || '').trim();
+    if (!term) throw new Error('Select a term to export.');
+    const rows = ClassSchedule.sectionsForTerm(term);
+    if (!rows.length) throw new Error('No schedule is imported for ' + term + '.');
+    return rows.map(r => {
+      const email = String(r.InstructorEmail || '').trim();
+      return {
+        term:           _plainStr(r.Term),
+        course:         _plainStr(r.Course),
+        title:          _plainStr(r.Title),
+        section:        _plainStr(r.Section),
+        classNbr:       _plainStr(r.ClassNbr),
+        units:          _plainStr(r.Units),
+        component:      _plainStr(r.Component),
+        instructorRaw:  _plainStr(r.InstructorRaw),
+        instructorName: email ? _facultyLabel(email) : '',
+        instructorEmail: email,
+        matchMethod:    _plainStr(r.MatchMethod),
+      };
+    }).sort((a, b) =>
+      String(a.course).localeCompare(String(b.course), undefined, { numeric: true, sensitivity: 'base' })
+      || String(a.section).localeCompare(String(b.section), undefined, { numeric: true, sensitivity: 'base' }));
+  }
+
+
+  // ============================================================
+  // GRADUATE ACTIONS (parallel audience; shared actions branch on the
+  // GIS id prefix — see get/withdraw/sponsorApprove/etc. below)
+  // ============================================================
+
+  /**
+   * Bootstrap for the New Grad Petition form. Terms come from the
+   * imported schedule (the canonical term-code source; class numbers
+   * are assigned from it at the advisor stage), but courses/units are
+   * the FIXED pairs — not schedule-derived. Each term carries its
+   * resolved calendar deadline (or null) so the form can warn about a
+   * late submission before the student types anything.
+   */
+  function gradFormData(payload, user, roles) {
+    const profile = Auth.getProfile(user) || {};
+    let terms = [];
+    try {
+      const today = _todayStr();
+      terms = ClassSchedule.availableTerms().map(t => {
+        const dl = _gradDeadlineForTerm(t.term);
+        return {
+          term: t.term, label: t.label, quarter: t.quarter, year: t.year,
+          deadline: dl,                                          // {date,title,deadlineId} | null
+          deadlinePassed: !!(dl && dl.date && today > dl.date),
+        };
+      });
+    } catch (e) {
+      Logger.log('IndividualStudiesModule.gradFormData: term lookup failed: ' + e);
+      terms = [];
+    }
+    return {
+      terms: terms,
+      courses: GRAD_COURSES.map(c => ({ course: c.course, units: c.units, catalogUrl: _catalogUrl(c.course) })),
+      sponsors: _eligibleGradSponsors(),
+      profile: {
+        name: profile.name || '',
+        email: profile.email || user,
+        studentId: profile.studentId || '',
+        hasStudentId: !!(profile.studentId),
+      },
+    };
+  }
+
+  /**
+   * Submit a NEW graduate petition, or resubmit one currently RETURNED.
+   * The term's enrollment/fee-payment deadline is resolved from the
+   * calendar at submission: the resolved date is stored on the record
+   * (DeadlineDate) and a submission after it is flagged LateSubmission.
+   * Calendar failure or no match degrades to no flag — the deadline
+   * anchor warns and marks, it never blocks.
+   */
+  function gradSubmit(payload, user, roles) {
+    payload = payload || {};
+    const termCode = String(payload.termCode || payload.term || '').trim();
+    if (!termCode) throw new Error('Select a term.');
+    const course = String(payload.course || '').trim();
+    const pair = GRAD_COURSES.find(c => c.course.toUpperCase() === course.toUpperCase());
+    if (!pair) throw new Error('Select a graduate individual-studies course.');
+    const sponsorEmail = String(payload.sponsorEmail || '').trim();
+    if (!sponsorEmail) throw new Error('Select a faculty sponsor.');
+    if (!_isEligibleGradSponsor(sponsorEmail)) {
+      throw new Error('That person is not currently eligible to sponsor a graduate individual study.');
+    }
+    const subject = String(payload.subject || '').trim();
+    if (!subject) throw new Error('The subject of the proposed study is required.');
+    const workOutline = String(payload.workOutline || '').trim();
+    if (!workOutline) throw new Error('An outline of the work to be completed is required.');
+    const hours = Number(String(payload.weeklyContactHours == null ? '' : payload.weeklyContactHours).trim() || 0);
+    if (!isFinite(hours) || hours < 0) throw new Error('Enter a valid number of weekly contact hours.');
+
+    const decoded = ClassSchedule.decodeTermCode(termCode);
+    const profile = Auth.getProfile(user);
+    if (!profile) throw new Error('Your profile could not be found.');
+    if (!profile.studentId) {
+      throw new Error('Your profile has no Student ID on file. Contact the department to add one before submitting.');
+    }
+
+    // Deadline anchor. Recomputed on resubmission too: the flag records
+    // whether THIS submission landed after the deadline.
+    const dl = _gradDeadlineForTerm(termCode);
+    const late = !!(dl && dl.date && _todayStr() > dl.date);
+
+    const fields = {
+      TermCode: termCode,
+      Quarter: decoded.quarter, Year: decoded.year,
+      Course: pair.course,
+      Units: String(pair.units),                     // fixed by the course
+      SponsorEmail: sponsorEmail,
+      StudySite: String(payload.studySite || '').trim(),
+      Subject: subject,
+      WorkOutline: workOutline,
+      WeeklyContactHours: String(hours),
+      FinalPaperRequired: _boolStr(payload.finalPaperRequired),
+      LateSubmission: late ? 'TRUE' : 'FALSE',
+      DeadlineDate: dl ? dl.date : '',
+    };
+
+    const existingId = String(payload.petitionId || '').trim();
+
+    // ── Resubmission: the caller's own RETURNED grad record ──
+    if (existingId) {
+      if (!_isGradId(existingId)) throw new Error('That is not a graduate petition.');
+      const rec = _rowById(GRAD_TAB(), existingId);
+      if (!rec) throw new Error('Petition not found: ' + existingId);
+      if (_norm(rec.StudentEmail) !== _norm(user)) throw new Error('You can only resubmit your own petition.');
+      if (rec.Stage !== STAGE.RETURNED) throw new Error('This petition is not awaiting resubmission.');
+
+      DataService.update(SHEET(), GRAD_TAB(), 'PetitionID', existingId, Object.assign({}, fields, {
+        Stage: STAGE.SUBMITTED,
+        ReturnNote: '',
+      }));
+      _maybeSaveOutline(existingId, payload, user);
+      Tasks.resolveForSource(MODULE, existingId, { resolvedBy: user });
+      _gradRouteToSponsor(existingId, sponsorEmail, profile, pair.course, /*resubmitted*/ true, '', late, dl);
+      EventBus.emit(MODULE + '.grad_resubmitted', { recordId: existingId, sponsorEmail: sponsorEmail }, { user: user });
+      return { petitionId: existingId, stage: STAGE.SUBMITTED, resubmitted: true, late: late, deadlineDate: dl ? dl.date : '' };
+    }
+
+    // ── New petition: same four-part duplicate key as undergrad ──
+    const dup = DataService.query(SHEET(), GRAD_TAB(), 'StudentEmail', user).find(r =>
+      _recTerm(r) === termCode &&
+      _norm(r.SponsorEmail) === _norm(sponsorEmail) &&
+      String(r.Course).trim().toUpperCase() === pair.course.toUpperCase() &&
+      r.Stage !== STAGE.RETURNED);
+    if (dup) {
+      throw new Error('You already have a ' + pair.course + ' petition with this sponsor for ' +
+        (decoded.label || termCode) + '. Use it rather than filing a duplicate.');
+    }
+
+    const petitionId = DataService.generateId('GIS');
+    DataService.insert(SHEET(), GRAD_TAB(), Object.assign({
+      PetitionID: petitionId,
+      StudentEmail: user,
+      Stage: STAGE.SUBMITTED,
+      SponsorComments: '', SponsorDecidedBy: '', SponsorDecidedAt: '',
+      ClassNumber: '', ClassSection: '', ClassNumberSource: '',
+      AdvisorComments: '', AdvisorProcessedBy: '', AdvisorProcessedAt: '',
+      OutlineFileID: '', OutlineLink: '', OutlineName: '',
+      DriveFileID: '', DocumentLink: '', FileName: '',
+      ReturnNote: '',
+    }, fields));
+
+    _maybeSaveOutline(petitionId, payload, user);
+    _gradRouteToSponsor(petitionId, sponsorEmail, profile, pair.course, /*resubmitted*/ false, '', late, dl);
+    EventBus.emit(MODULE + '.grad_submitted', { recordId: petitionId, sponsorEmail: sponsorEmail }, { user: user });
+    return { petitionId: petitionId, stage: STAGE.SUBMITTED, late: late, deadlineDate: dl ? dl.date : '' };
+  }
+
+  /** The caller's own graduate petitions, newest first. */
+  function gradMine(payload, user, roles) {
+    return DataService.query(SHEET(), GRAD_TAB(), 'StudentEmail', user)
+      .map(_gradPublicRecord)
+      .sort(_byCreatedDesc);
+  }
+
+  /** Grad petitions awaiting the caller's sponsor decision. */
+  function gradSponsorQueue(payload, user, roles) {
+    const isSuper = roles.includes('super_admin');
+    return DataService.query(SHEET(), GRAD_TAB(), 'Stage', STAGE.SUBMITTED)
+      .filter(r => isSuper || _norm(r.SponsorEmail) === _norm(user))
+      .map(_gradPublicRecord)
+      .sort(_byCreatedDesc);
+  }
+
+  /** Grad petitions the caller has sponsored, any stage, newest first. */
+  function gradSponsored(payload, user, roles) {
+    return DataService.query(SHEET(), GRAD_TAB(), 'SponsorEmail', user)
+      .map(_gradPublicRecord)
+      .sort(_byCreatedDesc);
+  }
+
+  /** Grad petitions awaiting advisor processing (PENDING_ADVISOR). */
+  function gradAdvisorQueue(payload, user, roles) {
+    _assertGradAdvisor(roles);
+    return DataService.query(SHEET(), GRAD_TAB(), 'Stage', STAGE.PENDING_ADVISOR)
+      .map(_gradPublicRecord)
+      .sort(_byCreatedDesc);
+  }
+
+  /** Every grad petition, newest first — the graduate advisor's
+   *  management/history view (and super_admin's path to delete). */
+  function gradAllPetitions(payload, user, roles) {
+    _assertGradAdvisor(roles);
+    return DataService.getAll(SHEET(), GRAD_TAB())
+      .map(_gradPublicRecord)
+      .sort(_byCreatedDesc);
+  }
+
+  /**
+   * Class-number decision support for one grad petition: the sponsor's
+   * pre-assigned section (if the registrar listed one) and the full
+   * section list for the course at its fixed unit value. No credit-cap
+   * math — the graduate side has no special-study cap.
+   */
+  function gradAdvisorContext(payload, user, roles) {
+    _assertGradAdvisor(roles);
+    const rec = _rowById(GRAD_TAB(), (payload || {}).petitionId);
+    if (!rec) throw new Error('Petition not found.');
+    return _gradAdvisorContext(rec);
+  }
+
+  function _gradAdvisorContext(rec) {
+    const term = _recTerm(rec);
+    const course = String(rec.Course || '').trim();
+    const units = _toNum(rec.Units);
+    let preassigned = null, sections = [], matched = true;
+    try {
+      const pre = ClassSchedule.findPreassigned(term, course, rec.SponsorEmail);
+      preassigned = pre ? _classRow(pre) : null;
+      const res = ClassSchedule.sectionsForCourse(term, course, { units: units || null });
+      matched = res.matchedCredits;
+      sections = (res.sections || []).map(_sectionRow);
+    } catch (e) {
+      Logger.log('IndividualStudiesModule._gradAdvisorContext: ClassSchedule lookup failed: ' + e);
+    }
+    return {
+      term: term, termLabel: _termLabel(rec),
+      course: course, units: units,
+      late: _isTrueStr(rec.LateSubmission),
+      deadlineDate: _plainStr(rec.DeadlineDate),
+      preassigned: preassigned,
+      sections: sections,
+      sectionsMatchedCredits: matched,
+    };
+  }
+
+  /**
+   * Graduate advisor completes the petition: class number (prefill,
+   * pool pick, or confirmed reassignment), optional note, canonical
+   * PDF, COMPLETE. No course correction on the grad side — a wrong
+   * course is a return to the sponsor.
+   */
+  function gradAdvisorComplete(payload, user, roles) {
+    _assertGradAdvisor(roles);
+    payload = payload || {};
+    const rec = _rowById(GRAD_TAB(), payload.petitionId);
+    if (!rec) throw new Error('Petition not found.');
+    if (rec.Stage !== STAGE.PENDING_ADVISOR) throw new Error('This petition is not awaiting advisor processing.');
+
+    const classNumber = String(payload.classNumber || '').trim();
+    if (!classNumber) throw new Error('A class number is required to complete the petition.');
+    const source = String(payload.classNumberSource || '').trim();
+    if (source === 'reassigned' && payload.confirmReassign !== true) {
+      throw new Error('Reassigning a class number listed under another instructor requires confirmation.');
+    }
+
+    DataService.update(SHEET(), GRAD_TAB(), 'PetitionID', rec.PetitionID, {
+      ClassNumber: classNumber,
+      ClassSection: String(payload.classSection || '').trim(),
+      ClassNumberSource: source,
+      AdvisorComments: String(payload.comments || '').trim(),
+      AdvisorProcessedBy: user,
+      AdvisorProcessedAt: new Date().toISOString(),
+      Stage: STAGE.COMPLETE,
+    });
+
+    // PDF at COMPLETE — best-effort, exactly as the undergrad side.
+    const finalRec = _rowById(GRAD_TAB(), rec.PetitionID);
+    let pdf = null;
+    try {
+      pdf = _generateGradPetitionPdf(finalRec, user);
+      if (pdf && pdf.fileId) {
+        DataService.update(SHEET(), GRAD_TAB(), 'PetitionID', rec.PetitionID, {
+          DriveFileID: pdf.fileId, DocumentLink: pdf.url || '', FileName: pdf.fileName || '',
+        });
+        _grantStudentViewer(pdf.fileId, finalRec.StudentEmail);
+      }
+    } catch (e) {
+      Logger.log('IndividualStudiesModule: grad PDF generation failed for ' + rec.PetitionID + ': ' + e);
+    }
+
+    Tasks.resolveForSource(MODULE, rec.PetitionID, { resolvedBy: user });
+    _gradNotifyComplete(finalRec, pdf);
+    EventBus.emit(MODULE + '.grad_completed', { recordId: rec.PetitionID }, { user: user });
+    return { petitionId: rec.PetitionID, stage: STAGE.COMPLETE, documentLink: pdf ? pdf.url : '' };
+  }
+
+  /**
+   * The graduate advisor's deadline-anchor view (Grad Settings card):
+   * the configured title pattern and, per available term, the resolved
+   * calendar entry — or null, which is the "check the calendar/pattern"
+   * signal.
+   */
+  function gradDeadlines(payload, user, roles) {
+    _assertGradAdvisor(roles);
+    const pattern = String(_readSettings().GRAD_DEADLINE_TITLE_PATTERN || '').trim();
+    let terms = [];
+    try { terms = ClassSchedule.availableTerms(); } catch (e) { terms = []; }
+    const today = _todayStr();
+    return {
+      pattern: pattern,
+      terms: terms.map(t => {
+        const dl = _gradDeadlineForTerm(t.term);
+        return { term: t.term, label: t.label, deadline: dl,
+                 passed: !!(dl && dl.date && today > dl.date) };
+      }),
+    };
+  }
+
+
+  // ── PRIVATE (grad): deadline resolution ──
+
+  /**
+   * Resolves a term's grad enrollment/fee-payment deadline from the
+   * calendar via CalendarService.findDeadlines (read-only face). The
+   * entry repeats quarterly under the same title, so the pattern match
+   * is windowed around the quarter's nominal start and, if several
+   * instances land in the window, the one closest to the quarter start
+   * wins. Returns { date:'yyyy-MM-dd', title, deadlineId } or null —
+   * null on no pattern, no match, or ANY error (the deadline anchor
+   * degrades to no-warning; it never blocks or breaks a caller).
+   */
+  function _gradDeadlineForTerm(termCode) {
+    try {
+      const pattern = String(_readSettings().GRAD_DEADLINE_TITLE_PATTERN || '').trim();
+      if (!pattern) return null;
+      if (typeof CalendarService === 'undefined') return null;
+      const start = _quarterStartDate(termCode);
+      if (!start) return null;
+      const fmt = d => Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+      const hits = CalendarService.findDeadlines({
+        titleContains: pattern,
+        from: fmt(new Date(start.getTime() - 150 * 86400000)),
+        to:   fmt(new Date(start.getTime() +  45 * 86400000)),
+      });
+      if (!hits || !hits.length) return null;
+      let best = null, bestGap = Infinity;
+      hits.forEach(h => {
+        if (!h.date) return;
+        const gap = Math.abs(new Date(h.date + 'T12:00:00').getTime() - start.getTime());
+        if (gap < bestGap) { bestGap = gap; best = h; }
+      });
+      return best ? { date: best.date, title: best.title, deadlineId: best.deadlineId } : null;
+    } catch (e) {
+      Logger.log('IndividualStudiesModule._gradDeadlineForTerm failed for ' + termCode + ': ' + e);
+      return null;
+    }
+  }
+
+  /** Nominal first day of a quarter from its term code — approximate,
+   *  used only to window the quarterly calendar-entry match. */
+  function _quarterStartDate(termCode) {
+    try {
+      const d = ClassSchedule.decodeTermCode(termCode);
+      if (!d.quarter || !d.year) return null;
+      const md = { Winter: [0, 2], Spring: [2, 25], Summer: [5, 20], Fall: [8, 20] }[d.quarter];
+      return md ? new Date(Number(d.year), md[0], md[1]) : null;
+    } catch (e) { return null; }
+  }
+
+  function _todayStr() {
+    return Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  }
+
+
+  // ── PRIVATE (grad): record shaping, eligibility, asserts ──
+
+  function _gradPublicRecord(r) {
+    return {
+      audience: 'grad',
+      petitionId: r.PetitionID,
+      studentEmail: r.StudentEmail,
+      studentName: _studentLabel(r.StudentEmail),
+      termCode: _recTerm(r),
+      quarter: r.Quarter, year: r.Year,
+      term: _termLabel(r),
+      course: r.Course,
+      units: r.Units,
+      sponsorEmail: r.SponsorEmail,
+      sponsorName: _facultyLabel(r.SponsorEmail),
+      studySite: r.StudySite || '',
+      subject: r.Subject || '',
+      workOutline: r.WorkOutline || '',
+      weeklyContactHours: r.WeeklyContactHours,
+      finalPaperRequired: _isTrueStr(r.FinalPaperRequired),
+      late: _isTrueStr(r.LateSubmission),
+      deadlineDate: _plainStr(r.DeadlineDate),
+      sponsorComments: r.SponsorComments || '',
+      sponsorDecidedAt: r.SponsorDecidedAt ? _fmtDate(r.SponsorDecidedAt) : '',
+      classNumber: r.ClassNumber, classSection: r.ClassSection,
+      advisorComments: r.AdvisorComments || '',
+      advisorName: r.AdvisorProcessedBy ? _facultyLabel(r.AdvisorProcessedBy) : '',
+      advisorProcessedAt: r.AdvisorProcessedAt ? _fmtDate(r.AdvisorProcessedAt) : '',
+      stage: r.Stage,
+      documentLink: r.DocumentLink || '',
+      outlineLink: r.OutlineLink || '',
+      outlineName: r.OutlineName || '',
+      roomAccessRequested: _isTrueStr(r.RoomAccessRequested),
+      roomAccessRoom: r.RoomAccessRoom || '',
+      roomAccessNote: r.RoomAccessNote || '',
+      returnNote: r.ReturnNote || '',
+      createdAt: r.CreatedAt ? _fmtDate(r.CreatedAt) : '',
+      _created: r.CreatedAt ? new Date(r.CreatedAt).getTime() : 0,
+    };
+  }
+
+  /** Eligible grad sponsors: active GRAD_SPONSOR_ROLE holders. */
+  function _eligibleGradSponsors() {
+    return Auth.listUsers()
+      .filter(u => u.active && (u.roles || []).indexOf(GRAD_SPONSOR_ROLE) !== -1)
+      .map(u => ({ email: u.email, name: u.nameLastFirst || u.name || u.email }))
+      .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  }
+
+  function _isEligibleGradSponsor(email) {
+    const key = _norm(email);
+    return _eligibleGradSponsors().some(s => _norm(s.email) === key);
+  }
+
+  /** Graduate advisor (staff_grad) emails, active holders. */
+  function _gradAdvisorEmails() {
+    return Auth.listUsers()
+      .filter(u => u.active && (u.roles || []).indexOf(GRAD_ADVISOR_ROLE) !== -1)
+      .map(u => u.email);
+  }
+
+  function _isGradAdvisor(roles) { return (roles || []).indexOf(GRAD_ADVISOR_ROLE) !== -1; }
+
+  function _assertGradAdvisor(roles) {
+    if (roles.includes('super_admin')) return;
+    if (!_isGradAdvisor(roles)) throw new Error('Only the graduate advisor can perform this action.');
+  }
+
+  /** Either advisor (undergrad or grad) or super_admin. Used by the
+   *  shared settings actions — both Settings tabs read/write the same
+   *  PetitionSettings store, each rendering only its own keys. */
+  function _assertAnyAdvisor(roles) {
+    if (roles.includes('super_admin')) return;
+    if (!_isAdvisor(roles) && !_isGradAdvisor(roles)) {
+      throw new Error('Only an advisor can perform this action.');
+    }
+  }
+
+  function _canViewGrad(rec, user, roles) {
+    if (roles.includes('super_admin')) return true;
+    if (_isGradAdvisor(roles)) return true;
+    const me = _norm(user);
+    return _norm(rec.StudentEmail) === me || _norm(rec.SponsorEmail) === me;
+  }
+
+  /** Row lookup in an arbitrary tab of the module spreadsheet. */
+  function _rowById(tab, petitionId) {
+    const id = String(petitionId || '').trim();
+    if (!id) return null;
+    const found = DataService.query(SHEET(), tab, 'PetitionID', id);
+    return found && found.length ? found[0] : null;
+  }
+
+
+  // ── PRIVATE (grad): routing (Tasks + Notify) ──
+
+  function _gradRouteToSponsor(petitionId, sponsorEmail, studentProfile, course, resubmitted, advisorNote, late, dl) {
+    Tasks.create({
+      module: MODULE, sourceType: GRAD_SOURCE_TYPE, sourceId: petitionId,
+      label: 'Graduate individual study awaiting sponsor review' + (late ? ' (late submission)' : ''),
+      assignedTo: sponsorEmail,
+    });
+    const studentName = studentProfile && (studentProfile.name || studentProfile.email) || 'A graduate student';
+    const lines = [
+      (resubmitted ? studentName + ' has revised and resubmitted' : studentName + ' has submitted') +
+        ' a graduate individual-studies petition for ' + course + '.',
+    ];
+    if (late) {
+      lines.push('', 'Note: this petition was submitted after the enrollment and fee payment deadline'
+        + (dl && dl.date ? ' (' + dl.date + ')' : '') + '.');
+    }
+    if (advisorNote) lines.push('', 'Advisor note: ' + advisorNote);
+    lines.push('', 'Review it in the portal: ' + _deepLink(petitionId));
+    Notify.send({
+      to: sponsorEmail,
+      subject: 'Graduate individual study awaiting your review',
+      body: lines.join('\n'),
+      replyTo: Settings.replyTo('individual_studies'),
+    });
+  }
+
+  function _gradRouteToAdvisor(petitionId, rec) {
+    Tasks.create({
+      module: MODULE, sourceType: GRAD_SOURCE_TYPE, sourceId: petitionId,
+      label: 'Graduate individual study awaiting class number'
+        + (_isTrueStr(rec.LateSubmission) ? ' (late submission)' : ''),
+      assignedRole: GRAD_ADVISOR_ROLE,
+    });
+    const to = Notify.resolveRecipients({ superAdmins: [], explicit: _gradAdvisorEmails() });
+    if (to.length) {
+      Notify.send({
+        to: to,
+        subject: 'Graduate individual study awaiting class number',
+        body: 'A ' + rec.Course + ' petition has been approved by its sponsor and is ready for a class number.'
+          + (_isTrueStr(rec.LateSubmission)
+              ? '\n\nNote: it was submitted after the enrollment and fee payment deadline'
+                + (String(rec.DeadlineDate || '').trim() ? ' (' + _plainStr(rec.DeadlineDate) + ')' : '') + '.'
+              : '')
+          + '\n\nProcess it in the portal: ' + _deepLink(petitionId),
+        replyTo: Settings.replyTo('individual_studies'),
+      });
+    }
+  }
+
+  function _gradRouteToStudent(petitionId, rec, note) {
+    Tasks.create({
+      module: MODULE, sourceType: GRAD_SOURCE_TYPE, sourceId: petitionId,
+      label: 'Your graduate individual study needs revisions',
+      assignedTo: rec.StudentEmail,
+    });
+    Notify.send({
+      to: rec.StudentEmail,
+      subject: 'Your graduate individual-studies petition was returned',
+      body: _fillNotifyTokens(_notifyTemplate('GRAD_NOTIFY_RETURNED'), rec) + '\n\n' +
+            'What to revise: ' + note + '\n\n' +
+            'Revise and resubmit in the portal: ' + _deepLink(petitionId),
+      replyTo: Settings.replyTo('individual_studies'),
+    });
+  }
+
+  function _gradNotifyComplete(rec, pdf) {
+    const link = (pdf && pdf.url) ? pdf.url : (rec.DocumentLink || '');
+    const lines = [
+      _fillNotifyTokens(_notifyTemplate('GRAD_NOTIFY_COMPLETE'), rec),
+      '',
+      'Class number: ' + (rec.ClassNumber || '(see portal)'),
+      'Enroll in this course in MyUCSC using the class number above.',
+    ];
+    if (String(rec.AdvisorComments || '').trim()) {
+      lines.push('', 'Note from the graduate advisor:', String(rec.AdvisorComments).trim());
+    }
+    if (link) lines.push('', 'Your completed petition (PDF): ' + link);
+    Notify.send({
+      to: rec.StudentEmail,
+      subject: 'Your graduate individual-studies petition is complete',
+      body: lines.join('\n'),
+      replyTo: Settings.replyTo('individual_studies'),
+    });
+  }
+
+
+  // ── PRIVATE (grad): outline document + PDF ──
+
+  /**
+   * Optional work-outline document (payload.outlineBase64/outlineName/
+   * outlineMimeType) — the grad twin of the undergrad syllabus: same
+   * Drive folder, replace-in-place, student granted viewer, best-effort.
+   */
+  function _maybeSaveOutline(petitionId, payload, user) {
+    const b64 = String((payload && payload.outlineBase64) || '').trim();
+    if (!b64) return;
+    try {
+      const rec = _rowById(GRAD_TAB(), petitionId);
+      if (!rec) return;
+      const folderId = (CONFIG.INDIVIDUAL_STUDIES && CONFIG.INDIVIDUAL_STUDIES.DRIVE_FOLDER_ID) || '';
+      if (!folderId) { Logger.log('IndividualStudiesModule: no supporting-document folder configured.'); return; }
+
+      const name = String(payload.outlineName || ('outline-' + petitionId + '.pdf')).trim();
+      const blob = Utilities.newBlob(Utilities.base64Decode(b64),
+        payload.outlineMimeType || 'application/pdf', name);
+
+      const existingId = String(rec.OutlineFileID || '').trim();
+      const folder = DriveApp.getFolderById(folderId);
+      let file = null;
+      if (existingId) { try { file = DriveApp.getFileById(existingId); } catch (e) { file = null; } }
+      const fresh = folder.createFile(blob);
+      if (file) { try { file.setTrashed(true); } catch (e) {} }
+      fresh.setName(name);
+      const fileId = fresh.getId();
+
+      DataService.update(SHEET(), GRAD_TAB(), 'PetitionID', petitionId, {
+        OutlineFileID: fileId,
+        OutlineLink: 'https://drive.google.com/file/d/' + fileId + '/view',
+        OutlineName: name,
+      });
+      _grantStudentViewer(fileId, rec.StudentEmail);
+    } catch (e) {
+      Logger.log('IndividualStudiesModule._maybeSaveOutline failed for ' + petitionId + ': ' + e);
+    }
+  }
+
+  function _generateGradPetitionPdf(rec, user) {
+    const student = Auth.getProfile(rec.StudentEmail) || {};
+    return ReportService.generate({
+      module: MODULE,
+      reportKey: 'grad_petition',
+      title: 'Graduate Individual Studies Petition — ' + (student.name || rec.StudentEmail),
+      sourceId: rec.PetitionID,
+      params: { petitionId: rec.PetitionID, term: _recTerm(rec), course: rec.Course },
+      html: _gradPetitionHtml(rec, student),
+      fileName: _gradBuildFileName(rec, student),
+      orientation: 'portrait',
+      letterhead: false,
+      footerText: '',
+    }, user);
+  }
+
+  /** Filename: <Year>-<Quarter>_<StudentID>-GIS-<CourseToken>_Last-First.pdf */
+  function _gradBuildFileName(rec, student) {
+    const courseToken = String(rec.Course || '').replace(/\s+/g, '');
+    const last = (student.lastName || '').trim() || 'Student';
+    const first = (student.firstName || '').trim() || '';
+    const who = first ? (last + '-' + first) : last;
+    return rec.Year + '-' + rec.Quarter + '_' + (student.studentId || 'NOID') +
+           '-GIS-' + courseToken + '_' + who + '.pdf';
+  }
+
+  /** Grad campus-form layout: student block, study block (subject /
+   *  outline / contact hours / final paper), sponsor and agency
+   *  approval blocks, with the late flag stated when set. Same simple
+   *  top-level-table constraints as the undergrad layout. */
+  function _gradPetitionHtml(rec, student) {
+    const navy = (CONFIG.BRAND && CONFIG.BRAND.NAVY) || '#003C6C';
+    const e = _esc;
+    const studentName = student.name || rec.StudentEmail;
+    const sponsorName = _facultyLabel(rec.SponsorEmail);
+    const advisorName = rec.AdvisorProcessedBy ? _facultyLabel(rec.AdvisorProcessedBy) : '';
+
+    const row = (label, value) =>
+      '<tr><td style="padding:3px 10px 3px 0;color:#555;white-space:nowrap;vertical-align:top;">' + e(label) +
+      '</td><td style="padding:3px 0;vertical-align:top;">' + (value || '&mdash;') + '</td></tr>';
+
+    const sig = (who, email, at) => {
+      if (!who && !email) return '&mdash;';
+      return e(who || email) + (email ? ' &lt;' + e(email) + '&gt;' : '') +
+             (at ? '<br><span style="color:#777;font-size:9pt;">Approved ' + e(_fmtDate(at)) + '</span>' : '');
+    };
+
+    return ''
+      + '<div style="font-family:Arial,Helvetica,sans-serif;color:#1a1a1a;font-size:10pt;line-height:1.4;">'
+      + '<div style="border-bottom:3px solid ' + navy + ';padding-bottom:8px;margin-bottom:12px;">'
+      +   '<div style="font-size:9pt;color:#555;">University of California, Santa Cruz · Department of Anthropology</div>'
+      +   '<div style="font-size:15pt;font-weight:bold;color:' + navy + ';">Petition for Graduate Individual Studies Course</div>'
+      + '</div>'
+
+      + '<table style="width:100%;border-collapse:collapse;margin-bottom:10px;">'
+      +   row('Name', e(studentName))
+      +   row('Student ID', e(student.studentId || ''))
+      +   row('Email', e(rec.StudentEmail))
+      +   row('Quarter / Year', e(rec.Quarter) + ' ' + e(rec.Year))
+      +   row('Course', e(rec.Course) + (rec.Units ? ' · ' + e(rec.Units) + ' units' : ''))
+      +   row('Faculty sponsor', e(sponsorName))
+      +   row('Study site', e(rec.StudySite))
+      +   (_isTrueStr(rec.LateSubmission)
+          ? row('Late submission', 'Yes — submitted after the enrollment/fee payment deadline'
+              + (String(rec.DeadlineDate || '').trim() ? ' (' + e(_plainStr(rec.DeadlineDate)) + ')' : ''))
+          : '')
+      + '</table>'
+
+      + _block('Subject of proposed study', e(rec.Subject))
+      + _block('Outline of work to be completed', e(rec.WorkOutline))
+      + (String(rec.OutlineLink || '').trim()
+          ? _block('Attached outline document', '<a href="' + e(rec.OutlineLink) + '">' +
+              e(rec.OutlineName || 'View outline') + '</a>')
+          : '')
+
+      + '<table style="width:100%;border-collapse:collapse;margin-bottom:10px;">'
+      +   row('Weekly contact hours with sponsor', e(rec.WeeklyContactHours))
+      +   row('Final paper required', _isTrueStr(rec.FinalPaperRequired) ? 'Yes' : 'No')
+      + '</table>'
+
+      + _approvalBlock('Student', sig(studentName, rec.StudentEmail, rec.CreatedAt))
+
+      + _approvalBlock('Instructor approval (faculty sponsor)',
+          '<table style="width:100%;border-collapse:collapse;">'
+          + row('Units', e(rec.Units))
+          + (rec.SponsorComments ? row('Comments', e(rec.SponsorComments)) : '')
+          + row('Signed', sig(sponsorName, rec.SponsorEmail, rec.SponsorDecidedAt))
+          + '</table>')
+
+      + _approvalBlock('Course sponsoring agency approval',
+          '<table style="width:100%;border-collapse:collapse;">'
+          + row('Class number', e(rec.ClassNumber))
+          + row('Course ID', e(rec.Course) + (rec.ClassSection ? ' · sec ' + e(rec.ClassSection) : ''))
+          + row('Signed', sig(advisorName, rec.AdvisorProcessedBy, rec.AdvisorProcessedAt))
+          + '</table>')
+
+      + '</div>';
   }
 
 
@@ -880,7 +1752,7 @@ const IndividualStudiesModule = (() => {
     room = String(room || '').trim();
     note = String(note || '').trim();
     try {
-      DataService.update(SHEET(), TAB(), 'PetitionID', rec.PetitionID, {
+      DataService.update(SHEET(), _isGradId(rec.PetitionID) ? GRAD_TAB() : TAB(), 'PetitionID', rec.PetitionID, {
         RoomAccessRequested: 'TRUE',
         RoomAccessRoom: room,
         RoomAccessNote: note,
@@ -968,7 +1840,7 @@ const IndividualStudiesModule = (() => {
   /** The effective template for a key: saved value, else the default. */
   function _notifyTemplate(key) {
     const v = String(_readSettings()[key] || '').trim();
-    return v || NOTIFY_DEFAULTS[key] || '';
+    return v || SETTINGS_DEFAULTS[key] || '';
   }
 
   /** Fills {FirstName} and {Course} from the petition + profile. */
@@ -983,7 +1855,7 @@ const IndividualStudiesModule = (() => {
   /** Key/value read with defaults — works even before the tab exists. */
   function _readSettings() {
     const out = {};
-    Object.keys(NOTIFY_DEFAULTS).forEach(k => { out[k] = NOTIFY_DEFAULTS[k]; });
+    Object.keys(SETTINGS_DEFAULTS).forEach(k => { out[k] = SETTINGS_DEFAULTS[k]; });
     try {
       DataService.getAll(SHEET(), SETTINGS_TAB()).forEach(r => {
         const k = String(r.Key || '').trim();
@@ -1002,18 +1874,20 @@ const IndividualStudiesModule = (() => {
     }
   }
 
-  /** Settings for the advisor's Settings tab. Advisor or super_admin. */
+  /** Settings for either Settings tab (undergrad or grad advisor). The
+   *  two tabs read/write the same PetitionSettings store; each renders
+   *  only its own keys. Either advisor role, or super_admin. */
   function getSettings(payload, user, roles) {
-    _assertAdvisor(roles);
+    _assertAnyAdvisor(roles);
     return _readSettings();
   }
 
-  /** Saves the notification templates. Only known keys are written; a key
-   *  absent from the payload is left untouched. Advisor or super_admin. */
+  /** Saves settings. Only known keys are written; a key absent from the
+   *  payload is left untouched. Either advisor role, or super_admin. */
   function saveSettings(payload, user, roles) {
-    _assertAdvisor(roles);
+    _assertAnyAdvisor(roles);
     payload = payload || {};
-    Object.keys(NOTIFY_DEFAULTS).forEach(key => {
+    Object.keys(SETTINGS_DEFAULTS).forEach(key => {
       if (payload[key] === undefined) return;
       _writeSetting(key, String(payload[key]));
     });
@@ -1284,7 +2158,7 @@ const IndividualStudiesModule = (() => {
 
       + '<table style="width:100%;border-collapse:collapse;margin-bottom:10px;">'
       +   row('Written report required', _isTrueStr(rec.ReportRequired) ? 'Yes' : 'No')
-      +   (_isTrueStr(rec.ReportRequired) && rec.ReportDueDate ? row('Report due', e(rec.ReportDueDate)) : '')
+      +   (_isTrueStr(rec.ReportRequired) && rec.ReportDueDate ? row('Report due', e(_plainStr(rec.ReportDueDate))) : '')
       +   row('Hours per week — with faculty sponsor', e(rec.HoursWithSponsor))
       +   row('Hours per week — independently', e(rec.HoursIndependent))
       + '</table>'
@@ -1438,7 +2312,10 @@ const IndividualStudiesModule = (() => {
       evidenceOfPreparation: r.EvidenceOfPreparation,
       workToBeSubmitted: r.WorkToBeSubmitted,
       reportRequired: _isTrueStr(r.ReportRequired),
-      reportDueDate: r.ReportDueDate,
+      // Free-text cell Sheets may have coerced to a Date — shape it (the
+      // importHistory serialization landmine, applied per the module-header
+      // SERIALIZATION RULE).
+      reportDueDate: _plainStr(r.ReportDueDate),
       hoursWithSponsor: r.HoursWithSponsor,
       hoursIndependent: r.HoursIndependent,
       college: r.College, majorStatus: r.MajorStatus, classLevel: r.ClassLevel,
@@ -1647,6 +2524,18 @@ const IndividualStudiesModule = (() => {
     return Utilities.formatDate(d, Session.getScriptTimeZone(), 'MMM d, yyyy');
   }
 
+  /**
+   * Shape any sheet cell value for a client return: Dates are formatted,
+   * everything else stringified. Guards free-text columns Sheets may have
+   * coerced to Dates (e.g. a typed report due date) — the same silent
+   * google.script.run serialization failure fixed in
+   * ClassSchedule.importHistory. Use on any raw cell an action returns.
+   */
+  function _plainStr(v) {
+    if (v instanceof Date) return _fmtDate(v);
+    return v == null ? '' : String(v);
+  }
+
   function _esc(s) {
     return String(s == null ? '' : s)
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -1664,9 +2553,16 @@ const IndividualStudiesModule = (() => {
     'EvidenceOfPreparation', 'GradeOption', 'HoursWithSponsor',
     'ReportRequired', 'ReportDueText', 'RoomAccessRoom'];
 
+  /** A template's audience: 'grad' when the Audience column says so,
+   *  else 'undergrad' (the default, covering pre-column rows). */
+  function _templateAudience(r) {
+    return String(r.Audience || '').trim().toLowerCase() === 'grad' ? 'grad' : 'undergrad';
+  }
+
   function _templateRecord(r) {
     return {
       templateId: r.TemplateID,
+      audience: _templateAudience(r),
       sponsorEmail: r.SponsorEmail,
       sponsorName: _facultyLabel(r.SponsorEmail) || r.SponsorEmail,
       name: r.Name || '(untitled)',
@@ -1679,7 +2575,8 @@ const IndividualStudiesModule = (() => {
       gradeOption: r.GradeOption || '',
       hoursWithSponsor: r.HoursWithSponsor || '',
       reportRequired: _isTrueStr(r.ReportRequired),
-      reportDueText: r.ReportDueText || '',
+      // Free-text cell Sheets may coerce to a Date (see SERIALIZATION RULE).
+      reportDueText: _plainStr(r.ReportDueText),
       roomAccessRoom: r.RoomAccessRoom || '',
       active: _isTrueStr(r.Active),
     };
@@ -1710,7 +2607,7 @@ const IndividualStudiesModule = (() => {
       const filter = _norm((payload || {}).sponsorEmail);
       rows = filter ? all.filter(r => _norm(r.SponsorEmail) === filter) : all;
     } else {
-      if (roles.indexOf(SPONSOR_ROLE) === -1) {
+      if (roles.indexOf(SPONSOR_ROLE) === -1 && roles.indexOf(GRAD_SPONSOR_ROLE) === -1) {
         throw new Error('Only a faculty sponsor can manage templates.');
       }
       rows = all.filter(r => _norm(r.SponsorEmail) === _norm(user));
@@ -1728,8 +2625,13 @@ const IndividualStudiesModule = (() => {
   function templatesForSponsor(payload, user, roles) {
     const sponsor = _norm((payload || {}).sponsorEmail);
     if (!sponsor) return [];
+    // Audience filter (Templates.Audience column): the grad form asks
+    // for 'grad'; the undergrad form's default is 'undergrad', which
+    // also covers rows written before the column existed.
+    const audience = String((payload || {}).audience || '').trim().toLowerCase() === 'grad' ? 'grad' : 'undergrad';
     return DataService.getAll(SHEET(), TPL_TAB())
-      .filter(r => _norm(r.SponsorEmail) === sponsor && _isTrueStr(r.Active))
+      .filter(r => _norm(r.SponsorEmail) === sponsor && _isTrueStr(r.Active)
+                && _templateAudience(r) === audience)
       .map(_templateRecord)
       .sort((a, b) => (b.isDefault ? 1 : 0) - (a.isDefault ? 1 : 0)
         || String(a.name).localeCompare(String(b.name)));
@@ -1743,15 +2645,15 @@ const IndividualStudiesModule = (() => {
   function saveTemplate(payload, user, roles) {
     payload = payload || {};
     const isSuper = roles.indexOf('super_admin') !== -1;
-    const isSponsor = roles.indexOf(SPONSOR_ROLE) !== -1;
+    const isSponsor = roles.indexOf(SPONSOR_ROLE) !== -1 || roles.indexOf(GRAD_SPONSOR_ROLE) !== -1;
     if (!isSuper && !isSponsor) throw new Error('Only a faculty sponsor can save templates.');
 
     // Determine the owner. Sponsors always own their own; super_admin may
-    // assign to a chosen instructor (must be an eligible sponsor).
+    // assign to a chosen instructor (must be eligible in either pool).
     let owner;
     if (isSuper && payload.sponsorEmail) {
       owner = String(payload.sponsorEmail).trim();
-      if (!_isEligibleSponsor(owner)) {
+      if (!_isEligibleSponsor(owner) && !_isEligibleGradSponsor(owner)) {
         throw new Error('That person is not an eligible individual-studies sponsor.');
       }
     } else {
@@ -1784,9 +2686,14 @@ const IndividualStudiesModule = (() => {
       _assertTemplateOwner(existing, user, roles);
       // Keep the original owner unless super_admin explicitly reassigns.
       if (!(isSuper && payload.sponsorEmail)) fields.SponsorEmail = existing.SponsorEmail;
+      // Audience: change only when explicitly supplied; else preserved.
+      if (payload.audience !== undefined) {
+        fields.Audience = String(payload.audience).trim().toLowerCase() === 'grad' ? 'grad' : 'undergrad';
+      }
       DataService.update(SHEET(), TPL_TAB(), 'TemplateID', existing.TemplateID, fields);
       templateId = existing.TemplateID;
     } else {
+      fields.Audience = String(payload.audience || '').trim().toLowerCase() === 'grad' ? 'grad' : 'undergrad';
       templateId = DataService.generateId('TPL');
       DataService.insert(SHEET(), TPL_TAB(), Object.assign({ TemplateID: templateId, IsDefault: '' }, fields));
     }
@@ -1804,7 +2711,9 @@ const IndividualStudiesModule = (() => {
    */
   function saveAsTemplate(payload, user, roles) {
     payload = payload || {};
-    const rec = _byId(String(payload.petitionId || '').trim());
+    const satId = String(payload.petitionId || '').trim();
+    const grad = _isGradId(satId);
+    const rec = _rowById(grad ? GRAD_TAB() : TAB(), satId);
     if (!rec) throw new Error('Petition not found.');
     if (roles.indexOf('super_admin') === -1 && _norm(rec.SponsorEmail) !== _norm(user)) {
       throw new Error('Only the petition\'s sponsor can save it as a template.');
@@ -1813,11 +2722,36 @@ const IndividualStudiesModule = (() => {
     if (!name) throw new Error('Give the template a name.');
 
     const templateId = DataService.generateId('TPL');
-    DataService.insert(SHEET(), TPL_TAB(), {
+    // Grad petitions reuse the generic template columns under a
+    // documented mapping (Audience='grad' switches the interpretation):
+    //   Title            <- Subject
+    //   WorkToBeSubmitted<- WorkOutline
+    //   HoursWithSponsor <- WeeklyContactHours
+    //   ReportRequired   <- FinalPaperRequired
+    //   RoomAccessRoom   <- StudySite (the lab-study convention)
+    DataService.insert(SHEET(), TPL_TAB(), grad ? {
       TemplateID: templateId,
       SponsorEmail: rec.SponsorEmail,
       Name: name,
       IsDefault: '',
+      Audience: 'grad',
+      Course: rec.Course || '',
+      Title: rec.Subject || '',
+      CourseDescription: '',
+      WorkToBeSubmitted: rec.WorkOutline || '',
+      EvidenceOfPreparation: '',
+      GradeOption: '',
+      HoursWithSponsor: rec.WeeklyContactHours || '',
+      ReportRequired: _boolStr(_isTrueStr(rec.FinalPaperRequired)),
+      ReportDueText: '',
+      RoomAccessRoom: rec.RoomAccessRoom || rec.StudySite || '',
+      Active: 'TRUE',
+    } : {
+      TemplateID: templateId,
+      SponsorEmail: rec.SponsorEmail,
+      Name: name,
+      IsDefault: '',
+      Audience: 'undergrad',
       Course: rec.Course || '',
       Title: rec.Title || '',
       CourseDescription: rec.CourseDescription || '',
@@ -1826,7 +2760,7 @@ const IndividualStudiesModule = (() => {
       GradeOption: rec.GradeOption || '',
       HoursWithSponsor: rec.HoursWithSponsor || '',
       ReportRequired: _boolStr(_isTrueStr(rec.ReportRequired)),
-      ReportDueText: rec.ReportDueDate || '',
+      ReportDueText: _plainStr(rec.ReportDueDate),
       RoomAccessRoom: rec.RoomAccessRoom || '',
       Active: 'TRUE',
     });
@@ -1875,8 +2809,11 @@ const IndividualStudiesModule = (() => {
     sponsorQueue, sponsored, sponsorApprove, sponsorReturn, requestRoomAccess,
     // advisor
     advisorQueue, allPetitions, remindResponsible, advisorContext, advisorComplete, advisorReturn,
-    // import (advisor admin)
-    importPreview, importResolve, importCommit, importHistory,
+    // import + export (advisor admin)
+    importPreview, importResolve, importCommit, importHistory, scheduleTerms, exportTerm,
+    // graduate audience (shared actions above branch on the GIS prefix)
+    gradFormData, gradSubmit, gradMine, gradSponsorQueue, gradSponsored,
+    gradAdvisorQueue, gradAllPetitions, gradAdvisorContext, gradAdvisorComplete, gradDeadlines,
     // settings (advisor)
     getSettings, saveSettings,
     // templates (sponsor-owned)
