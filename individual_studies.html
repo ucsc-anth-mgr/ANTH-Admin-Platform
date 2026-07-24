@@ -54,7 +54,7 @@
       <i class="ti ti-clipboard-check"></i> Advisor Queue
     </button>
     <button class="module-tab" data-tab="settings" onclick="IndividualStudiesUI.switchTab('settings')">
-      <i class="ti ti-settings"></i> Settings
+      <i class="ti ti-settings"></i> Undergrad Settings
     </button>
     <button class="module-tab" data-tab="schedule" onclick="IndividualStudiesUI.switchTab('schedule')">
       <i class="ti ti-table-import"></i> Class Schedule
@@ -394,7 +394,7 @@
   <div id="is-tab-settings" class="tab-panel" style="display:none;">
     <div class="card" style="margin-top:20px;">
       <div class="card-title" style="justify-content:space-between;">
-        <span><i class="ti ti-list-search"></i> All petitions</span>
+        <span><i class="ti ti-list-search"></i> All undergraduate petitions</span>
         <button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.loadAll()" aria-label="Refresh"><i class="ti ti-refresh"></i></button>
       </div>
       <div class="form-row" style="align-items:flex-end;">
@@ -650,6 +650,9 @@
       <button class="btn btn-primary" onclick="IndividualStudiesUI.saveGradSettings()"><i class="ti ti-device-floppy"></i> Save grad settings</button>
       <span id="is-g-set-status" style="margin-left:10px;"></span>
     </div>
+
+    <!-- ── Direct link to the graduate petition form ── -->
+    <div id="is-gdeeplink-card"></div>
   </div>
 
   <!-- Detail / action modal -->
@@ -784,7 +787,7 @@ window.IndividualStudiesUI = (() => {
     } else if (_isAdvisor) {
       switchTab('advisor');
     } else if (_isGradStudent) {
-      switchTab('gmine');
+      switchTab(target === 'gform' ? 'gnew' : 'gmine');
     } else if (_isGradSponsor) {
       switchTab('greview');
     } else if (_isGradStaff) {
@@ -793,7 +796,7 @@ window.IndividualStudiesUI = (() => {
       switchTab('advisor');
     }
 
-    if (target && target !== 'form') {
+    if (target && target !== 'form' && target !== 'gform') {
       _busy('Loading petition…');
       App.call('individual_studies', 'get', { petitionId: target }, function (rec) {
         _idle();
@@ -826,7 +829,7 @@ window.IndividualStudiesUI = (() => {
     if (tab === 'greview')    loadGradReview();
     if (tab === 'gsponsored') loadGradSponsored();
     if (tab === 'gadvisor')   loadGradAdvisor();
-    if (tab === 'gsettings')  { loadGradAll(); loadGradSettings(); loadGradDeadlines(); }
+    if (tab === 'gsettings')  { loadGradAll(); loadGradSettings(); loadGradDeadlines(); _renderGradDeepLinkCard(); }
   }
 
   // ── Form bootstrap ────────────────────────────────
@@ -1277,9 +1280,28 @@ window.IndividualStudiesUI = (() => {
     if (!el) return;
     el.innerHTML = App.deepLinkCard('individual_studies', {
       roles: ['undergraduate_student', 'undergraduate_non_major'],
-      title: 'Student petition link',
-      note: 'Send students straight to the New Petition form.'
+      title: 'Undergraduate student petition link',
+      note: 'Send undergraduate students straight to the New Petition form.'
     });
+  }
+
+  // Grad twin of the deep-link card (Grad Settings). The 'gform' token is
+  // handled in init: graduate students land on the New Grad Petition form.
+  function _renderGradDeepLinkCard() {
+    const el = document.getElementById('is-gdeeplink-card');
+    if (!el) return;
+    // The shell keys the copy field's id on the module key alone; with two
+    // cards for the same module (undergrad + grad Settings, both in the DOM
+    // for super_admin) the ids would collide and Copy would grab the wrong
+    // link. Re-key this card's id (URL itself is untouched).
+    el.innerHTML = App.deepLinkCard('individual_studies', {
+      focus: 'gform',
+      roles: ['graduate_student'],
+      title: 'Graduate student petition link',
+      note: 'Send graduate students straight to the New Grad Petition form.'
+    })
+      .replace('id="dl-individual_studies"', 'id="dl-individual_studies_gform"')
+      .replace("copyDeepLink('individual_studies')", "copyDeepLink('individual_studies_gform')");
   }
 
   function loadAll() {
@@ -1348,7 +1370,14 @@ window.IndividualStudiesUI = (() => {
       return 0;
     });
 
-    if (!sorted.length) { el.innerHTML = '<div class="empty-state">No petitions match.</div>'; return; }
+    if (!sorted.length) {
+      el.innerHTML = '<div class="empty-state">No petitions match.'
+        + (elId === 'is-all-list'
+            ? ' This list shows undergraduate petitions only — graduate petitions are under Grad Settings.'
+            : '')
+        + '</div>';
+      return;
+    }
 
     function arrow(key) { return sort.key === key ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : ''; }
     function th(key, label) {

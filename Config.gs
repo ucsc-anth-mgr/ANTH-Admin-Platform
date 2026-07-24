@@ -49,6 +49,10 @@ const CONFIG = {
     // (per-module storage tier). Tab: Petitions. Blank until setUp()
     // creates it and logs the id to paste back here.
     INDIVIDUAL_STUDIES: '1YXEdMiRUhFILSKDSg-Y_IwETsNy7k3B3o03lgAz84Fo',
+    // Graduate Individual Studies module — its OWN spreadsheet
+    // (per-module storage tier). Tab: Petitions. Blank until setUp()
+    // creates it and logs the id to paste back here.
+    GRAD_INDIVIDUAL_STUDIES: '',
     // Academic Personnel module — its OWN spreadsheet (per-module storage
     // tier). Tabs: PersonAttributes (person-attribute extension table),
     // Cases (review cases from the Call), ReviewHistory (the APO action
@@ -116,6 +120,9 @@ const CONFIG = {
     INDIVIDUAL_STUDIES:     'Petitions',
     // Sponsor-owned petition templates (same spreadsheet as Petitions)
     INDIVIDUAL_STUDIES_TEMPLATES: 'Templates',
+    // Graduate Individual Studies module tab (lives in
+    // SHEETS.GRAD_INDIVIDUAL_STUDIES)
+    GRAD_INDIVIDUAL_STUDIES: 'Petitions',
     // Academic Personnel module tabs (live in SHEETS.PERSONNEL)
     PERSON_ATTRIBUTES: 'PersonAttributes',
     CASES:             'Cases',
@@ -242,6 +249,25 @@ const CONFIG = {
   // but works without it.
   INDIVIDUAL_STUDIES: {
     DRIVE_FOLDER_ID: '1goPXXH3b0v4k4Pn_qyonPJHZW67jOfLn',
+  },
+
+  // ── Graduate Individual Studies module ─────────────────────
+  // The archived petition is NOT composed from HTML — it is the official
+  // campus AcroForm, filled field-by-field (via PdfFill/pdf-lib) at the
+  // terminal workflow transition, then flattened and archived through
+  // ReportService (which files it under <ARCHIVE_FOLDER>/<module>/ and
+  // indexes it in the Reports tab, same as every generated report).
+  GRAD_INDIVIDUAL_STUDIES: {
+    // Drive file id of the BLANK fillable petition template
+    // ("GISP_form.pdf" — 16 named AcroForm fields: ClassNumber, Course,
+    // StudentName, Quarter, Year, StudentEmail, StudySite, Subject,
+    // StudyOutline, WeeklyContactHours, FinalPaperRequired,
+    // StudentSignature, StudentSignDate, SponsorName, SponsorSignature,
+    // SponsorSignDate). Set-once infrastructure pointer, like the other
+    // Drive ids here — NOT a UI-managed setting. If campus revises the
+    // form, regenerate the AcroForm with the SAME field names and swap
+    // this id; no code change.
+    TEMPLATE_FILE_ID: '10ahVmEgKwXa8rKJwu_PsVWGt-EDvu7kS',
   },
 
   // ── Academic Personnel module ──────────────────────────────

@@ -100,7 +100,7 @@ const IndividualStudiesModule = (() => {
     { key: 'advisor', label: 'Advisor Queue', icon: 'ti-clipboard-check',
       roles: ['staff_undergrad'], floor: 'staff_undergrad',
       actions: ['advisorQueue', 'advisorContext', 'advisorComplete', 'advisorReturn'] },
-    { key: 'settings', label: 'Settings', icon: 'ti-settings',
+    { key: 'settings', label: 'Undergrad Settings', icon: 'ti-settings',
       roles: ['staff_undergrad'], floor: 'staff_undergrad',
       actions: ['allPetitions', 'remindResponsible', 'getSettings', 'saveSettings', 'deletePetition'] },
     { key: 'schedule', label: 'Class Schedule', icon: 'ti-table-import',
