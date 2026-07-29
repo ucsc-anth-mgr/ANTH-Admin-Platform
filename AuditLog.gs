@@ -4,10 +4,53 @@
 
 const AuditLog = (() => {
 
+  // ── Payload redaction ──────────────────────────────────────
+  // The payload is truncated to 500 chars, but 500 chars is still room
+  // for an ID, an email, and the opening of a file blob. These two
+  // patterns are matched against KEY NAMES (case-insensitive) and are
+  // meant to be tuned — widen them as modules add fields.
+  const REDACT_KEY = /(base64|blob|content|csv|password|token|secret|syllabus)/i;
+  const MASK_KEY   = /(studentid|employeeid|idnumber)/i;
+  const MAX_STRING = 200;   // per-value cap, before the 500-char total cap
+
+  /** Shows only the last 3 characters of an identifier. */
+  function _mask(v) {
+    const s = String(v == null ? '' : v);
+    return s.length < 3 ? '***' : '***' + s.slice(-3);
+  }
+
+  /**
+   * Stringifies a payload with sensitive values redacted or masked and
+   * long strings clipped. Never throws — an audit entry with a degraded
+   * payload beats no audit entry.
+   */
+  function _safePayload(payload) {
+    try {
+      const seen = [];
+      const json = JSON.stringify(payload, function (key, value) {
+        if (key && REDACT_KEY.test(key)) return '[redacted]';
+        if (key && MASK_KEY.test(key))   return _mask(value);
+        if (typeof value === 'string' && value.length > MAX_STRING) {
+          return value.substring(0, MAX_STRING) + '…[+' + (value.length - MAX_STRING) + ']';
+        }
+        if (value && typeof value === 'object') {
+          if (seen.indexOf(value) !== -1) return '[circular]';
+          seen.push(value);
+        }
+        return value;
+      });
+      return String(json).substring(0, 500);
+    } catch (err) {
+      return '[unserializable payload]';
+    }
+  }
+
+
   /**
    * Writes an audit entry to the AuditLog sheet tab.
    *
    * @param {Object} entry - { user, module, action, payload, status, notes }
+   *   status is one of 'success' | 'denied' | 'error' (see dispatch()).
    */
   function write(entry) {
     try {
@@ -26,7 +69,7 @@ const AuditLog = (() => {
         entry.user    || '',
         entry.module  || '',
         entry.action  || '',
-        entry.payload ? JSON.stringify(entry.payload).substring(0, 500) : '',
+        entry.payload ? _safePayload(entry.payload) : '',
         entry.status  || '',
         entry.notes   || '',
       ]);

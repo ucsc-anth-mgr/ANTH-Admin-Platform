@@ -1,6 +1,6 @@
 <script>
 // ============================================================
-// _Scripts.html — Client-side App framework (v2.1)
+// _Scripts.html — Client-side App framework (v2.2)
 //
 // v2.1: Navigation state now lives in the PARENT (address-bar) URL via
 // google.script.history / google.script.url. Apps Script web apps run in
@@ -11,7 +11,134 @@
 // consumes any ?page=&focus= deep-link parameters after first use, so a
 // deep link opens focused exactly once instead of replaying on every
 // refresh.
+//
+// v2.2: Accessibility + output-encoding pass.
+//   - New A11y service: live-region announcements, a reusable modal focus
+//     trap, and main-content focus management on navigation.
+//   - Toast now ESCAPES its message (it receives server error text, which
+//     is built from user data — it was an XSS sink).
+//   - FormHelper wires aria-invalid / aria-describedby, focuses the first
+//     bad field, and announces failures.
+//   - _esc() now escapes single quotes (its output lands inside
+//     onclick="...('…')" attributes).
 // ============================================================
+
+
+// ============================================================
+// A11y — shared accessibility services
+// ============================================================
+// Depends on two live regions and a focusable main container declared in
+// Index.html (#a11y-status, #a11y-alert, #module-container[tabindex="-1"]).
+const A11y = (() => {
+
+  // Elements that can receive keyboard focus, for the modal trap.
+  const FOCUSABLE = [
+    'a[href]', 'area[href]',
+    'input:not([disabled]):not([type="hidden"])',
+    'select:not([disabled])', 'textarea:not([disabled])',
+    'button:not([disabled])', 'iframe', 'object', 'embed',
+    '[tabindex]:not([tabindex="-1"])', '[contenteditable="true"]',
+  ].join(',');
+
+  let _trap = null;   // { container, previous, onKeydown }
+
+  /**
+   * Announces a message to screen readers without moving focus.
+   * assertive=true interrupts (use for errors); default is polite.
+   * The clear-then-set dance is required: setting identical text to a
+   * live region twice in a row is not re-announced.
+   */
+  function announce(msg, assertive) {
+    const el = document.getElementById(assertive ? 'a11y-alert' : 'a11y-status');
+    if (!el) return;
+    el.textContent = '';
+    setTimeout(function () { el.textContent = String(msg == null ? '' : msg); }, 50);
+  }
+
+  /** Visible, focusable descendants of a container, in DOM order. */
+  function focusables(container) {
+    return Array.prototype.slice.call(container.querySelectorAll(FOCUSABLE))
+      .filter(function (el) {
+        return el.offsetWidth > 0 || el.offsetHeight > 0 || el === document.activeElement;
+      });
+  }
+
+  /**
+   * Traps Tab within `container` and moves focus into it.
+   *
+   * opts.initialFocus   — element to focus first (default: first focusable)
+   * opts.returnFocusTo  — element to restore on release (default: whatever
+   *                       had focus when trap() was called)
+   *
+   * NOTE for module authors: if your module already keeps its own
+   * `_lastFocus` and restores it in closeModal(), REMOVE that when you
+   * adopt this — release() restores focus itself, and doing both makes
+   * focus jump twice.
+   */
+  function trap(container, opts) {
+    if (!container) return;
+    release();
+    opts = opts || {};
+    const previous = opts.returnFocusTo || document.activeElement;
+
+    function onKeydown(e) {
+      if (e.key !== 'Tab') return;
+      const list = focusables(container);
+      if (!list.length) { e.preventDefault(); container.focus(); return; }
+      const first = list[0];
+      const last  = list[list.length - 1];
+      const inside = container.contains(document.activeElement);
+      if (e.shiftKey && (document.activeElement === first || !inside)) {
+        e.preventDefault(); last.focus();
+      } else if (!e.shiftKey && (document.activeElement === last || !inside)) {
+        e.preventDefault(); first.focus();
+      }
+    }
+
+    // Capture phase, so the trap sees Tab before anything else can stop it.
+    document.addEventListener('keydown', onKeydown, true);
+    _trap = { container: container, previous: previous, onKeydown: onKeydown };
+
+    if (!container.hasAttribute('tabindex')) container.setAttribute('tabindex', '-1');
+    const list = focusables(container);
+    const target = opts.initialFocus || list[0] || container;
+    // Deferred: the dialog is often display:none at call time, and a
+    // hidden element cannot take focus.
+    setTimeout(function () { try { target.focus(); } catch (e) {} }, 0);
+  }
+
+  /** Releases the current trap and restores focus to the opener. */
+  function release() {
+    if (!_trap) return;
+    document.removeEventListener('keydown', _trap.onKeydown, true);
+    const prev = _trap.previous;
+    _trap = null;
+    if (prev && document.contains(prev) && typeof prev.focus === 'function') {
+      try { prev.focus(); } catch (e) {}
+    }
+  }
+
+  /** True when a trap is currently active (useful for Escape handlers). */
+  function trapped() { return !!_trap; }
+
+  /**
+   * Moves focus to the main content region. Called after every navigation:
+   * in a single-page shell, swapping the container's innerHTML leaves focus
+   * orphaned on the nav link, so keyboard and screen-reader users have no
+   * idea the page changed.
+   */
+  function focusMain() {
+    const el = document.getElementById('module-container');
+    if (!el) return;
+    if (!el.hasAttribute('tabindex')) el.setAttribute('tabindex', '-1');
+    try { el.focus({ preventScroll: true }); } catch (e) { try { el.focus(); } catch (e2) {} }
+  }
+
+  return { announce: announce, trap: trap, release: release, trapped: trapped,
+           focusMain: focusMain, focusables: focusables, FOCUSABLE: FOCUSABLE };
+
+})();
+
 
 const App = (() => {
 
@@ -23,6 +150,10 @@ const App = (() => {
   // explicit restore hash (even #dashboard) — the hash outranks the
   // lingering params at routing time, making them harmless.
   let _hadPageParam = false;
+
+  // The document title as first rendered, used as the suffix when a module
+  // updates it (e.g. "Thesis · Anthropology Portal").
+  const _baseTitle = document.title;
 
   function init(state) {
     Object.assign(_state, state);
@@ -70,26 +201,31 @@ const App = (() => {
     _state.activePage = 'dashboard';
     _setHash('dashboard');   // dashboard is the default → clears hash + params
     window.__focus = null;   // clear any stale deep-link focus
+    A11y.release();          // drop any modal trap left by the outgoing module
     const greeting = _state.userName ? `Welcome, ${_esc(_state.userName)}` : 'Welcome';
     document.getElementById('module-container').innerHTML = `
       <div class="dashboard">
         <div class="card welcome-card">
-          <h1 class="welcome-title">${greeting}</h1>
+          <h1 class="welcome-title" id="module-heading" tabindex="-1">${greeting}</h1>
           <p class="text-muted" style="margin-bottom:0;">Here's what needs your attention.</p>
         </div>
         <div class="card" id="tasks-card">
           <div class="card-title" style="justify-content:space-between;">
             <span style="display:flex;align-items:center;gap:8px;">
-              <i class="ti ti-checklist"></i> Needs your attention
+              <i class="ti ti-checklist" aria-hidden="true"></i> Needs your attention
             </span>
-            <button class="btn btn-secondary btn-sm" onclick="App.refreshTasks()" title="Refresh">
-              <i class="ti ti-refresh"></i>
+            <button class="btn btn-secondary btn-sm" onclick="App.refreshTasks()"
+                    title="Refresh" aria-label="Refresh tasks">
+              <i class="ti ti-refresh" aria-hidden="true"></i>
             </button>
           </div>
           <div id="tasks-list"></div>
         </div>
       </div>`;
     _renderTasks();
+    _setTitle('Dashboard');
+    A11y.focusMain();
+    A11y.announce('Dashboard loaded.');
   }
 
   function _renderTasks() {
@@ -98,7 +234,7 @@ const App = (() => {
     const tasks = _state.tasks || [];
     if (!tasks.length) {
       el.innerHTML = `<div class="empty-state" style="padding:28px;">
-        <i class="ti ti-circle-check" style="font-size:28px;color:var(--color-success);"></i>
+        <i class="ti ti-circle-check" style="font-size:28px;color:var(--color-success);" aria-hidden="true"></i>
         <p style="margin-top:8px;">You're all caught up — no tasks right now.</p>
       </div>`;
       return;
@@ -109,17 +245,29 @@ const App = (() => {
   function _taskRow(t) {
     const u = _urgencyMeta(t.urgency);
     const when = _taskTiming(t);
+    const label = _esc(t.label || '(untitled task)');
     // Deep-link payload is passed by id lookup at click time (avoids quoting issues).
+    // Space activates as well as Enter, per the button role's contract;
+    // keydown (not the deprecated keypress) so Space is actually delivered.
     return `<li class="task-item urgency-${_esc(t.urgency || 'normal')}"
                 onclick="App.openTask('${_esc(t.taskId)}')" role="button" tabindex="0"
-                onkeypress="if(event.key==='Enter'){App.openTask('${_esc(t.taskId)}')}">
-      <span class="task-badge badge-${u.cls}" title="${u.label}">
-        <i class="ti ${u.icon}"></i> ${u.label}
+                aria-label="${u.label}: ${label}"
+                onkeydown="App.taskKey(event, '${_esc(t.taskId)}')">
+      <span class="task-badge badge-${u.cls}">
+        <i class="ti ${u.icon}" aria-hidden="true"></i> ${u.label}
       </span>
-      <span class="task-label">${_esc(t.label || '(untitled task)')}</span>
+      <span class="task-label">${label}</span>
       <span class="task-when text-muted">${_esc(when)}</span>
       <i class="ti ti-chevron-right task-chev" aria-hidden="true"></i>
     </li>`;
+  }
+
+  /** Keyboard activation for task rows (Enter / Space). */
+  function taskKey(ev, taskId) {
+    if (ev.key === 'Enter' || ev.key === ' ' || ev.key === 'Spacebar') {
+      ev.preventDefault();
+      openTask(taskId);
+    }
   }
 
   function _urgencyMeta(urgency) {
@@ -163,7 +311,13 @@ const App = (() => {
   // Refresh tasks in place (no full reload), via the shell-level endpoint.
   function refreshTasks() {
     google.script.run
-      .withSuccessHandler(tasks => { _state.tasks = tasks || []; _renderTasks(); })
+      .withSuccessHandler(tasks => {
+        _state.tasks = tasks || [];
+        _renderTasks();
+        A11y.announce(_state.tasks.length
+          ? _state.tasks.length + ' task' + (_state.tasks.length === 1 ? '' : 's') + ' needing attention.'
+          : 'No tasks right now.');
+      })
       .withFailureHandler(() => Toast.show('Could not refresh tasks.', 'error'))
       .getMyTasks();
   }
@@ -177,8 +331,10 @@ const App = (() => {
   // to know what any module does with it — that's the loose-coupling seam.
   function loadModule(moduleKey, focus) {
     _setActiveNav(moduleKey);
+    A11y.release();   // drop any modal trap left by the outgoing module
     const container = document.getElementById('module-container');
-    container.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
+    container.innerHTML = '<div class="module-loading" role="status" aria-live="polite">' +
+      '<div class="spinner" aria-hidden="true"></div><span>Loading…</span></div>';
 
     google.script.run
       .withSuccessHandler(html => {
@@ -194,16 +350,21 @@ const App = (() => {
           document.head.appendChild(fresh).remove();
         });
         if (window.innerWidth <= 720) document.getElementById('sidebar').classList.add('collapsed');
+        const label = _moduleLabel(moduleKey);
+        _setTitle(label);
+        A11y.focusMain();
+        A11y.announce(label + ' loaded.');
       })
       .withFailureHandler(err => {
         container.innerHTML = `
           <div class="card">
             <div style="color:var(--color-danger);display:flex;align-items:center;gap:8px;">
-              <i class="ti ti-alert-circle"></i><strong>Error loading module</strong>
+              <i class="ti ti-alert-circle" aria-hidden="true"></i><strong>Error loading module</strong>
             </div>
             <p style="margin-top:8px;color:var(--color-muted);font-size:13px;">${_esc(err.message)}</p>
           </div>`;
         Toast.show(err.message || 'Failed to load module', 'error');
+        A11y.focusMain();
       })
       .getModuleHTML(moduleKey);
   }
@@ -220,10 +381,33 @@ const App = (() => {
       .dispatch(module, action, payload);
   }
 
-  function toggleSidebar() { document.getElementById('sidebar').classList.toggle('collapsed'); }
+  function toggleSidebar() {
+    const sidebar = document.getElementById('sidebar');
+    const collapsed = sidebar.classList.toggle('collapsed');
+    const btn = document.getElementById('nav-toggle');
+    if (btn) btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+  }
 
   function _setActiveNav(key) {
-    document.querySelectorAll('.nav-item').forEach(a => a.classList.toggle('active', a.dataset.module === key));
+    document.querySelectorAll('.nav-item').forEach(a => {
+      const on = a.dataset.module === key;
+      a.classList.toggle('active', on);
+      // aria-current is what conveys "you are here" to a screen reader;
+      // the .active class is purely visual.
+      if (on) a.setAttribute('aria-current', 'page');
+      else    a.removeAttribute('aria-current');
+    });
+  }
+
+  /** The sidebar label for a module key, falling back to the key itself. */
+  function _moduleLabel(key) {
+    const m = (_state.modules || []).find(x => x.key === key);
+    return (m && m.label) || key;
+  }
+
+  /** Keeps the document title in step with the view (orientation + history). */
+  function _setTitle(label) {
+    document.title = label ? (label + ' · ' + _baseTitle) : _baseTitle;
   }
 
   // Persist the current view in the PARENT (address-bar) URL so a browser
@@ -278,15 +462,17 @@ const App = (() => {
       : '';
     const title = _esc(opts.title || 'Direct link to this form');
     const note = _esc(opts.note || 'Share this link to send people straight to the form. They will sign in first if needed.');
+    const fieldId = 'dl-' + _esc(moduleKey);
     return ''
       + '<div class="card" style="margin-top:20px;">'
-      + '<div class="card-title"><i class="ti ti-link"></i> ' + title + '</div>'
+      + '<div class="card-title"><i class="ti ti-link" aria-hidden="true"></i> ' + title + '</div>'
       + '<p class="text-sm text-muted" style="margin-bottom:10px;">' + note + '</p>'
       + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">'
-      + '<input class="form-input" id="dl-' + _esc(moduleKey) + '" readonly value="' + _esc(url) + '" '
+      + '<label class="visually-hidden" for="' + fieldId + '">' + title + '</label>'
+      + '<input class="form-input" id="' + fieldId + '" readonly value="' + _esc(url) + '" '
       + 'style="flex:1 1 280px;font-family:monospace;font-size:12.5px;" onclick="this.select();">'
       + '<button class="btn btn-secondary btn-sm" onclick="App.copyDeepLink(\'' + _esc(moduleKey) + '\')">'
-      + '<i class="ti ti-copy"></i> Copy</button>'
+      + '<i class="ti ti-copy" aria-hidden="true"></i> Copy</button>'
       + '</div>' + roleLine
       + '</div>';
   }
@@ -306,11 +492,18 @@ const App = (() => {
     } catch (e) { Toast.show('Press Ctrl/Cmd+C to copy.', 'info'); }
   }
 
+  // Escapes for HTML text AND for quoted attribute values. The single-quote
+  // rule matters: this function's output is interpolated into
+  // onclick="App.something('…')", where a raw apostrophe would terminate the
+  // JS string literal and let the rest be parsed as code.
   function _esc(s) {
-    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
-  return { init, goDashboard, loadModule, call, toggleSidebar, openTask, refreshTasks, currentPage, deepLinkCard, copyDeepLink };
+  return { init, goDashboard, loadModule, call, toggleSidebar, openTask, taskKey,
+           refreshTasks, currentPage, deepLinkCard, copyDeepLink, esc: _esc };
 
 })();
 
@@ -319,12 +512,37 @@ const App = (() => {
 // Toast
 // ============================================================
 const Toast = (() => {
+  /**
+   * Shows a transient message.
+   *
+   * SECURITY: `message` is escaped. This function is the sink for
+   * App.call()'s failure handler, and server error strings are built from
+   * user-supplied data ("No portal profile found for <email>", import row
+   * errors, etc.) — interpolating them raw made every such message an
+   * injection point.
+   *
+   * Error toasts get role="alert" so they interrupt a screen reader; the
+   * container's own aria-live="polite" covers the rest.
+   */
   function show(message, type, duration) {
     const container = document.getElementById('toast-container');
+    if (!container) return;
     const el = document.createElement('div');
     const icon = type === 'success' ? 'ti-circle-check' : type === 'error' ? 'ti-alert-circle' : 'ti-info-circle';
     el.className = `toast toast-${type || 'info'}`;
-    el.innerHTML = `<i class="ti ${icon}" style="font-size:16px;flex-shrink:0"></i><span>${message}</span>`;
+    if (type === 'error') el.setAttribute('role', 'alert');
+
+    const i = document.createElement('i');
+    i.className = 'ti ' + icon;
+    i.setAttribute('aria-hidden', 'true');
+    i.style.fontSize = '16px';
+    i.style.flexShrink = '0';
+
+    const span = document.createElement('span');
+    span.textContent = String(message == null ? '' : message);   // never innerHTML
+
+    el.appendChild(i);
+    el.appendChild(span);
     container.appendChild(el);
     setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity 0.3s'; setTimeout(() => el.remove(), 300); }, duration || 3500);
   }
@@ -336,40 +554,96 @@ const Toast = (() => {
 // FormHelper
 // ============================================================
 const FormHelper = (() => {
+
+  let _errSeq = 0;   // for generating ids on unlabeled .form-error nodes
+
   function collect(containerId) {
     const container = document.getElementById(containerId);
     const inputs = container.querySelectorAll('[name]');
-    const data = {}; let isValid = true;
+    const data = {};
+    let isValid = true;
+    let firstBad = null;
+    let badCount = 0;
+
     inputs.forEach(el => {
       const errEl = el.parentElement.querySelector('.form-error');
-      if (errEl) errEl.classList.remove('visible');
-      el.style.borderColor = '';
+      _clear(el, errEl);
       const val = el.value.trim();
-      if (el.hasAttribute('required') && !val) { _err(el, errEl, 'This field is required.'); isValid = false; }
-      if (el.type === 'email' && val && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val)) { _err(el, errEl, 'Enter a valid email address.'); isValid = false; }
+      if (el.hasAttribute('required') && !val) {
+        _err(el, errEl, 'This field is required.');
+        isValid = false; badCount++; firstBad = firstBad || el;
+      }
+      if (el.type === 'email' && val && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val)) {
+        _err(el, errEl, 'Enter a valid email address.');
+        isValid = false; badCount++; firstBad = firstBad || el;
+      }
       data[el.name] = val;
     });
+
+    // Without this a keyboard or screen-reader user submits, nothing
+    // apparently happens, and the only feedback is a red border they may
+    // not be able to see.
+    if (!isValid) {
+      A11y.announce(badCount === 1
+        ? 'There is a problem with one field. ' + _messageFor(firstBad)
+        : 'There are problems with ' + badCount + ' fields.', true);
+      if (firstBad && typeof firstBad.focus === 'function') {
+        try { firstBad.focus(); } catch (e) {}
+      }
+    }
     return { data, isValid };
   }
+
   function reset(containerId) {
     document.getElementById(containerId).querySelectorAll('[name]').forEach(el => {
       el.value = '';
       const errEl = el.parentElement.querySelector('.form-error');
-      if (errEl) errEl.classList.remove('visible');
+      _clear(el, errEl);
     });
   }
+
   function setLoading(btnId, loading, label) {
     const btn = document.getElementById(btnId); if (!btn) return;
     if (btn.dataset.originalText === undefined) btn.dataset.originalText = btn.innerHTML;
     btn.disabled = loading;
+    // aria-busy tells assistive tech the control is mid-operation; the
+    // spinner alone is a purely visual cue.
+    btn.setAttribute('aria-busy', loading ? 'true' : 'false');
     btn.innerHTML = loading
-      ? '<i class="ti ti-loader-2" style="animation:spin 0.7s linear infinite"></i> ' + (label || 'Saving…')
+      ? '<i class="ti ti-loader-2" aria-hidden="true" style="animation:spin 0.7s linear infinite"></i> ' + (label || 'Saving…')
       : btn.dataset.originalText;
   }
+
+  /** The visible error text for a field, for the announcement. */
+  function _messageFor(el) {
+    if (!el || !el.parentElement) return '';
+    const errEl = el.parentElement.querySelector('.form-error');
+    return errEl ? errEl.textContent : '';
+  }
+
+  /**
+   * Marks a field invalid: red border (visual), aria-invalid (programmatic),
+   * and aria-describedby pointing at the error node so the message is read
+   * when focus lands on the field.
+   */
   function _err(el, errEl, msg) {
     el.style.borderColor = 'var(--color-danger)';
-    if (errEl) { errEl.textContent = msg; errEl.classList.add('visible'); }
+    el.setAttribute('aria-invalid', 'true');
+    if (!errEl) return;
+    if (!errEl.id) errEl.id = 'form-err-' + (++_errSeq);
+    errEl.textContent = msg;
+    errEl.classList.add('visible');
+    const ids = (el.getAttribute('aria-describedby') || '').split(/\s+/).filter(Boolean);
+    if (ids.indexOf(errEl.id) === -1) ids.push(errEl.id);
+    el.setAttribute('aria-describedby', ids.join(' '));
   }
+
+  function _clear(el, errEl) {
+    el.style.borderColor = '';
+    el.removeAttribute('aria-invalid');
+    if (errEl) errEl.classList.remove('visible');
+  }
+
   return { collect, reset, setLoading };
 })();
 </script>

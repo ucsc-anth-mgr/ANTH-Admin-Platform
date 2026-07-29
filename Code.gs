@@ -4,6 +4,36 @@
 // Reads the module registry via getModuleRegistry() (Sheet-backed).
 // ============================================================
 
+
+// ── Output-encoding helpers ───────────────────────────────────
+// Two small utilities used by doGet/getModuleHTML. Both are global so
+// templates can call them directly if a module ever needs to.
+
+/**
+ * Serializes a value for safe injection into a <script> block via <?!= ?>.
+ * JSON.stringify does NOT escape '<', so a value containing "</script>"
+ * would close the block early and let the rest run as markup. U+2028 and
+ * U+2029 are valid JSON but illegal raw in JS source. Use this everywhere
+ * JSON reaches a template — most importantly for anything derived from a
+ * URL parameter (see initialFocus below).
+ */
+function jsonForScript(obj) {
+  return JSON.stringify(obj === undefined ? null : obj)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+}
+
+
+/** HTML-escapes a value for inclusion in server-rendered markup. */
+function escapeHtmlForPage(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+
 function doGet(e) {
   try {
     const user    = Session.getActiveUser().getEmail();
@@ -19,11 +49,17 @@ function doGet(e) {
       reg.brandNavy = CONFIG.BRAND.NAVY;
       reg.brandGold = CONFIG.BRAND.GOLD;
       reg.userEmail = user;
-      reg.roles     = JSON.stringify(Auth.listRoles());
+      reg.roles     = jsonForScript(Auth.listRoles());
       return reg.evaluate()
         .setTitle(CONFIG.APP_TITLE + ' — Request access')
         .addMetaTag('viewport', 'width=device-width, initial-scale=1')
-        .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+        // DEFAULT restricts framing to Google's own origins, which is all
+        // Apps Script's nested userCodeAppPanel frame needs. ALLOWALL would
+        // let any site frame the portal and clickjack a logged-in user into
+        // one-click actions (complete, return, delete) that run with their
+        // real roles. Nothing embeds this portal — it is linked to, never
+        // iframed — so there is no reason to allow it.
+        .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.DEFAULT);
     }
 
     const roles   = Auth.getRoles(user);
@@ -33,6 +69,9 @@ function doGet(e) {
     // `focus` (e.g. ?page=thesis&focus=THES_123) opens that module already
     // focused on the record. Generic — any module that reads window.__focus
     // can use it. sourceType is optional context for the module.
+    //
+    // NOTE: this is the one template value built from raw URL parameters,
+    // so it is the one that most needs jsonForScript() below.
     const focus = e.parameter.focus
       ? { sourceType: e.parameter.focusType || '', sourceId: e.parameter.focus, taskId: '' }
       : null;
@@ -52,11 +91,11 @@ function doGet(e) {
     tmpl.brandGold  = CONFIG.BRAND.GOLD;
     tmpl.userEmail  = user;
     tmpl.userName   = profile.name || user;
-    tmpl.userRoles  = JSON.stringify(roles);
+    tmpl.userRoles  = jsonForScript(roles);
     tmpl.modules    = modules;
-    tmpl.tasks      = JSON.stringify(tasks);
+    tmpl.tasks      = jsonForScript(tasks);
     tmpl.activePage = page;
-    tmpl.initialFocus = JSON.stringify(focus);
+    tmpl.initialFocus = jsonForScript(focus);
     // Public base URL for client-side deep-link cards (Links.gs is the
     // server-side equivalent). Blank when CONFIG.PUBLIC_BASE_URL is unset.
     tmpl.publicBaseUrl = CONFIG.PUBLIC_BASE_URL || '';
@@ -64,12 +103,19 @@ function doGet(e) {
     return tmpl.evaluate()
       .setTitle(CONFIG.APP_TITLE)
       .addMetaTag('viewport', 'width=device-width, initial-scale=1')
-      .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+      // DEFAULT — see the framing note in the registration branch above.
+      .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.DEFAULT);
 
   } catch (err) {
+    // The detail goes to the log, NOT to the page: this branch renders for
+    // unauthenticated/unprovisioned visitors, and err.message was both an
+    // injection sink and an information leak. While developing you can
+    // swap in escapeHtmlForPage(err.message) to see the real error.
     Logger.log('doGet error: ' + err);
     return HtmlService.createHtmlOutput(
-      '<p style="font-family:sans-serif;padding:2rem;color:#c0392b;">Error loading app: ' + err.message + '</p>'
+      '<p style="font-family:sans-serif;padding:2rem;color:#c0392b;">' +
+      'Sorry — the portal could not load. Please try again, and contact the ' +
+      'department administrator if this continues.</p>'
     );
   }
 }
@@ -83,26 +129,77 @@ function include(filename) {
 /**
  * Universal server-side dispatcher.
  * Validates module + authorization, delegates to the handler, audits.
+ *
+ * Audit status is tri-state:
+ *   'success' — handler returned normally
+ *   'denied'  — refused before the handler ran (unknown/disabled module,
+ *               failed role check, unregistered handler, unknown action)
+ *   'error'   — handler ran and threw
+ * Previously only 'success' was written, so every refusal was invisible.
  */
 function dispatch(module, action, payload) {
   const user     = Session.getActiveUser().getEmail();
   const roles    = Auth.getRoles(user);
   const registry = getModuleRegistry();
 
+  // Audits the refusal, then throws. Every early exit goes through here.
+  function _deny(msg) {
+    AuditLog.write({ user: user, module: module, action: action,
+                     payload: payload, status: 'denied', notes: msg });
+    throw new Error(msg);
+  }
+
   const modConfig = registry[module];
-  if (!modConfig)            throw new Error('Unknown module: ' + module);
-  if (!modConfig.enabled)    throw new Error('Module is disabled: ' + module);
+  if (!modConfig)         _deny('Unknown module: ' + module);
+  if (!modConfig.enabled) _deny('Module is disabled: ' + module);
   if (!Auth.isAuthorized(roles, modConfig.roles)) {
-    throw new Error('Access denied to module: ' + module);
+    _deny('Access denied to module: ' + module);
   }
 
-  const handler = getModuleHandler(modConfig.handler);
+  let handler;
+  try {
+    handler = getModuleHandler(modConfig.handler);
+  } catch (err) {
+    // Registry names a handler that isn't wired in getModuleHandler().
+    // Reported as a denial rather than surfacing the raw lookup error.
+    _deny('Handler not registered for module "' + module + '": ' + modConfig.handler);
+  }
+
   if (typeof handler[action] !== 'function') {
-    throw new Error('Unknown action "' + action + '" on module "' + module + '"');
+    _deny('Unknown action "' + action + '" on module "' + module + '"');
   }
 
-  const result = handler[action](payload, user, roles);
-  AuditLog.write({ user, module, action, payload, status: 'success' });
+  // Per-action authorization (ActionPolicy.gs). Module entry answered
+  // "may they open the module"; this answers "may they invoke THIS
+  // action". Shadow mode logs would_deny and proceeds; enforce denies.
+  const policyMode = ActionPolicy.mode();
+  if (policyMode !== 'off') {
+    const verdict = ActionPolicy.check(handler, action, roles);
+    if (!verdict.allowed) {
+      if (policyMode === 'enforce') {
+        _deny('Action not permitted: ' + module + '.' + action);
+      }
+      // shadow: record what enforcement WOULD have blocked, with enough
+      // context (roles + reason) to fix the declaration or confirm the
+      // hole, then let the call proceed unchanged.
+      AuditLog.write({ user: user, module: module, action: action,
+                       payload: payload, status: 'would_deny',
+                       notes: verdict.reason + ' | roles: ' + roles.join(',') });
+    }
+  }
+
+  let result;
+  try {
+    result = handler[action](payload, user, roles);
+  } catch (err) {
+    AuditLog.write({ user: user, module: module, action: action,
+                     payload: payload, status: 'error',
+                     notes: String((err && err.message) || err) });
+    throw err;   // rethrow unchanged — the client still sees the real message
+  }
+
+  AuditLog.write({ user: user, module: module, action: action,
+                   payload: payload, status: 'success' });
   return result;
 }
 
@@ -111,13 +208,24 @@ function dispatch(module, action, payload) {
  * Self-registration endpoint, callable WITHOUT module authorization.
  * This is the one action an unprovisioned user is allowed to perform.
  * It only ever creates a pending request — it never grants access.
+ *
+ * Because it is the one endpoint reachable by an unprovisioned caller,
+ * its failures are audited too: repeated errors here are the signal you
+ * would want if someone were probing it.
  */
 function submitAccessRequest(payload) {
   const user = Session.getActiveUser().getEmail();
-  const result = RequestManager.submitRequest(payload, user);
-  AuditLog.write({ user: user, module: 'registration', action: 'submitRequest',
-                   payload: payload, status: 'success' });
-  return result;
+  try {
+    const result = RequestManager.submitRequest(payload, user);
+    AuditLog.write({ user: user, module: 'registration', action: 'submitRequest',
+                     payload: payload, status: 'success' });
+    return result;
+  } catch (err) {
+    AuditLog.write({ user: user, module: 'registration', action: 'submitRequest',
+                     payload: payload, status: 'error',
+                     notes: String((err && err.message) || err) });
+    throw err;
+  }
 }
 
 
@@ -141,7 +249,18 @@ function getMyTasks() {
 }
 
 
-function getModuleHTML(moduleKey) {  const user     = Session.getActiveUser().getEmail();
+/**
+ * Serves a module's HTML partial. This is a SECOND gateway alongside
+ * dispatch() — it performs its own registry lookup and role check, and
+ * is directly callable from the client via google.script.run.
+ *
+ * NOTE: deliberately NOT audited. It fires on every module load, so
+ * logging it would add one audit row per navigation click. If you later
+ * want visibility into denied template loads specifically, log only the
+ * failure branches rather than every call.
+ */
+function getModuleHTML(moduleKey) {
+  const user     = Session.getActiveUser().getEmail();
   const roles    = Auth.getRoles(user);
   const registry = getModuleRegistry();
 
@@ -152,13 +271,13 @@ function getModuleHTML(moduleKey) {  const user     = Session.getActiveUser().ge
 
   const tmpl = HtmlService.createTemplateFromFile(modConfig.include);
   tmpl.currentUser = user;
-  tmpl.userRoles   = JSON.stringify(roles);
+  tmpl.userRoles   = jsonForScript(roles);
   // Per-role tab visibility (TabRegistry): the resolved tab list for THIS
   // user, as JSON, for converted templates to loop over with <?!= ?>.
   // A module whose handler declares no TABS manifest gets '[]' and simply
   // never references the variable — unconverted modules are unaffected.
   try {
-    tmpl.visibleTabs = JSON.stringify(TabRegistry.visibleTabs(moduleKey, roles));
+    tmpl.visibleTabs = jsonForScript(TabRegistry.visibleTabs(moduleKey, roles));
   } catch (e) {
     tmpl.visibleTabs = '[]';
   }

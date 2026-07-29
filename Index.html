@@ -6,14 +6,53 @@
   <title><?= appTitle ?></title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
   <?!= include('_Styles') ?>
+  <style>
+    /* ── Accessibility utilities ──────────────────────────────
+       Kept here rather than in _Styles so the shell's a11y scaffolding
+       travels with the markup that depends on it. */
+
+    /* Available to screen readers, invisible on screen. Used for the live
+       regions and for labels on controls that show only an icon. */
+    .visually-hidden {
+      position: absolute !important;
+      width: 1px; height: 1px;
+      margin: -1px; padding: 0; border: 0;
+      clip: rect(0 0 0 0); clip-path: inset(50%);
+      overflow: hidden; white-space: nowrap;
+    }
+
+    /* Skip link: the first tab stop on the page, hidden until focused.
+       Without it, a keyboard user tabs through every sidebar item on
+       every view before reaching the content. */
+    .skip-link {
+      position: absolute; left: 8px; top: -60px;
+      z-index: 2000;
+      padding: 10px 16px;
+      background: var(--ucsc-navy, #003C6C);
+      color: #ffffff;
+      border-radius: 0 0 4px 4px;
+      font-size: 14px; text-decoration: none;
+      transition: top 0.15s ease-in-out;
+    }
+    .skip-link:focus { top: 0; }
+
+    /* The main container takes focus programmatically after navigation
+       (see A11y.focusMain). Suppress the ring there — it is a scroll/AT
+       target, not an interactive control — but never suppress it globally. */
+    #module-container:focus { outline: none; }
+    #module-container:focus-visible { outline: 2px solid var(--ucsc-navy, #003C6C); outline-offset: 2px; }
+  </style>
 </head>
 <body>
+
+<a class="skip-link" href="#module-container">Skip to main content</a>
 
 <!-- ── Top header bar ──────────────────────────────────────── -->
 <header id="topbar">
   <div class="topbar-left">
-    <button id="nav-toggle" onclick="App.toggleSidebar()" aria-label="Toggle menu">
-      <i class="ti ti-menu-2"></i>
+    <button id="nav-toggle" onclick="App.toggleSidebar()" aria-label="Toggle menu"
+            aria-controls="sidebar" aria-expanded="true">
+      <i class="ti ti-menu-2" aria-hidden="true"></i>
     </button>
     <span class="topbar-title"><?= appTitle ?></span>
   </div>
@@ -26,10 +65,10 @@
 <!-- ── Body: sidebar + content ─────────────────────────────── -->
 <div id="layout">
 
-  <nav id="sidebar">
+  <nav id="sidebar" aria-label="Main">
     <ul class="nav-list">
       <li>
-        <a class="nav-item active" href="#" data-module="dashboard"
+        <a class="nav-item active" href="#" data-module="dashboard" aria-current="page"
            onclick="App.goDashboard(); return false;">
           <i class="ti ti-home" aria-hidden="true"></i><span>Dashboard</span>
         </a>
@@ -46,7 +85,11 @@
   </nav>
 
   <main id="content">
-    <div id="module-container">
+    <!-- tabindex="-1" makes this a programmatic focus target: after every
+         navigation the shell moves focus here (A11y.focusMain), so keyboard
+         and screen-reader users land in the new content instead of being
+         left on the nav link they just activated. -->
+    <div id="module-container" tabindex="-1">
       <!-- Dashboard / welcome -->
       <div class="card welcome-card">
         <h1 class="welcome-title">Welcome!</h1>
@@ -60,18 +103,27 @@
 
 <div id="toast-container" aria-live="polite"></div>
 
+<!-- Live regions for A11y.announce(). Two, because politeness is fixed per
+     region: status waits for a pause, alert interrupts. Both are always
+     present and empty; announce() writes text into them. -->
+<div id="a11y-status" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></div>
+<div id="a11y-alert"  class="visually-hidden" role="alert"  aria-live="assertive" aria-atomic="true"></div>
+
 <?!= include('_Scripts') ?>
 
 <script>
+  // jsonForScript() (Code.gs) escapes '<' so a value containing "</script>"
+  // cannot close this block. userRoles / initialFocus / tasks were already
+  // encoded server-side; the rest are encoded here.
   App.init({
-    userEmail: <?!= JSON.stringify(userEmail) ?>,
-    userName: <?!= JSON.stringify(userName) ?>,
+    userEmail: <?!= jsonForScript(userEmail) ?>,
+    userName: <?!= jsonForScript(userName) ?>,
     userRoles: <?!= userRoles ?>,
-    activePage: <?!= JSON.stringify(activePage) ?>,
+    activePage: <?!= jsonForScript(activePage) ?>,
     initialFocus: <?!= initialFocus ?>,
-    modules: <?!= JSON.stringify(modules) ?>,
+    modules: <?!= jsonForScript(modules) ?>,
     tasks: <?!= tasks ?>,
-    publicBaseUrl: <?!= JSON.stringify(publicBaseUrl) ?>,
+    publicBaseUrl: <?!= jsonForScript(publicBaseUrl) ?>,
   });
 </script>
 

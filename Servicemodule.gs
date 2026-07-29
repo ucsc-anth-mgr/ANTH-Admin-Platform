@@ -1863,12 +1863,43 @@ const ServiceModule = (() => {
     return rows;
   }
 
+  // ── Per-action authorization (ActionPolicy.gs) ─────────────
+  // Mirrors the return block's own grouping. Record-level checks
+  // (_assertAdmin, _assertSeeAll, _assertProposed, ownership filters)
+  // stay in the handlers and remain the fine-grained authority.
+  const ACTIONS = {
+    // Everyone the module admits
+    bootstrap: ['*'],
+    currentAssignments: ['*'],         // the public directory — open by design
+    myHistory: ['*'],                  // self-scoped inside the handler
+    submitCorrection: ['*'],
+    myNominations: ['*'],
+    submitNomination: ['*'],
+    withdrawNomination: ['*'],
+    moveNomination: ['*'],
+
+    // Grant- and position-gated (mirrors _canSeeProposed / _canSeeAll)
+    proposedSlate: [CHAIR_ROLE],
+    fullHistory: [HISTORY_ROLE],
+
+    // super_admin only
+    listCorrections: [], resolveCorrection: [],
+    setNominationWindow: [], listNominations: [],
+    acceptNomination: [], declineNomination: [],
+    listCatalog: [], upsertCategory: [], removeCategory: [],
+    listPeople: [], addAssignment: [], updateAssignment: [],
+    deleteAssignment: [], reapplyAutoAssigns: [],
+    importPreview: [], resolveImportName: [], importCommit: [],
+    importNominationsPreview: [], importNominationsCommit: [],
+  };
+
 
   // Only FUNCTION names are dispatchable — dispatch() checks
   // typeof handler[action] === 'function', so the TABS manifest below is
   // readable by TabRegistry but can never be invoked as an action.
   return {
     TABS: TABS,
+    ACTION: ACTIONS,
     // everyone in the module
     bootstrap, currentAssignments, proposedSlate, myHistory, fullHistory, submitCorrection,
     myNominations, submitNomination, withdrawNomination, moveNomination,

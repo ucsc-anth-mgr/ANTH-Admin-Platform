@@ -4180,11 +4180,52 @@ const PersonnelModule = (() => {
     return y + '-07-01';
   }
 
+  // ── Per-action authorization (ActionPolicy.gs) ─────────────
+  // ['*'] = anyone the Modules row admits; [] = super_admin only;
+  // a role list = those roles (super_admin always passes). An action
+  // MISSING from this map is denied to everyone but super_admin —
+  // default-deny, so a new action needs a line here before it runs.
+  const ACTIONS = {
+    ping: ['*'],                       // returns only the caller's own identity
+
+    // Reads — super_admin only. listRoster carries SALARY and
+    // getReviewHistory returns any person's review record by email.
+    // These were the module's unguarded actions; widening any of them
+    // should come with a handler change that strips salary for
+    // non-admins.
+    getAttributes: [], getPersonSummary: [],
+    listRoster: [], listRanks: [], getReviewHistory: [],
+
+    updatePersonAttributes: [],
+    detectColumns: [], previewRankImport: [], commitRankImport: [],
+    detectHistoryColumns: [], previewHistoryImport: [], commitHistoryImport: [],
+
+    listReviewTypes: [], detectCallColumns: [], previewCallImport: [],
+    commitCallImport: [], listCases: [], updateCase: [], createCase: [],
+    checkCaseEligibility: [],
+
+    listCommitteeMembers: [], listCaseComponents: [], assignComponent: [],
+    markComponentDrafted: [], reopenComponent: [], committeeWorkload: [],
+    exportWorkloadToSheet: [], caseAssignments: [],
+
+    findCalendarDeadlines: [], computeCaseSchedule: [], computeScheduleForCase: [],
+    getSchedulerSettings: [], saveSchedulerSettings: [],
+    getCycle: [], listCycles: [], setCycleAnchors: [],
+    computeCycleSchedule: [], proposeDate: [], exportCycleScheduleToSheet: [],
+
+    getCommTemplates: [], saveCommTemplate: [], previewCommunication: [],
+    sendCommunications: [], draftCommunications: [], logCopiedCommunication: [],
+    listCommunicationsLog: [], listPolicyDocs: [], savePolicyDocs: [],
+
+    listAnticipatedCandidates: [], exportAnticipatedToSheet: [], exportAnticipatedToCsv: [],
+  };
+
 
   // Only these names are dispatchable.
   // Only these names are dispatchable (TABS is the tab manifest, not an action).
   return {
     TABS: TABS,
+    ACTIONS: ACTIONS,
     ping,
     getAttributes,
     getPersonSummary,
