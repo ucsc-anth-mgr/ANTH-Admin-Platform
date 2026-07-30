@@ -45,14 +45,11 @@ const CONFIG = {
     // Tabs: ClassSchedule, ClassScheduleImports. Blank until setUp()
     // creates it and logs the id to paste back here.
     CLASS_SCHEDULE: '1XFZQuNMIkr0wjhhDFWXfSqggWAk9shjN3rxEGXqSB9s',
-    // Undergraduate Individual Studies module — its OWN spreadsheet
-    // (per-module storage tier). Tab: Petitions. Blank until setUp()
-    // creates it and logs the id to paste back here.
+    // Individual Studies module (BOTH audiences) — its OWN spreadsheet
+    // (per-module storage tier). Tabs: Petitions (undergrad, IS ids),
+    // GradPetitions (graduate, GIS ids), Templates (sponsor-owned),
+    // PetitionSettings (key/value).
     INDIVIDUAL_STUDIES: '1YXEdMiRUhFILSKDSg-Y_IwETsNy7k3B3o03lgAz84Fo',
-    // Graduate Individual Studies module — its OWN spreadsheet
-    // (per-module storage tier). Tab: Petitions. Blank until setUp()
-    // creates it and logs the id to paste back here.
-    GRAD_INDIVIDUAL_STUDIES: '1YXEdMiRUhFILSKDSg-Y_IwETsNy7k3B3o03lgAz84Fo',
     // Academic Personnel module — its OWN spreadsheet (per-module storage
     // tier). Tabs: PersonAttributes (person-attribute extension table),
     // Cases (review cases from the Call), ReviewHistory (the APO action
@@ -120,13 +117,13 @@ const CONFIG = {
     // Class schedule service tabs (live in SHEETS.CLASS_SCHEDULE)
     CLASS_SCHEDULE:         'ClassSchedule',
     CLASS_SCHEDULE_IMPORTS: 'ClassScheduleImports',
-    // Undergraduate Individual Studies module tab (lives in SHEETS.INDIVIDUAL_STUDIES)
-    INDIVIDUAL_STUDIES:     'Petitions',
+    // Individual Studies module tabs (ALL live in SHEETS.INDIVIDUAL_STUDIES)
+    INDIVIDUAL_STUDIES:     'Petitions',        // undergraduate (IS ids)
+    INDIVIDUAL_STUDIES_GRAD: 'GradPetitions',   // graduate (GIS ids)
     // Sponsor-owned petition templates (same spreadsheet as Petitions)
     INDIVIDUAL_STUDIES_TEMPLATES: 'Templates',
-    // Graduate Individual Studies module tab (lives in
-    // SHEETS.GRAD_INDIVIDUAL_STUDIES)
-    GRAD_INDIVIDUAL_STUDIES: 'Petitions',
+    // Key/value settings shared by both Settings tabs (undergrad + grad)
+    INDIVIDUAL_STUDIES_SETTINGS: 'PetitionSettings',
     // Academic Personnel module tabs (live in SHEETS.PERSONNEL)
     PERSON_ATTRIBUTES: 'PersonAttributes',
     CASES:             'Cases',
@@ -252,12 +249,26 @@ const CONFIG = {
   },
 
   // ── Undergraduate Individual Studies module ────────────────
-  // Drive folder for module documents: uploaded syllabi and the generated
-  // petition PDFs. Replace-in-place on syllabus re-upload benefits from the
-  // Advanced Drive Service (Apps Script editor -> Services (+) -> Drive API),
-  // but works without it.
   INDIVIDUAL_STUDIES: {
+    // Drive folder for module documents: uploaded syllabi and grad outline
+    // attachments. Replace-in-place on re-upload benefits from the Advanced
+    // Drive Service (Apps Script editor -> Services (+) -> Drive API), but
+    // works without it. (The completed petition PDFs are archived by
+    // ReportService under CONFIG.REPORTS.ARCHIVE_FOLDER_ID/individual_studies/.)
     DRIVE_FOLDER_ID: '1goPXXH3b0v4k4Pn_qyonPJHZW67jOfLn',
+    // Drive file id of the BLANK fillable undergraduate petition template
+    // ("USP_form.pdf" — the campus "Petition for Undergraduate Individual
+    // Studies Course" rebuilt as a named-field AcroForm; the module fills
+    // row 1 only). The archived petition is this official form, filled
+    // field-by-field and flattened via ReportService.fillTemplate at the
+    // terminal workflow transition. Set-once infrastructure pointer, like
+    // the Drive ids here — NOT a UI-managed setting. If campus revises the
+    // form, regenerate the AcroForm with the SAME field names and swap this
+    // id; no code change.
+    // TODO: upload USP_form.pdf to Drive and paste its file id here —
+    // completion works without it (the record still completes) but PDF
+    // generation logs a clear error until it is set.
+    TEMPLATE_FILE_ID: '1iQgkdif3vA_q-f5WeLwoX_-QvL2GfOq6',
   },
 
   // ── Coursework Petition module ─────────────────────────────
@@ -271,12 +282,13 @@ const CONFIG = {
     DRIVE_FOLDER_ID: '16R0gJj6p8Y5Z4RwqbaMMfu0vq8hIm5In',   // create a Drive folder, paste its id
   },
 
-  // ── Graduate Individual Studies module ─────────────────────
+  // ── Graduate Individual Studies (same module; grad audience) ──
   // The archived petition is NOT composed from HTML — it is the official
-  // campus AcroForm, filled field-by-field (via PdfFill/pdf-lib) at the
-  // terminal workflow transition, then flattened and archived through
-  // ReportService (which files it under <ARCHIVE_FOLDER>/<module>/ and
-  // indexes it in the Reports tab, same as every generated report).
+  // campus AcroForm, filled field-by-field (via ReportService.fillTemplate
+  // / pdf-lib) at the terminal workflow transition, then flattened and
+  // archived through ReportService (which files it under
+  // <ARCHIVE_FOLDER>/<module>/ and indexes it in the Reports tab, same as
+  // every generated report).
   GRAD_INDIVIDUAL_STUDIES: {
     // Drive file id of the BLANK fillable petition template
     // ("GISP_form.pdf" — 16 named AcroForm fields: ClassNumber, Course,
@@ -287,7 +299,7 @@ const CONFIG = {
     // Drive ids here — NOT a UI-managed setting. If campus revises the
     // form, regenerate the AcroForm with the SAME field names and swap
     // this id; no code change.
-    TEMPLATE_FILE_ID: '10ahVmEgKwXa8rKJwu_PsVWGt-EDvu7kS',
+    TEMPLATE_FILE_ID: '1av9vtE86xBPgWd9na7xL0MNzr6rKesHy',
   },
 
   // ── Academic Personnel module ──────────────────────────────

@@ -515,10 +515,12 @@
         </div>
         <div class="form-group">
           <label class="form-label" for="is-g-course">Course *</label>
-          <select class="form-select" id="is-g-course"><option value="">Select a course…</option></select>
+          <select class="form-select" id="is-g-course" onchange="IndividualStudiesUI.onGradCourseChange()"><option value="">Select a course…</option></select>
           <div class="form-hint">Units are fixed by the course (A/B/C = 5/10/15).</div>
+          <div class="form-hint" id="is-g-course-guidance" style="display:none;"></div>
         </div>
       </div>
+      <div id="is-g-course-advisory" class="alert alert-info" style="display:none;"></div>
       <div id="is-g-deadline-warning" class="alert alert-warning" style="display:none;"></div>
 
       <div class="form-row">
@@ -1440,6 +1442,11 @@ window.IndividualStudiesUI = (() => {
     let body = '';
     rows.forEach(function (r) {
       const meta = STAGE_META[r.stage] || { cls: 'badge-neutral', label: r.stage };
+      const pdfCell = '<td onclick="event.stopPropagation();" style="white-space:nowrap;">'
+        + (r.documentLink
+            ? '<a href="' + esc(r.documentLink) + '" target="_blank" rel="noopener" title="Open completed petition PDF">'
+              + '<i class="ti ti-file-type-pdf"></i> PDF</a>'
+            : '') + '</td>';
       body += '<tr tabindex="0" style="cursor:pointer;" onclick="IndividualStudiesUI.open(\'' + esc(r.petitionId) + '\')" '
         + 'onkeydown="IndividualStudiesUI.rowKey(event,\'' + esc(r.petitionId) + '\')">'
         + '<td><strong>' + esc(r.course) + '</strong>'
@@ -1447,10 +1454,11 @@ window.IndividualStudiesUI = (() => {
         + '<div class="text-sm text-muted">' + esc(r.term) + '</div></td>'
         + (showWho ? '<td>' + esc(r.studentName) + '</td>' : '<td>' + esc(r.sponsorName) + '</td>')
         + '<td><span class="badge ' + meta.cls + '">' + esc(meta.label) + '</span></td>'
+        + pdfCell
         + '</tr>';
     });
     el.innerHTML = '<div style="overflow-x:auto;"><table class="data-table"><thead><tr>'
-      + '<th scope="col">Course</th><th scope="col">' + (showWho ? 'Student' : 'Sponsor') + '</th><th scope="col">Status</th>'
+      + '<th scope="col">Course</th><th scope="col">' + (showWho ? 'Student' : 'Sponsor') + '</th><th scope="col">Status</th><th scope="col"></th>'
       + '</tr></thead><tbody>' + body + '</tbody></table></div>';
   }
 
@@ -2227,6 +2235,7 @@ window.IndividualStudiesUI = (() => {
 
   let _gradFormData = null;
   let _gradTermsByCode = {};
+  let _gradCoursesByCode = {};    // course token -> { units, familyLabel, guidance, advisory }
   let _gradTemplates = [];
   let _gradResubmitId = '';
   let _gradOutline = null;        // student's attached outline (held until submit)
@@ -2255,12 +2264,35 @@ window.IndividualStudiesUI = (() => {
             return '<option value="' + esc(t.term) + '">' + esc(t.label) + '</option>';
           }).join('');
     }
+    // Course dropdown grouped by family (297 tutorials, 298 field/lab,
+    // 299 post-QE research) with the family label on the optgroup —
+    // guidance/advisory text is shown below the select as the student
+    // picks (see onGradCourseChange).
     const courseSel = document.getElementById('is-g-course');
     if (courseSel) {
-      courseSel.innerHTML = '<option value="">— Select a course —</option>'
-        + (data.courses || []).map(function (c) {
-            return '<option value="' + esc(c.course) + '">' + esc(c.course) + ' — ' + esc(c.units) + ' units</option>';
-          }).join('');
+      _gradCoursesByCode = {};
+      const famOrder = [];        // family keys in server order
+      const byFam = {};
+      (data.courses || []).forEach(function (c) {
+        _gradCoursesByCode[c.course] = c;
+        const key = String(c.family || '') + '|' + String(c.familyLabel || '');
+        if (!byFam[key]) { byFam[key] = []; famOrder.push(key); }
+        byFam[key].push(c);
+      });
+      let opts = '<option value="">— Select a course —</option>';
+      famOrder.forEach(function (key) {
+        const items = byFam[key];
+        const fam = items[0];
+        const head = fam.familyLabel
+          ? 'ANTH ' + (fam.family || '') + ' — ' + fam.familyLabel
+          : 'Courses';
+        opts += '<optgroup label="' + esc(head) + '">'
+          + items.map(function (c) {
+              return '<option value="' + esc(c.course) + '">' + esc(c.course) + ' — ' + esc(c.units) + ' units</option>';
+            }).join('')
+          + '</optgroup>';
+      });
+      courseSel.innerHTML = opts;
     }
     const spSel = document.getElementById('is-g-sponsor');
     if (spSel) {
@@ -2271,6 +2303,32 @@ window.IndividualStudiesUI = (() => {
     }
     const warn = document.getElementById('is-g-noid-warning');
     if (warn) warn.style.display = (data.profile && data.profile.hasStudentId) ? 'none' : 'block';
+  }
+
+  // Course picked: show the family guidance under the select, and the
+  // 299 post-QE advisory when applicable. Purely informational — the
+  // sponsor and the graduate advisor remain the real checks.
+  function onGradCourseChange() {
+    const courseEl = document.getElementById('is-g-course');
+    const c = courseEl ? _gradCoursesByCode[courseEl.value] : null;
+    const g = document.getElementById('is-g-course-guidance');
+    if (g) {
+      if (c && c.guidance) {
+        g.textContent = (c.familyLabel ? c.familyLabel + ': ' : '') + c.guidance;
+        g.style.display = 'block';
+      } else {
+        g.style.display = 'none';
+      }
+    }
+    const a = document.getElementById('is-g-course-advisory');
+    if (a) {
+      if (c && c.advisory) {
+        a.innerHTML = '<i class="ti ti-info-circle"></i> ' + esc(c.advisory);
+        a.style.display = 'block';
+      } else {
+        a.style.display = 'none';
+      }
+    }
   }
 
   // Term picked: warn when this term's resolved deadline has passed.
@@ -2323,7 +2381,10 @@ window.IndividualStudiesUI = (() => {
     if (!t) return;
     if (t.course) {
       const cs = document.getElementById('is-g-course');
-      if (cs && Array.prototype.some.call(cs.options, function (o) { return o.value === t.course; })) cs.value = t.course;
+      if (cs && Array.prototype.some.call(cs.options, function (o) { return o.value === t.course; })) {
+        cs.value = t.course;
+        onGradCourseChange();   // reflect guidance/advisory for the template's course
+      }
     }
     if (t.title) _setVal('is-g-subject', t.title);
     if (t.workToBeSubmitted) _setVal('is-g-outline', t.workToBeSubmitted);
@@ -2398,6 +2459,7 @@ window.IndividualStudiesUI = (() => {
     _gradOutline = null;
     const tw = document.getElementById('is-g-template-wrap'); if (tw) tw.style.display = 'none';
     const dw = document.getElementById('is-g-deadline-warning'); if (dw) dw.style.display = 'none';
+    onGradCourseChange();   // hides the guidance + advisory (course is now blank)
     gradCancelResubmit(true);
   }
 
@@ -2418,6 +2480,7 @@ window.IndividualStudiesUI = (() => {
       _setVal('is-g-term', rec.termCode || '');
       onGradTermChange();
       _setVal('is-g-course', rec.course || '');
+      onGradCourseChange();
       _setVal('is-g-sponsor', rec.sponsorEmail || '');
       _setVal('is-g-subject', rec.subject || '');
       _setVal('is-g-outline', rec.workOutline || '');
@@ -2831,7 +2894,7 @@ window.IndividualStudiesUI = (() => {
     onCsvChange, previewImport, resolveInstructor, commitImport, loadImportHistory,
     loadExportTerms, exportTermCsv,
     // graduate audience
-    onGradTermChange, onGradSponsorChange, onGradTemplatePick, onGradOutlineChange,
+    onGradTermChange, onGradCourseChange, onGradSponsorChange, onGradTemplatePick, onGradOutlineChange,
     gradSubmit, gradResetForm, gradCancelResubmit, gradStartResubmit, gradStartResubmitFromModal,
     loadGradMine, loadGradReview, loadGradSponsored, loadGradAdvisor, loadGradAll, gradRemind,
     onGradRoomReqToggle, onGradSponsorOutlineChange, gradSponsorApprove,

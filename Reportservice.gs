@@ -8,6 +8,11 @@
 //
 //   • HTML → PDF conversion (HTML → temp Google Doc via the
 //     Advanced Drive Service → PDF export → temp Doc trashed)
+//   • AcroForm template fill (fillTemplate): a stored blank
+//     campus form is filled field-by-field via pdf-lib,
+//     flattened, and archived through the same pipeline — the
+//     caller owns the template id and the values; this service
+//     owns load/fill/flatten/file/log
 //   • the branded letterhead wrapper (optional, like htmlWrap)
 //   • page setup: orientation, margins, repeated footer
 //   • archive filing: <ARCHIVE_FOLDER>/<module>/<file>.pdf
@@ -26,6 +31,8 @@
 // — already on in this project for the thesis upload path. The
 // HTML→Doc conversion has no DriveApp equivalent, so generate()
 // fails loudly (not silently) if the service is missing.
+// fillTemplate additionally requires PdfLib.gs in the project
+// (the PDFLib global) and fails loudly without it.
 //
 // TEMPLATE FIDELITY WARNING for module authors: the Drive HTML→Doc
 // converter understands tables, inline styles, background colors,
@@ -116,6 +123,152 @@ const ReportService = (() => {
       footerText: footerText,
     });
 
+    let fileId = null, url = null, loggedId = null;
+    if (archive) {
+      const folder  = _moduleFolder(module);
+      const created = folder.createFile(pdf);
+      fileId = created.getId();
+      url    = created.getUrl();
+      DataService.insert(CONFIG.SHEETS.PLATFORM, CONFIG.TABS.REPORTS, {
+        ReportID:    reportId,
+        Module:      module,
+        ReportKey:   reportKey,
+        SourceID:    String(p.sourceId || '').trim(),
+        Title:       title,
+        Params:      p.params ? JSON.stringify(p.params).substring(0, 1000) : '',
+        DriveFileID: fileId,
+        URL:         url,
+        FileName:    fileName,
+        GeneratedBy: String(user || ''),
+        // CreatedAt / CreatedBy are filled by DataService.insert.
+      });
+      loggedId = reportId;
+    }
+
+    return {
+      reportId:   loggedId,
+      fileId:     fileId,
+      url:        url,
+      fileName:   fileName,
+      blob:       pdf,
+      dataBase64: returnBase64 ? Utilities.base64Encode(pdf.getBytes()) : null,
+    };
+  }
+
+
+  // ── Public: fillTemplate (AcroForm template fill) ──────────
+
+  /**
+   * Fills a stored AcroForm PDF template and (by default) archives it —
+   * the template-fill sibling of generate(). Same mechanism/content
+   * split: the CALLER owns the template (its Drive id) and the values
+   * (field name → value, from data it alone knows); this service owns
+   * loading, filling, flattening, archive filing, and the Reports log.
+   * The result flows into the same index as every generated report, so
+   * findArchived / fetchPdf / deleteArchived work on filled templates
+   * with no special cases.
+   *
+   * ASYNC: pdf-lib's API is promise-based, so this returns a Promise —
+   * callers must be async functions and `await` it. Apps Script V8
+   * supports this end to end (drains the microtask queue before the
+   * execution ends; google.script.run resolves an async server
+   * function's promise and hands the client the settled value).
+   *
+   * Field-type dispatch (by instanceof — the minified bundle destroys
+   * constructor names):
+   *   text field  → setText(String(v))
+   *   radio group → select(String(v))   (option name, e.g. '299B', 'Yes')
+   *   checkbox    → check() when v is true/'TRUE', else uncheck()
+   *   dropdown    → select(String(v))
+   * A value of undefined/null/'' leaves its field blank. A value naming
+   * a field the template lacks, or a radio option that doesn't exist,
+   * is logged loudly and skipped — one bad value must not abort an
+   * otherwise-fillable official form at a terminal workflow transition.
+   *
+   * @param {Object} p
+   *   @param {string}  p.module         - owning module key (archive subfolder + log)
+   *   @param {string}  p.reportKey      - report type within the module
+   *   @param {string}  p.title          - human title (log column)
+   *   @param {string}  p.templateFileId - Drive id of the BLANK AcroForm template
+   *   @param {Object}  p.values         - { fieldName: value } fill map
+   *   @param {string}  [p.sourceId]     - documented record's id (enables findArchived)
+   *   @param {Object}  [p.params]       - inputs, logged as JSON (reproducibility)
+   *   @param {string}  [p.fileName]     - explicit filename; default mirrors generate()
+   *   @param {boolean} [p.flatten=true] - flatten fields into static page content
+   *   @param {boolean} [p.archive=true] - file in the archive + log a row
+   *   @param {boolean} [p.returnBase64=false] - include dataBase64 for a client download
+   * @param {string} user - acting user's email (logged as GeneratedBy)
+   * @returns {Promise<{ reportId, fileId, url, fileName, blob, dataBase64 }>}
+   *   Same shape as generate(); blob is SERVER-SIDE only.
+   */
+  async function fillTemplate(p, user) {
+    p = p || {};
+    const module    = String(p.module || '').trim();
+    const reportKey = String(p.reportKey || '').trim();
+    const title     = String(p.title || '').trim();
+    const templateFileId = String(p.templateFileId || '').trim();
+    if (!module)    throw new Error('ReportService.fillTemplate: module is required.');
+    if (!reportKey) throw new Error('ReportService.fillTemplate: reportKey is required.');
+    if (!title)     throw new Error('ReportService.fillTemplate: title is required.');
+    if (!templateFileId) throw new Error('ReportService.fillTemplate: templateFileId is required (a blank AcroForm in Drive).');
+    if (typeof PDFLib === 'undefined') {
+      throw new Error('ReportService.fillTemplate: the PDFLib global is missing — is PdfLib.gs in the project?');
+    }
+
+    const archive      = (p.archive !== false);
+    const returnBase64 = (p.returnBase64 === true);
+    if (!archive && !returnBase64) {
+      throw new Error('ReportService.fillTemplate: with archive:false, set returnBase64:true or the PDF goes nowhere.');
+    }
+
+    const { PDFDocument, ParseSpeeds,
+            PDFTextField, PDFRadioGroup, PDFCheckBox, PDFDropdown } = PDFLib;
+
+    // Load the blank template. getBytes() yields SIGNED bytes; the
+    // Uint8Array constructor wraps them mod 256 — exactly right.
+    const tplBlob = DriveApp.getFileById(templateFileId).getBlob();
+    const doc = await PDFDocument.load(new Uint8Array(tplBlob.getBytes()), {
+      parseSpeed: ParseSpeeds.Fastest,     // skip the browser-yield machinery
+    });
+    const form = doc.getForm();
+
+    // Fill, dispatching on field type.
+    const values = p.values || {};
+    Object.keys(values).forEach(function (name) {
+      const v = values[name];
+      if (v === undefined || v === null || v === '') return;   // leave blank
+      let field;
+      try { field = form.getField(name); }
+      catch (e) {
+        Logger.log('ReportService.fillTemplate: template ' + templateFileId +
+          ' has no field "' + name + '" — value skipped.');
+        return;
+      }
+      try {
+        if (field instanceof PDFTextField)       field.setText(String(v));
+        else if (field instanceof PDFRadioGroup) field.select(String(v));
+        else if (field instanceof PDFCheckBox) {
+          if (v === true || String(v).toUpperCase() === 'TRUE') field.check();
+          else field.uncheck();
+        }
+        else if (field instanceof PDFDropdown)   field.select(String(v));
+        else Logger.log('ReportService.fillTemplate: field "' + name + '" has an unhandled type — skipped.');
+      } catch (e) {
+        Logger.log('ReportService.fillTemplate: could not set "' + name + '" = "' + v + '": ' + e);
+      }
+    });
+
+    if (p.flatten !== false) form.flatten();
+    const outBytes = await doc.save({ objectsPerTick: Infinity });
+
+    const now      = new Date();
+    const reportId = DataService.generateId('RPT');
+    const fileName = _safeFileName(p.fileName) ||
+      (_stamp(now, 'yyyy-MM-dd_HHmm') + '_' + _slug(module) + '_' + _slug(reportKey) + '.pdf');
+    const pdf = Utilities.newBlob(Array.from(outBytes), 'application/pdf', fileName);
+
+    // Archive + log — mirrors generate() so the Reports index treats
+    // filled templates and composed reports identically.
     let fileId = null, url = null, loggedId = null;
     if (archive) {
       const folder  = _moduleFolder(module);
@@ -441,6 +594,6 @@ const ReportService = (() => {
   }
 
 
-  return { generate, findArchived, listArchived, fetchPdf, deleteArchived, logoTag, escapeHtml, formatStamp };
+  return { generate, fillTemplate, findArchived, listArchived, fetchPdf, deleteArchived, logoTag, escapeHtml, formatStamp };
 
 })();

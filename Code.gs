@@ -136,8 +136,24 @@ function include(filename) {
  *               failed role check, unregistered handler, unknown action)
  *   'error'   — handler ran and threw
  * Previously only 'success' was written, so every refusal was invisible.
+ *
+ * ASYNC-AWARE: dispatch is async and AWAITS the handler's result. This is
+ * required for the async actions (IndividualStudiesModule.advisorComplete /
+ * gradAdvisorComplete, which await pdf-lib PDF generation): without the
+ * await, dispatch received a pending Promise, audited 'success', and
+ * returned — Apps Script finalized the execution before the post-await
+ * code (the DocumentLink write, Drive viewer grants, and the completion
+ * email with its PDF attachment) ever ran. For the synchronous handlers
+ * (everything else), awaiting a plain value is a no-op, so behavior is
+ * unchanged. Two consequences worth knowing:
+ *   - The 'success' audit row is now written AFTER the work finishes
+ *     (a few seconds later for PDF actions) and never records a Promise.
+ *   - A rejected Promise lands in the catch below and is audited as
+ *     'error' with its real message, same as a synchronous throw.
+ * google.script.run resolves the Promise dispatch returns, so the client
+ * success callback receives the resolved value as before.
  */
-function dispatch(module, action, payload) {
+async function dispatch(module, action, payload) {
   const user     = Session.getActiveUser().getEmail();
   const roles    = Auth.getRoles(user);
   const registry = getModuleRegistry();
@@ -190,7 +206,7 @@ function dispatch(module, action, payload) {
 
   let result;
   try {
-    result = handler[action](payload, user, roles);
+    result = await handler[action](payload, user, roles);
   } catch (err) {
     AuditLog.write({ user: user, module: module, action: action,
                      payload: payload, status: 'error',
@@ -426,4 +442,36 @@ function testCertificateRender() {
     Title:   'LAYOUT TEST v2 — title passed through verbatim',
   }, { force: true });
   Logger.log(JSON.stringify(out));
+}
+
+function debugAnthworkTasks() {
+  Logger.log(JSON.stringify(Tasks.forUser('anthwork@ucsc.edu', Auth.getRoles('anthwork@ucsc.edu')), null, 2));
+}
+
+
+/**
+ * DEBUG (temporary — delete once the PDF flow is confirmed): fills the
+ * graduate petition AcroForm directly, bypassing dispatch and the module,
+ * to isolate the PDF mechanism. Run from the editor (select debugGradFill
+ * in the function dropdown, press Run) and read the log:
+ *   "RESULT: fileId=… url=…"  → the mechanism works end to end
+ *   an error                  → the exact reason PDF generation fails
+ */
+async function debugGradFill() {
+  const out = await ReportService.fillTemplate({
+    module: 'individual_studies',
+    reportKey: 'debug',
+    title: 'Debug grad fill',
+    templateFileId: CONFIG.GRAD_INDIVIDUAL_STUDIES.TEMPLATE_FILE_ID,
+    values: { Course: '299B', Quarter: 'Fall', Year: '2026' },
+    fileName: 'debug-grad-fill.pdf',
+  }, Session.getActiveUser().getEmail());
+  Logger.log('RESULT: fileId=' + out.fileId + ' url=' + out.url);
+}
+
+function debugTemplateBytes() {
+  const f = DriveApp.getFileById(CONFIG.GRAD_INDIVIDUAL_STUDIES.TEMPLATE_FILE_ID);
+  const b = f.getBlob();
+  Logger.log(f.getName() + ' | mime=' + f.getMimeType() +
+    ' | firstBytes=' + b.getBytes().slice(0, 5).join(','));
 }

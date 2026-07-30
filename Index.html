@@ -112,9 +112,14 @@
 <?!= include('_Scripts') ?>
 
 <script>
-  // jsonForScript() (Code.gs) escapes '<' so a value containing "</script>"
-  // cannot close this block. userRoles / initialFocus / tasks were already
-  // encoded server-side; the rest are encoded here.
+  // jsonForScript() (Code.gs) escapes '<' so a value containing a closing
+  // script tag ("<\/script>") cannot close this block early — the HTML
+  // parser ends a script at the FIRST closing tag it sees, even inside a
+  // JS comment or string, which is why this comment spells it "<\/script>".
+  // (A literal one here previously killed this whole block: App.init never
+  // ran, so the dashboard's task list and deep links silently died.)
+  // userRoles / initialFocus / tasks were already encoded server-side;
+  // the rest are encoded here.
   App.init({
     userEmail: <?!= jsonForScript(userEmail) ?>,
     userName: <?!= jsonForScript(userName) ?>,

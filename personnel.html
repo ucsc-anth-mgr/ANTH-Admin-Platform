@@ -2,11 +2,18 @@
 <!-- Two tabs: Roster (default, read-only faculty list + detail) and Import. -->
 <div id="personnel-module">
 
-  <!-- Tab bar -->
-  <div class="tab-bar" style="display:flex;gap:8px;margin-bottom:16px;border-bottom:1px solid #e3e6ea;">
+  <!-- Tab bar — hidden until getVisibleTabs prunes it to this user's tabs.
+       Deny-by-default: rendering everything and removing later leaves a
+       window where unauthorized tabs are visible and clickable. -->
+  <div class="tab-bar" id="personnel-tabbar" style="display:none;gap:8px;margin-bottom:16px;border-bottom:1px solid #e3e6ea;">
+    <span id="personnel-tabs-note"></span>
     <button class="btn btn-tab" id="tab-roster" onclick="PersonnelUI.showTab('roster')"
       style="border:none;background:none;padding:8px 14px;border-bottom:2px solid transparent;cursor:pointer;font-weight:600;">
       <i class="ti ti-users"></i> Roster
+    </button>
+    <button class="btn btn-tab" id="tab-mycases" onclick="PersonnelUI.showTab('mycases')"
+      style="border:none;background:none;padding:8px 14px;border-bottom:2px solid transparent;cursor:pointer;font-weight:600;">
+      <i class="ti ti-checklist"></i> My cases
     </button>
     <button class="btn btn-tab" id="tab-import" onclick="PersonnelUI.showTab('import')"
       style="border:none;background:none;padding:8px 14px;border-bottom:2px solid transparent;cursor:pointer;font-weight:600;">
@@ -81,6 +88,22 @@
       </div>
     </div>
 
+  </div>
+
+  <!-- ============================ MY CASES TAB ============================ -->
+  <div id="view-mycases" style="display:none;">
+    <div class="card">
+      <div class="card-title between">
+        <span><i class="ti ti-checklist"></i> My drafting assignments</span>
+        <button class="btn btn-secondary btn-sm" onclick="PersonnelUI.loadMyAssignments()"><i class="ti ti-refresh"></i> Refresh</button>
+      </div>
+      <p class="text-muted text-sm" style="margin:-8px 0 12px;">
+        The assessments assigned to you, with their due dates. When your draft is done, mark it
+        drafted — the committee chair and staff see the status immediately. These also appear in
+        your portal task list.
+      </p>
+      <div id="mycases-list"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
+    </div>
   </div>
 
   <!-- ============================ IMPORT TAB ============================ -->
@@ -545,28 +568,70 @@ window.PersonnelUI = (() => {
   let _sortKey = 'nameLastFirst';
   let _sortDir = 1;           // 1 = asc, -1 = desc
 
+  let _visibleTabs = null;   // keys this user may see (null until loaded)
+
   function init() {
-    showTab('roster');
-    loadRoster();
+    // Ask the server which tabs this user's roles qualify for (computed
+    // from the module's TABS manifest — super_admin sees all). Buttons for
+    // unqualified tabs are removed outright; the first visible tab becomes
+    // home. The server-side action gates remain the authority on data —
+    // this controls what the UI offers.
+    App.call('personnel', 'getVisibleTabs', {}, res => {
+      const tabs = (res && res.tabs) || [];
+      _visibleTabs = tabs.map(t => t.key);
+      const allTabs = { roster: 'tab-roster', mycases: 'tab-mycases', import: 'tab-import', cases: 'tab-cases',
+                        anticipated: 'tab-anticipated', comms: 'tab-comms', settings: 'tab-settings' };
+      Object.keys(allTabs).forEach(k => {
+        if (_visibleTabs.indexOf(k) === -1) {
+          const btn = document.getElementById(allTabs[k]);
+          if (btn) btn.remove();
+        }
+      });
+      // Verdict in, unauthorized buttons gone — NOW the bar may appear.
+      document.getElementById('personnel-tabbar').style.display = 'flex';
+      if (!_visibleTabs.length) {
+        document.getElementById('personnel-tabs-note').innerHTML =
+          '<div class="alert alert-info text-sm">Your role doesn\'t include any Academic Personnel views. If you believe it should, contact the department manager.</div>';
+        return;
+      }
+      showTab((res.home && _visibleTabs.indexOf(res.home) !== -1) ? res.home : _visibleTabs[0]);
+    }, () => {
+      // Visibility couldn't be determined — offer nothing rather than
+      // everything: the bar STAYS hidden (deny-by-default), only the note
+      // shows. Action gates would block data anyway.
+      document.getElementById('personnel-tabbar').style.display = 'flex';
+      document.getElementById('personnel-tabs-note').innerHTML =
+        '<div class="alert alert-info text-sm">Could not load this module\'s views. Reload the page to try again.</div>';
+      Array.prototype.forEach.call(
+        document.querySelectorAll('#personnel-tabbar .btn-tab'), b => b.remove());
+    });
   }
 
   // ── Tabs ───────────────────────────────────────────────────
   function showTab(which) {
-    const views = { roster: 'view-roster', import: 'view-import', cases: 'view-cases',
+    // Never show a tab the manifest didn't grant (belt to the server's
+    // braces — also catches stale deep links). null = verdict not in yet;
+    // nothing is clickable while the bar is hidden, but a programmatic call
+    // must not slip through either.
+    if (_visibleTabs === null || _visibleTabs.indexOf(which) === -1) return;
+    const views = { roster: 'view-roster', mycases: 'view-mycases', import: 'view-import', cases: 'view-cases',
                     anticipated: 'view-anticipated', comms: 'view-comms', settings: 'view-settings' };
-    const tabs  = { roster: 'tab-roster', import: 'tab-import', cases: 'tab-cases',
+    const tabs  = { roster: 'tab-roster', mycases: 'tab-mycases', import: 'tab-import', cases: 'tab-cases',
                     anticipated: 'tab-anticipated', comms: 'tab-comms', settings: 'tab-settings' };
     const on  = '2px solid var(--ucsc-navy, #003C6C)';
     const off = '2px solid transparent';
     Object.keys(views).forEach(k => {
-      document.getElementById(views[k]).style.display = (k === which) ? 'block' : 'none';
-      document.getElementById(tabs[k]).style.borderBottom = (k === which) ? on : off;
+      const v = document.getElementById(views[k]);
+      if (v) v.style.display = (k === which) ? 'block' : 'none';
+      const t = document.getElementById(tabs[k]);
+      if (t) t.style.borderBottom = (k === which) ? on : off;
     });
-    if (which === 'roster') backToRoster();
+    if (which === 'roster') { backToRoster(); loadRoster(); }
     if (which === 'cases') { backToCases(); loadCases(); }
     if (which === 'anticipated') loadAnticipated();
     if (which === 'settings') loadSettings();
     if (which === 'comms') loadComms();
+    if (which === 'mycases') loadMyAssignments();
   }
 
   // ── Roster load / render ───────────────────────────────────
@@ -836,6 +901,60 @@ window.PersonnelUI = (() => {
   function backToRoster() {
     document.getElementById('roster-detail').style.display = 'none';
     document.getElementById('roster-list').style.display = 'block';
+  }
+
+  // ── My cases (committee member's own queue) ─────────────────
+  function loadMyAssignments() {
+    const el = document.getElementById('mycases-list');
+    if (!el) return;
+    el.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
+    App.call('personnel', 'myAssignments', {}, res => {
+      const rows = (res && res.assignments) || [];
+      if (!rows.length) {
+        el.innerHTML = '<div class="empty-state"><i class="ti ti-clipboard-check" style="font-size:28px;display:block;margin-bottom:8px;"></i>No drafting assignments — when the committee chair assigns you an assessment, it appears here.</div>';
+        return;
+      }
+      const today = new Date().toISOString().slice(0, 10);
+      const body = rows.map(r => {
+        const due = r.dueEffective || r.dueCaptured || '';
+        const overdue = r.status === 'assigned' && due && due < today;
+        const drifted = r.dueEffective && r.dueCaptured && r.dueEffective !== r.dueCaptured;
+        const dueCell = due
+          ? `<strong>${due}</strong>${overdue ? ' <span class="badge badge-danger">overdue</span>' : ''}` +
+            (drifted ? `<div class="text-sm text-muted" title="The working schedule moved after this was assigned — the date shown is the current expectation.">was ${r.dueCaptured}</div>` : '')
+          : '<span class="text-muted">—</span>';
+        const statusBadge = r.status === 'drafted'
+          ? '<span class="badge badge-success">drafted</span>'
+          : '<span class="badge badge-navy">assigned</span>';
+        const action = r.status === 'assigned'
+          ? `<button class="btn btn-primary btn-sm" id="md-${r.componentId}" onclick="PersonnelUI.myMarkDrafted('${r.componentId}')"><i class="ti ti-check"></i> Mark drafted</button>`
+          : '<span class="text-sm text-muted">✓ done</span>';
+        return `
+          <tr>
+            <td><strong>${r.candidate}</strong>${r.isElected ? ' <span class="badge badge-gold">elected</span>' : ''}
+                <div class="text-sm text-muted">${r.reviewType} · ${r.academicYear}</div></td>
+            <td class="text-sm">${r.component}</td>
+            <td class="text-sm" style="white-space:nowrap;">${dueCell}</td>
+            <td>${statusBadge}</td>
+            <td>${action}</td>
+          </tr>`;
+      }).join('');
+      el.innerHTML = `
+        <div class="text-sm text-muted" style="margin-bottom:8px;">${res.openCount} open of ${rows.length} assignment(s)</div>
+        <div class="table-wrap"><table class="data-table">
+          <thead><tr><th>Candidate</th><th>Part of the assessment</th><th>Due</th><th>Status</th><th></th></tr></thead>
+          <tbody>${body}</tbody>
+        </table></div>`;
+    }, () => { el.innerHTML = '<p class="text-muted text-sm">Could not load your assignments.</p>'; });
+  }
+
+  function myMarkDrafted(componentId) {
+    if (!confirm('Mark this assessment as drafted? The committee chair and staff will see it as complete.')) return;
+    FormHelper.setLoading('md-' + componentId, true);
+    App.call('personnel', 'markComponentDrafted', { componentId: componentId }, () => {
+      Toast.show('Marked drafted — thank you.', 'success');
+      loadMyAssignments();
+    }, () => FormHelper.setLoading('md-' + componentId, false));
   }
 
   // ── Communications ─────────────────────────────────────────
@@ -2626,6 +2745,7 @@ window.PersonnelUI = (() => {
     loadSettings, loadGaps, saveGaps, loadCycle, pickDeadline, cancelPick,
     searchDeadlines, chooseDeadline, previewCycleSchedule, setLettersDate,
     proposeCycleDate, toggleCycleCalendar, exportCycleSchedule,
+    loadMyAssignments, myMarkDrafted,
     loadComms, loadTemplateEditor, saveTemplate, generateDrafts,
     sendDraft, sendAllDrafts, draftDraft, draftAllDrafts, copyDraft, loadCommLog,
     addPolicyDocRow, removePolicyDocRow, savePolicyDocs,

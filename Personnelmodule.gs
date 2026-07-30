@@ -45,8 +45,14 @@ const PersonnelModule = (() => {
   // authority. Unlisted programmatic actions: ping, getAttributes,
   // getPersonSummary, computeCaseSchedule, listCycles.
   const TABS = [
-    { key: 'roster', label: 'Roster', icon: 'ti-users', roles: ['*'],
+    // Roster shows rank/step/salary — committee and admins only. (Was ['*']
+    // when the module admitted only super_admin; now that entry may widen,
+    // visibility follows the data's actual gate.)
+    { key: 'roster', label: 'Roster', icon: 'ti-users', roles: ['personnel_committee'],
       actions: ['listRoster', 'getReviewHistory', 'listRanks', 'updatePersonAttributes'] },
+    // The committee member's own drafting queue — strictly self-scoped.
+    { key: 'mycases', label: 'My cases', icon: 'ti-checklist', roles: ['personnel_committee'],
+      actions: ['myAssignments', 'markComponentDrafted'] },
     { key: 'import', label: 'Import rank & step', icon: 'ti-file-upload',
       roles: [], floor: 'super_admin',
       actions: ['detectColumns', 'previewRankImport', 'commitRankImport',
@@ -131,6 +137,7 @@ const PersonnelModule = (() => {
    * @param {Object} payload - { email }
    */
   function getAttributes(payload, user, roles) {
+    _requireRosterAccess(roles);
     const email = _email(payload && payload.email);
     if (!email) throw new Error('email is required.');
     return _readAttrs(email);
@@ -145,6 +152,7 @@ const PersonnelModule = (() => {
    * @param {Object} payload - { email }
    */
   function getPersonSummary(payload, user, roles) {
+    _requireRosterAccess(roles);
     const email = _email(payload && payload.email);
     if (!email) throw new Error('email is required.');
     const profile = Auth.getProfile(email);
@@ -182,6 +190,7 @@ const PersonnelModule = (() => {
    * @param {Object} payload - { includeInactive? }
    */
   function listRoster(payload, user, roles) {
+    _requireRosterAccess(roles);
     const includeInactive = !!(payload && payload.includeInactive);
     const all = DataService.getAll(SHEET(), ATTR_TAB())
       .filter(r => String(r.Namespace) === NS());
@@ -242,6 +251,7 @@ const PersonnelModule = (() => {
    * @returns [ { rank, series, tier } ]
    */
   function listRanks(payload, user, roles) {
+    _requireRosterAccess(roles);
     const map = RANK_MAP();
     return Object.keys(map).map(rank => ({
       rank:   rank,
@@ -751,6 +761,19 @@ const PersonnelModule = (() => {
     return out;
   }
 
+  /**
+   * Reads of people data (roster, attributes, review history) are for the
+   * committee and admins — NOT everyone the shell lets into the module.
+   * Rank, step, and salary are sensitive; a role that grants module entry
+   * for some future tab must not implicitly grant these.
+   */
+  function _requireRosterAccess(roles) {
+    roles = roles || [];
+    if (roles.indexOf('super_admin') !== -1) return;
+    if (roles.indexOf(COMMITTEE_ROLE()) !== -1) return;
+    throw new Error('Roster data is limited to the personnel committee and administrators.');
+  }
+
   function _requireSuperAdmin(roles) {
     if (!roles || roles.indexOf('super_admin') === -1) {
       throw new Error('Only a super_admin may import rank/step data.');
@@ -781,6 +804,7 @@ const PersonnelModule = (() => {
    * the case forms.
    */
   function listReviewTypes(payload, user, roles) {
+    _requireRosterAccess(roles);
     const types = REVIEW_TYPES();
     return {
       reviewTypes: Object.keys(types).map(k => ({
@@ -1062,6 +1086,7 @@ const PersonnelModule = (() => {
    * @param {Object} payload - { academicYear? }
    */
   function listCases(payload, user, roles) {
+    _requireSuperAdmin(roles);
     const p = payload || {};
     const wantYear = String(p.academicYear || '').trim();
     let rows = DataService.getAll(SHEET(), CASES_TAB());
@@ -1864,6 +1889,7 @@ const PersonnelModule = (() => {
    * @param {Object} payload - { email }
    */
   function getReviewHistory(payload, user, roles) {
+    _requireRosterAccess(roles);
     const email = _email((payload || {}).email);
     if (!email) throw new Error('email is required.');
     const rows = DataService.query(SHEET(), HISTORY_TAB(), 'PersonEmail', email)
@@ -3348,6 +3374,31 @@ const PersonnelModule = (() => {
   // both paths land in the CommunicationsLog, so "did we tell them?" stays
   // answerable.
 
+  /**
+   * The tabs THIS caller may see, computed from the TABS manifest:
+   * super_admin sees everything; otherwise a tab is visible when its roles
+   * include '*' or intersect the caller's roles. This is what the module UI
+   * renders from — the server-side action gates remain the authority on
+   * data; this controls what's offered.
+   */
+  function getVisibleTabs(payload, user, roles) {
+    roles = roles || [];
+    const isSuper = roles.indexOf('super_admin') !== -1;
+    const visible = TABS.filter(t => {
+      if (isSuper) return true;
+      const tr = t.roles || [];
+      if (tr.indexOf('*') !== -1) return true;
+      return tr.some(r => roles.indexOf(r) !== -1);
+    }).map(t => ({ key: t.key, label: t.label, icon: t.icon }));
+    // Where to land: admins on Roster (their working view); a committee
+    // member on My cases (theirs); otherwise the first visible tab.
+    const keys = visible.map(t => t.key);
+    let home = keys[0] || '';
+    if (isSuper && keys.indexOf('roster') !== -1) home = 'roster';
+    else if (!isSuper && keys.indexOf('mycases') !== -1) home = 'mycases';
+    return { tabs: visible, home: home };
+  }
+
   function COMM_LOG_TAB() { return CONFIG.TABS.COMMUNICATIONS_LOG; }
   const COMM_KINDS = ['assignments', 'schedule', 'policy'];
 
@@ -3720,6 +3771,92 @@ const PersonnelModule = (() => {
     }));
     rows.sort((a, b) => String(b.at).localeCompare(String(a.at)));
     return { entries: rows.slice(0, limit), total: rows.length };
+  }
+
+
+  /**
+   * The caller's OWN drafting assignments — the committee member's view.
+   * Strictly self-scoped: the recipient is always the authenticated caller,
+   * never a payload parameter, so no member can read another's queue.
+   * Terminal cases (closed / deferred / completed) are excluded. Each row
+   * carries both due dates when they differ: the CAPTURED one (set on the
+   * task at assignment) and the LIVE effective drafts-due (proposed-first,
+   * resolved now) — so a member always sees the current expectation, and
+   * drift between plan and task is visible rather than silent.
+   */
+  function myAssignments(payload, user, roles) {
+    roles = roles || [];
+    if (roles.indexOf('super_admin') === -1 && roles.indexOf(COMMITTEE_ROLE()) === -1) {
+      throw new Error('This view is for personnel committee members.');
+    }
+    const me = _email(user);
+
+    const caseById = {};
+    DataService.getAll(SHEET(), CASES_TAB()).forEach(c => {
+      const status = String(c.Status || '').toLowerCase();
+      if (status === 'closed' || status === 'deferred' || status === 'completed') return;
+      caseById[c.CaseID] = c;
+    });
+
+    // Live effective drafts-due, resolved once per (year, timeline).
+    const typeMap = (CONFIG.PERSONNEL && CONFIG.PERSONNEL.DIVISION_DEADLINE_BY_TYPE) || {};
+    const cycleCache = {};
+    const effectiveFor = (year, reviewType) => {
+      if (!cycleCache[year]) {
+        try {
+          // Internal read with elevated roles: the member may see the DATES
+          // their own deadline derives from, though the cycle actions
+          // themselves stay admin-only. (Same pattern as the roster build's
+          // internal calls.)
+          cycleCache[year] = computeCycleSchedule({ academicYear: year }, user, ['super_admin']);
+        } catch (err) { cycleCache[year] = { schedules: null }; }
+      }
+      const rep = cycleCache[year];
+      if (!rep.schedules) return '';
+      const key = typeMap[String(reviewType)] === 'major' ? 'major' : 'merit';
+      const sch = rep.schedules[key] && rep.schedules[key].schedule;
+      const proposed = ((rep.proposedDates || {})[key] || {}).draftsDue || '';
+      const computed = (sch && sch.backward && sch.backward.draftsDue) || '';
+      return proposed || computed;
+    };
+
+    const types = COMPONENT_TYPES();
+    const rows = [];
+    DataService.getAll(SHEET(), COMPONENTS_TAB()).forEach(comp => {
+      if (_email(comp.AssignedTo) !== me) return;
+      const c = caseById[comp.CaseID];
+      if (!c) return;   // terminal or unknown case
+      const candidate = Auth.getProfile(_email(c.CandidateEmail));
+      rows.push({
+        componentId: comp.ComponentID,
+        caseId: c.CaseID,
+        candidate: candidate ? (candidate.nameLastFirst || candidate.name) : c.CandidateEmail,
+        reviewType: c.ReviewType,
+        academicYear: c.AcademicYear,
+        isElected: String(c.IsElected || '').toUpperCase() === 'TRUE',
+        component: (types[comp.ComponentType] && types[comp.ComponentType].label) || comp.ComponentType,
+        status: String(comp.Status || ''),
+        dueCaptured: _histDate(comp.DueAt) || '',
+        dueEffective: effectiveFor(String(c.AcademicYear).trim(), c.ReviewType),
+      });
+    });
+
+    // Open work first, then by the date that matters (effective, falling
+    // back to captured), then by candidate.
+    rows.sort((a, b) => {
+      const aOpen = a.status === 'assigned' ? 0 : 1;
+      const bOpen = b.status === 'assigned' ? 0 : 1;
+      if (aOpen !== bOpen) return aOpen - bOpen;
+      const ad = a.dueEffective || a.dueCaptured || '9999';
+      const bd = b.dueEffective || b.dueCaptured || '9999';
+      if (ad !== bd) return ad < bd ? -1 : 1;
+      return String(a.candidate).localeCompare(String(b.candidate));
+    });
+
+    return {
+      assignments: rows,
+      openCount: rows.filter(r => r.status === 'assigned').length,
+    };
   }
 
 
@@ -4180,52 +4317,13 @@ const PersonnelModule = (() => {
     return y + '-07-01';
   }
 
-  // ── Per-action authorization (ActionPolicy.gs) ─────────────
-  // ['*'] = anyone the Modules row admits; [] = super_admin only;
-  // a role list = those roles (super_admin always passes). An action
-  // MISSING from this map is denied to everyone but super_admin —
-  // default-deny, so a new action needs a line here before it runs.
-  const ACTIONS = {
-    ping: ['*'],                       // returns only the caller's own identity
-
-    // Reads — super_admin only. listRoster carries SALARY and
-    // getReviewHistory returns any person's review record by email.
-    // These were the module's unguarded actions; widening any of them
-    // should come with a handler change that strips salary for
-    // non-admins.
-    getAttributes: [], getPersonSummary: [],
-    listRoster: [], listRanks: [], getReviewHistory: [],
-
-    updatePersonAttributes: [],
-    detectColumns: [], previewRankImport: [], commitRankImport: [],
-    detectHistoryColumns: [], previewHistoryImport: [], commitHistoryImport: [],
-
-    listReviewTypes: [], detectCallColumns: [], previewCallImport: [],
-    commitCallImport: [], listCases: [], updateCase: [], createCase: [],
-    checkCaseEligibility: [],
-
-    listCommitteeMembers: [], listCaseComponents: [], assignComponent: [],
-    markComponentDrafted: [], reopenComponent: [], committeeWorkload: [],
-    exportWorkloadToSheet: [], caseAssignments: [],
-
-    findCalendarDeadlines: [], computeCaseSchedule: [], computeScheduleForCase: [],
-    getSchedulerSettings: [], saveSchedulerSettings: [],
-    getCycle: [], listCycles: [], setCycleAnchors: [],
-    computeCycleSchedule: [], proposeDate: [], exportCycleScheduleToSheet: [],
-
-    getCommTemplates: [], saveCommTemplate: [], previewCommunication: [],
-    sendCommunications: [], draftCommunications: [], logCopiedCommunication: [],
-    listCommunicationsLog: [], listPolicyDocs: [], savePolicyDocs: [],
-
-    listAnticipatedCandidates: [], exportAnticipatedToSheet: [], exportAnticipatedToCsv: [],
-  };
-
 
   // Only these names are dispatchable.
   // Only these names are dispatchable (TABS is the tab manifest, not an action).
   return {
     TABS: TABS,
-    ACTIONS: ACTIONS,
+    getVisibleTabs,
+    myAssignments,
     ping,
     getAttributes,
     getPersonSummary,

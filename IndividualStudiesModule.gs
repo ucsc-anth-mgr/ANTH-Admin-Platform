@@ -32,11 +32,15 @@
 //     total is computed ACROSS the student's individual-studies petitions
 //     for the term — AND their ANTH 195S enrollments (Thesis module), which
 //     count toward the same campus cap — surfaced at the advisor stage.
-//   - The canonical PDF is generated ONCE, at COMPLETE, via ReportService
-//     (campus-form layout, name/email/timestamp in lieu of signatures). No
-//     upload anywhere. The student is granted document-level view on the
-//     archived file; folder-level faculty/advisor access is managed in Drive
-//     outside the module.
+//   - The canonical PDF is generated ONCE, at COMPLETE: the OFFICIAL campus
+//     AcroForm template is filled field-by-field, flattened, and archived
+//     via ReportService.fillTemplate (name/email/timestamp in lieu of
+//     signatures). Templates: CONFIG.INDIVIDUAL_STUDIES.TEMPLATE_FILE_ID
+//     (undergrad) and CONFIG.GRAD_INDIVIDUAL_STUDIES.TEMPLATE_FILE_ID
+//     (grad). No upload anywhere. The student, the faculty sponsor, and
+//     the advisor pool are granted document-level view on the archived
+//     file; folder-level access beyond that is managed in Drive outside
+//     the module.
 //   - Cross-cutting concerns go through platform services: Tasks, Notify,
 //     EventBus, Auth, DataService, ReportService. No SpreadsheetApp here.
 //   - Every privileged action allows super_admin.
@@ -48,6 +52,14 @@
 //   CreatedAt/UpdatedAt Dates, and Dates in any cell Sheets coerced, e.g.
 //   a typed report due date) must never leave the server unshaped. Use
 //   _plainStr()/_fmtDate() on anything that could be a Date.
+//
+// ASYNC RULE (the pdf-lib consequence): ReportService.fillTemplate is
+//   promise-based, so advisorComplete and gradAdvisorComplete are ASYNC
+//   and `await` the PDF inside their existing best-effort try/catch.
+//   Their dispatched return value is therefore a Promise; Apps Script V8
+//   resolves it end to end — dispatch passes it through, google.script.run
+//   hands the client the settled value, and a rejection reaches the
+//   failure handler. Keep any new PDF-generating action async the same way.
 //
 // REGISTRATION (Code.gs): add IndividualStudiesModule to getModuleHandler()
 //   and getRegisteredHandlers(), and add the Modules-sheet row (Admin →
@@ -245,10 +257,23 @@ const IndividualStudiesModule = (() => {
   // Fixed course/unit pairs, ANTH 297A–299C. The A/B/C suffix encodes
   // the unit value (5/10/15) — VERIFY these pairs against the catalog
   // before first real use; this constant is the single place to fix.
+  // Each family carries student-facing guidance (what the course IS),
+  // surfaced on the New Grad Petition form. 299 additionally carries an
+  // advisory line (post-QE only) — informational, never blocking: the
+  // sponsor and the graduate advisor are the real checks.
+  const GRAD_COURSE_FAMILIES = {
+    '297': { label: 'Independent Study',
+             guidance: 'Tutorial or directed readings with the faculty sponsor.' },
+    '298': { label: 'Field Study',
+             guidance: 'Field study or laboratory apprenticeship.' },
+    '299': { label: 'Thesis Research',
+             guidance: 'Post-QE dissertation research and writing.',
+             advisory: 'ANTH 299 is intended for students who have advanced to candidacy (passed the qualifying examination).' },
+  };
   const GRAD_COURSES = [
-    { course: 'ANTH 297A', units: 5 }, { course: 'ANTH 297B', units: 10 }, { course: 'ANTH 297C', units: 15 },
-    { course: 'ANTH 298A', units: 5 }, { course: 'ANTH 298B', units: 10 }, { course: 'ANTH 298C', units: 15 },
-    { course: 'ANTH 299A', units: 5 }, { course: 'ANTH 299B', units: 10 }, { course: 'ANTH 299C', units: 15 },
+    { course: 'ANTH 297A', units: 5, family: '297' }, { course: 'ANTH 297B', units: 10, family: '297' }, { course: 'ANTH 297C', units: 15, family: '297' },
+    { course: 'ANTH 298A', units: 5, family: '298' }, { course: 'ANTH 298B', units: 10, family: '298' }, { course: 'ANTH 298C', units: 15, family: '298' },
+    { course: 'ANTH 299A', units: 5, family: '299' }, { course: 'ANTH 299B', units: 10, family: '299' }, { course: 'ANTH 299C', units: 15, family: '299' },
   ];
 
   /** GIS-prefixed ids are graduate petitions; IS-prefixed, undergrad.
@@ -775,10 +800,11 @@ const IndividualStudiesModule = (() => {
     if (!to.length) throw new Error('No one is assigned at this stage to remind.');
 
     const who = _facultyLabel(user) || user;
+    const aud = grad ? 'graduate' : 'undergraduate';
     Notify.send({
       to: to,
-      subject: 'Reminder: individual study awaiting your action',
-      body: 'A reminder from ' + who + ': the ' + rec.Course + ' individual-studies petition for ' +
+      subject: 'Reminder: ' + aud + ' individual study awaiting your action',
+      body: 'A reminder from ' + who + ': the ' + rec.Course + ' ' + aud + ' individual-studies petition for ' +
         _studentLabel(rec.StudentEmail) + ' is waiting for you to ' + ask + '.\n\n' +
         'Open it in the portal: ' + _deepLink(rec.PetitionID),
       replyTo: Settings.replyTo('individual_studies'),   // module reply-to (Admin → settings); falls back to CONFIG.DEFAULT_REPLY_TO
@@ -806,6 +832,10 @@ const IndividualStudiesModule = (() => {
    * prefill, pool pick, or reassignment), the major-authorization decision
    * if required, generates the canonical PDF, and marks COMPLETE.
    *
+   * ASYNC (see the ASYNC RULE in the file header): the PDF is an awaited
+   * ReportService.fillTemplate call; the dispatched return is a Promise
+   * that Apps Script resolves for the client.
+   *
    * @param {Object} payload
    *   @param {string} payload.petitionId
    *   @param {string} payload.classNumber       - the assigned/relayed number
@@ -815,7 +845,7 @@ const IndividualStudiesModule = (() => {
    *   @param {boolean} [payload.majorAuthorized] - required when total > 7
    *   @param {string} [payload.comments]
    */
-  function advisorComplete(payload, user, roles) {
+  async function advisorComplete(payload, user, roles) {
     _assertAdvisor(roles);
     payload = payload || {};
     const rec = _byId(payload.petitionId);
@@ -890,16 +920,19 @@ const IndividualStudiesModule = (() => {
     // Generate the canonical PDF now that every block is filled. Failure
     // to generate must not strand the record in a half-completed state, so
     // it is best-effort and logged; the record is COMPLETE regardless and
-    // the PDF can be regenerated.
+    // the PDF can be regenerated. The awaited rejection lands in this
+    // try/catch like any thrown error.
     const finalRec = _byId(rec.PetitionID);
     let pdf = null;
     try {
-      pdf = _generatePetitionPdf(finalRec, user);
+      pdf = await _generatePetitionPdf(finalRec, user);
       if (pdf && pdf.fileId) {
         DataService.update(SHEET(), TAB(), 'PetitionID', rec.PetitionID, {
           DriveFileID: pdf.fileId, DocumentLink: pdf.url || '', FileName: pdf.fileName || '',
         });
-        _grantStudentViewer(pdf.fileId, finalRec.StudentEmail);
+        // Student + faculty sponsor + the undergraduate advisor pool
+        // (staff_undergrad — typically the anthurgra functional account).
+        _grantViewers(pdf.fileId, [finalRec.StudentEmail, finalRec.SponsorEmail].concat(_advisorEmails()));
       }
     } catch (e) {
       Logger.log('IndividualStudiesModule: PDF generation failed for ' + rec.PetitionID + ': ' + e);
@@ -1052,7 +1085,12 @@ const IndividualStudiesModule = (() => {
     }
     return {
       terms: terms,
-      courses: GRAD_COURSES.map(c => ({ course: c.course, units: c.units, catalogUrl: _catalogUrl(c.course) })),
+      courses: GRAD_COURSES.map(c => {
+        const fam = GRAD_COURSE_FAMILIES[c.family] || {};
+        return { course: c.course, units: c.units, family: c.family,
+                 familyLabel: fam.label || '', guidance: fam.guidance || '',
+                 advisory: fam.advisory || '', catalogUrl: _catalogUrl(c.course) };
+      }),
       sponsors: _eligibleGradSponsors(),
       profile: {
         name: profile.name || '',
@@ -1251,8 +1289,12 @@ const IndividualStudiesModule = (() => {
    * pool pick, or confirmed reassignment), optional note, canonical
    * PDF, COMPLETE. No course correction on the grad side — a wrong
    * course is a return to the sponsor.
+   *
+   * ASYNC (see the ASYNC RULE in the file header): the PDF is an awaited
+   * ReportService.fillTemplate call; the dispatched return is a Promise
+   * that Apps Script resolves for the client.
    */
-  function gradAdvisorComplete(payload, user, roles) {
+  async function gradAdvisorComplete(payload, user, roles) {
     _assertGradAdvisor(roles);
     payload = payload || {};
     const rec = _rowById(GRAD_TAB(), payload.petitionId);
@@ -1276,16 +1318,18 @@ const IndividualStudiesModule = (() => {
       Stage: STAGE.COMPLETE,
     });
 
-    // PDF at COMPLETE — best-effort, exactly as the undergrad side.
+    // PDF at COMPLETE — best-effort, exactly as the undergrad side. The
+    // awaited rejection lands in this try/catch like any thrown error.
     const finalRec = _rowById(GRAD_TAB(), rec.PetitionID);
     let pdf = null;
     try {
-      pdf = _generateGradPetitionPdf(finalRec, user);
+      pdf = await _generateGradPetitionPdf(finalRec, user);
       if (pdf && pdf.fileId) {
         DataService.update(SHEET(), GRAD_TAB(), 'PetitionID', rec.PetitionID, {
           DriveFileID: pdf.fileId, DocumentLink: pdf.url || '', FileName: pdf.fileName || '',
         });
-        _grantStudentViewer(pdf.fileId, finalRec.StudentEmail);
+        // Student + faculty sponsor + the graduate advisor pool (staff_grad).
+        _grantViewers(pdf.fileId, [finalRec.StudentEmail, finalRec.SponsorEmail].concat(_gradAdvisorEmails()));
       }
     } catch (e) {
       Logger.log('IndividualStudiesModule: grad PDF generation failed for ' + rec.PetitionID + ': ' + e);
@@ -1537,6 +1581,7 @@ const IndividualStudiesModule = (() => {
 
   function _gradNotifyComplete(rec, pdf) {
     const link = (pdf && pdf.url) ? pdf.url : (rec.DocumentLink || '');
+    const blob = _pdfBlobFor(pdf, rec);
     const lines = [
       _fillNotifyTokens(_notifyTemplate('GRAD_NOTIFY_COMPLETE'), rec),
       '',
@@ -1546,11 +1591,13 @@ const IndividualStudiesModule = (() => {
     if (String(rec.AdvisorComments || '').trim()) {
       lines.push('', 'Note from the graduate advisor:', String(rec.AdvisorComments).trim());
     }
-    if (link) lines.push('', 'Your completed petition (PDF): ' + link);
+    if (blob) lines.push('', 'Your completed petition is attached as a PDF' + (link ? ' and also available here: ' + link : '.'));
+    else if (link) lines.push('', 'Your completed petition (PDF): ' + link);
     Notify.send({
       to: rec.StudentEmail,
       subject: 'Your graduate individual-studies petition is complete',
       body: lines.join('\n'),
+      attachments: blob ? [blob] : [],
       replyTo: Settings.replyTo('individual_studies'),
     });
   }
@@ -1596,20 +1643,207 @@ const IndividualStudiesModule = (() => {
     }
   }
 
-  function _generateGradPetitionPdf(rec, user) {
+
+  // ============================================================
+  // PRIVATE — PDF generation (official campus AcroForm, at COMPLETE)
+  // ============================================================
+  // Both audiences fill the OFFICIAL campus form via
+  // ReportService.fillTemplate (mechanism there; template ids + values
+  // mapping here). The old HTML-composed layouts (_petitionHtml /
+  // _gradPetitionHtml) were removed when this landed — the archived
+  // document is now pixel-identical to the paper form.
+
+  /** Name-in-lieu signature line: "Last, First (electronic Sep 28, 2026)". */
+  function _sigText(email, at) {
+    const who = _facultyLabel(email) || String(email || '');
+    if (!who) return '';
+    return who + ' (electronic' + (at ? ' ' + _fmtDate(at) : '') + ')';
+  }
+
+  /**
+   * The PDF blob for a completion email attachment: the fill result's own
+   * blob when present, else re-fetched from Drive by file id (fill result's
+   * or the record's). Null when neither is available — the email then
+   * degrades to link-only. Best-effort, never throws (attachment failure
+   * must not block the completion notification).
+   */
+  function _pdfBlobFor(pdf, rec) {
+    try {
+      if (pdf && pdf.blob && typeof pdf.blob.getBytes === 'function') return pdf.blob;
+      const fid = String((pdf && pdf.fileId) || (rec && rec.DriveFileID) || '').trim();
+      if (fid) return ReportService.fetchPdf(fid);
+    } catch (e) {
+      Logger.log('IndividualStudiesModule._pdfBlobFor: could not obtain PDF blob for ' +
+        ((rec && rec.PetitionID) || '?') + ': ' + e);
+    }
+    return null;
+  }
+
+  /**
+   * Fills the official undergraduate petition AcroForm (the campus
+   * "Petition for Undergraduate Individual Studies Course") from the
+   * completed record. Template: CONFIG.INDIVIDUAL_STUDIES.TEMPLATE_FILE_ID.
+   * Async — the caller awaits (see advisorComplete).
+   */
+  function _generatePetitionPdf(rec, user) {
+    const templateFileId = String((CONFIG.INDIVIDUAL_STUDIES &&
+      CONFIG.INDIVIDUAL_STUDIES.TEMPLATE_FILE_ID) || '').trim();
+    if (!templateFileId) {
+      throw new Error('CONFIG.INDIVIDUAL_STUDIES.TEMPLATE_FILE_ID is not set — upload the blank ' +
+        'undergraduate petition AcroForm to Drive and paste its file id.');
+    }
     const student = Auth.getProfile(rec.StudentEmail) || {};
-    return ReportService.generate({
+    return ReportService.fillTemplate({
+      module: MODULE,
+      reportKey: 'petition',
+      title: 'Individual Studies Petition — ' + (student.name || rec.StudentEmail),
+      sourceId: rec.PetitionID,
+      params: { petitionId: rec.PetitionID, term: _recTerm(rec), course: rec.Course },
+      templateFileId: templateFileId,
+      values: _undergradFillValues(rec, student),
+      fileName: _buildFileName(rec, student),
+    }, user);
+  }
+
+  /**
+   * Record → AcroForm field values for the undergraduate template.
+   * Field names are the template's (they were authored to match these
+   * columns). Row-1-only on the repeated agency/instructor rows — one
+   * study per petition. Blank values leave their fields empty.
+   *
+   * The template's separate *SignDate fields are deliberately left
+   * blank: each signature line already carries the date in its
+   * "(electronic <date>)" parenthetical, and the date boxes are too
+   * narrow to render it cleanly anyway.
+   */
+  function _undergradFillValues(rec, student) {
+    const undeclared = String(rec.MajorStatus || '').trim().toLowerCase() === 'undeclared';
+    const credits = String(rec.Credits || '').trim();
+    const creditsListed = ['2', '5', '10', '15'].indexOf(credits) !== -1;
+    const grade = String(rec.GradeOption || '').trim();
+    const sec = String(rec.ClassSection || '').trim();
+    const advisorSigned = !!rec.AdvisorProcessedBy;
+
+    return {
+      // ── Identity ──
+      StudentName:  student.name || rec.StudentEmail,
+      StudentID:    student.studentId || '',
+      Quarter:      rec.Quarter,
+      Year:         rec.Year,
+      StudentEmail: rec.StudentEmail,
+      Phone:        rec.Phone || '',
+      College:      rec.College || '',
+      MajorStatus:  undeclared ? 'Undeclared' : 'Major',
+      MajorName:    undeclared ? '' : String(rec.MajorStatus || '').trim(),
+      ClassLevel:   String(rec.ClassLevel || '').trim(),   // FR | SO | JR | SR
+
+      // ── Course / study ──
+      CourseSponsoringAgency: 'Anthropology',
+      SponsorName:            _facultyLabel(rec.SponsorEmail),
+      StudySiteAddress:       rec.StudySiteAddress || '',
+      Title:                  rec.Title || '',
+      CourseDescription:      rec.CourseDescription || '',
+      EvidenceOfPreparation:  rec.EvidenceOfPreparation || '',
+      WorkToBeSubmitted:      rec.WorkToBeSubmitted || '',
+      ReportRequired:         _isTrueStr(rec.ReportRequired) ? 'Will' : 'WillNot',
+      ReportDueDate:          _isTrueStr(rec.ReportRequired) ? _plainStr(rec.ReportDueDate) : '',
+      HoursWithSponsor:       rec.HoursWithSponsor || '',
+      HoursIndependent:       rec.HoursIndependent || '',
+
+      // ── Instructor approval, row 1 ──
+      Credits1:         creditsListed ? credits : (credits ? 'other' : ''),
+      CreditsOther1:    creditsListed ? '' : credits,
+      GradeLetter1:     grade === 'Letter',
+      GradePassNoPass1: grade === 'Pass/No Pass',
+      SponsorSignature: _sigText(rec.SponsorDecidedBy || rec.SponsorEmail, rec.SponsorDecidedAt),
+
+      // ── Course sponsoring agency approval, row 1 (advisor) ──
+      ClassNumber1: rec.ClassNumber || '',
+      CourseID1:    String(rec.Course || '').replace(/\s+/g, '-') + (sec ? '-' + sec : ''),
+      AgencySignature: advisorSigned ? _sigText(rec.AdvisorProcessedBy, rec.AdvisorProcessedAt) : '',
+
+      // ── Major department approval — signed only when the >7-credit
+      //    authorization was actually required (mirrors the old HTML
+      //    layout's conditional) ──
+      TotalSpecialStudyCredits: rec.TotalSpecialStudyCredits || '',
+      AdvisorSignature: (_isTrueStr(rec.MajorAuthRequired) && advisorSigned)
+        ? _sigText(rec.AdvisorProcessedBy, rec.AdvisorProcessedAt) : '',
+
+      // ── Student signature (submission = signing) ──
+      StudentSignature: _sigText(rec.StudentEmail, rec.CreatedAt),
+    };
+  }
+
+  /**
+   * Fills the official graduate petition AcroForm (the "Anthropology
+   * Graduate Independent Study Petition") from the completed record.
+   * Template: CONFIG.GRAD_INDIVIDUAL_STUDIES.TEMPLATE_FILE_ID.
+   * Async — the caller awaits (see gradAdvisorComplete).
+   */
+  function _generateGradPetitionPdf(rec, user) {
+    const templateFileId = String((CONFIG.GRAD_INDIVIDUAL_STUDIES &&
+      CONFIG.GRAD_INDIVIDUAL_STUDIES.TEMPLATE_FILE_ID) || '').trim();
+    if (!templateFileId) {
+      throw new Error('CONFIG.GRAD_INDIVIDUAL_STUDIES.TEMPLATE_FILE_ID is not set — upload the blank ' +
+        'graduate petition AcroForm to Drive and paste its file id.');
+    }
+    const student = Auth.getProfile(rec.StudentEmail) || {};
+    return ReportService.fillTemplate({
       module: MODULE,
       reportKey: 'grad_petition',
       title: 'Graduate Individual Studies Petition — ' + (student.name || rec.StudentEmail),
       sourceId: rec.PetitionID,
       params: { petitionId: rec.PetitionID, term: _recTerm(rec), course: rec.Course },
-      html: _gradPetitionHtml(rec, student),
+      templateFileId: templateFileId,
+      values: _gradFillValues(rec, student),
       fileName: _gradBuildFileName(rec, student),
-      orientation: 'portrait',
-      letterhead: false,
-      footerText: '',
     }, user);
+  }
+
+  /**
+   * Record → AcroForm field values for the graduate template. The
+   * Course radio's option names are the bare suffixed numbers
+   * ('297A'…'299C'), so the ANTH prefix is stripped. Units are not on
+   * the form (the course code implies them); LateSubmission and
+   * ClassSection stay record-only — workflow metadata the campus form
+   * has no line for (both survive in the record and audit log).
+   *
+   * The template's separate *SignDate fields are deliberately left
+   * blank: each signature line already carries the date in its
+   * "(electronic <date>)" parenthetical.
+   */
+  function _gradFillValues(rec, student) {
+    return {
+      ClassNumber:  rec.ClassNumber || '',
+      Course:       String(rec.Course || '').replace(/^ANTH\s+/i, '').trim(),  // 'ANTH 299B' → '299B'
+      StudentName:  student.name || rec.StudentEmail,
+      Quarter:      rec.Quarter,
+      Year:         rec.Year,
+      StudentEmail: rec.StudentEmail,
+      StudySite:    rec.StudySite || '',
+      Subject:      rec.Subject || '',
+      StudyOutline: rec.WorkOutline || '',
+      WeeklyContactHours: rec.WeeklyContactHours || '',
+      FinalPaperRequired: _isTrueStr(rec.FinalPaperRequired) ? 'Yes' : 'No',
+
+      StudentSignature: _sigText(rec.StudentEmail, rec.CreatedAt),
+
+      SponsorName:      _facultyLabel(rec.SponsorEmail),
+      SponsorSignature: _sigText(rec.SponsorDecidedBy || rec.SponsorEmail, rec.SponsorDecidedAt),
+    };
+  }
+
+  /**
+   * Filename: <Year>-<Quarter>_<StudentID>-IS-<CourseToken>_Last-First.pdf
+   * e.g. 2025-Fall_1234567-IS-ANTH199_Doe-Jane.pdf
+   */
+  function _buildFileName(rec, student) {
+    const courseToken = String(rec.Course || '').replace(/\s+/g, '');
+    const last = (student.lastName || '').trim() || 'Student';
+    const first = (student.firstName || '').trim() || '';
+    const who = first ? (last + '-' + first) : last;
+    return rec.Year + '-' + rec.Quarter + '_' + (student.studentId || 'NOID') +
+           '-IS-' + courseToken + '_' + who + '.pdf';
   }
 
   /** Filename: <Year>-<Quarter>_<StudentID>-GIS-<CourseToken>_Last-First.pdf */
@@ -1622,79 +1856,6 @@ const IndividualStudiesModule = (() => {
            '-GIS-' + courseToken + '_' + who + '.pdf';
   }
 
-  /** Grad campus-form layout: student block, study block (subject /
-   *  outline / contact hours / final paper), sponsor and agency
-   *  approval blocks, with the late flag stated when set. Same simple
-   *  top-level-table constraints as the undergrad layout. */
-  function _gradPetitionHtml(rec, student) {
-    const navy = (CONFIG.BRAND && CONFIG.BRAND.NAVY) || '#003C6C';
-    const e = _esc;
-    const studentName = student.name || rec.StudentEmail;
-    const sponsorName = _facultyLabel(rec.SponsorEmail);
-    const advisorName = rec.AdvisorProcessedBy ? _facultyLabel(rec.AdvisorProcessedBy) : '';
-
-    const row = (label, value) =>
-      '<tr><td style="padding:3px 10px 3px 0;color:#555;white-space:nowrap;vertical-align:top;">' + e(label) +
-      '</td><td style="padding:3px 0;vertical-align:top;">' + (value || '&mdash;') + '</td></tr>';
-
-    const sig = (who, email, at) => {
-      if (!who && !email) return '&mdash;';
-      return e(who || email) + (email ? ' &lt;' + e(email) + '&gt;' : '') +
-             (at ? '<br><span style="color:#777;font-size:9pt;">Approved ' + e(_fmtDate(at)) + '</span>' : '');
-    };
-
-    return ''
-      + '<div style="font-family:Arial,Helvetica,sans-serif;color:#1a1a1a;font-size:10pt;line-height:1.4;">'
-      + '<div style="border-bottom:3px solid ' + navy + ';padding-bottom:8px;margin-bottom:12px;">'
-      +   '<div style="font-size:9pt;color:#555;">University of California, Santa Cruz · Department of Anthropology</div>'
-      +   '<div style="font-size:15pt;font-weight:bold;color:' + navy + ';">Petition for Graduate Individual Studies Course</div>'
-      + '</div>'
-
-      + '<table style="width:100%;border-collapse:collapse;margin-bottom:10px;">'
-      +   row('Name', e(studentName))
-      +   row('Student ID', e(student.studentId || ''))
-      +   row('Email', e(rec.StudentEmail))
-      +   row('Quarter / Year', e(rec.Quarter) + ' ' + e(rec.Year))
-      +   row('Course', e(rec.Course) + (rec.Units ? ' · ' + e(rec.Units) + ' units' : ''))
-      +   row('Faculty sponsor', e(sponsorName))
-      +   row('Study site', e(rec.StudySite))
-      +   (_isTrueStr(rec.LateSubmission)
-          ? row('Late submission', 'Yes — submitted after the enrollment/fee payment deadline'
-              + (String(rec.DeadlineDate || '').trim() ? ' (' + e(_plainStr(rec.DeadlineDate)) + ')' : ''))
-          : '')
-      + '</table>'
-
-      + _block('Subject of proposed study', e(rec.Subject))
-      + _block('Outline of work to be completed', e(rec.WorkOutline))
-      + (String(rec.OutlineLink || '').trim()
-          ? _block('Attached outline document', '<a href="' + e(rec.OutlineLink) + '">' +
-              e(rec.OutlineName || 'View outline') + '</a>')
-          : '')
-
-      + '<table style="width:100%;border-collapse:collapse;margin-bottom:10px;">'
-      +   row('Weekly contact hours with sponsor', e(rec.WeeklyContactHours))
-      +   row('Final paper required', _isTrueStr(rec.FinalPaperRequired) ? 'Yes' : 'No')
-      + '</table>'
-
-      + _approvalBlock('Student', sig(studentName, rec.StudentEmail, rec.CreatedAt))
-
-      + _approvalBlock('Instructor approval (faculty sponsor)',
-          '<table style="width:100%;border-collapse:collapse;">'
-          + row('Units', e(rec.Units))
-          + (rec.SponsorComments ? row('Comments', e(rec.SponsorComments)) : '')
-          + row('Signed', sig(sponsorName, rec.SponsorEmail, rec.SponsorDecidedAt))
-          + '</table>')
-
-      + _approvalBlock('Course sponsoring agency approval',
-          '<table style="width:100%;border-collapse:collapse;">'
-          + row('Class number', e(rec.ClassNumber))
-          + row('Course ID', e(rec.Course) + (rec.ClassSection ? ' · sec ' + e(rec.ClassSection) : ''))
-          + row('Signed', sig(advisorName, rec.AdvisorProcessedBy, rec.AdvisorProcessedAt))
-          + '</table>')
-
-      + '</div>';
-  }
-
 
   // ============================================================
   // PRIVATE — routing (Tasks + Notify)
@@ -1703,19 +1864,19 @@ const IndividualStudiesModule = (() => {
   function _routeToSponsor(petitionId, sponsorEmail, studentProfile, course, resubmitted, advisorNote) {
     Tasks.create({
       module: MODULE, sourceType: SOURCE_TYPE, sourceId: petitionId,
-      label: 'Individual study awaiting sponsor review',
+      label: 'Undergraduate individual study awaiting sponsor review',
       assignedTo: sponsorEmail,
     });
     const studentName = studentProfile && (studentProfile.name || studentProfile.email) || 'A student';
     const lines = [
       (resubmitted ? studentName + ' has revised and resubmitted' : studentName + ' has submitted') +
-        ' an individual-studies petition for ' + course + '.',
+        ' an undergraduate individual-studies petition for ' + course + '.',
     ];
     if (advisorNote) lines.push('', 'Advisor note: ' + advisorNote);
     lines.push('', 'Review it in the portal: ' + _deepLink(petitionId));
     Notify.send({
       to: sponsorEmail,
-      subject: 'Individual study awaiting your review',
+      subject: 'Undergraduate individual study awaiting your review',
       body: lines.join('\n'),
       replyTo: Settings.replyTo('individual_studies'),   // module reply-to (Admin → settings); falls back to CONFIG.DEFAULT_REPLY_TO
     });
@@ -1724,7 +1885,7 @@ const IndividualStudiesModule = (() => {
   function _routeToAdvisor(petitionId, rec) {
     Tasks.create({
       module: MODULE, sourceType: SOURCE_TYPE, sourceId: petitionId,
-      label: 'Individual study awaiting class number',
+      label: 'Undergraduate individual study awaiting class number',
       assignedRole: ADVISOR_ROLE,
     });
     const to = Notify.resolveRecipients({
@@ -1733,8 +1894,8 @@ const IndividualStudiesModule = (() => {
     if (to.length) {
       Notify.send({
         to: to,
-        subject: 'Individual study awaiting class number',
-        body: 'A ' + rec.Course + ' petition has been approved by its sponsor and is ready for a class number.\n\n' +
+        subject: 'Undergraduate individual study awaiting class number',
+        body: 'A ' + rec.Course + ' undergraduate individual-studies petition has been approved by its sponsor and is ready for a class number.\n\n' +
               'Process it in the portal: ' + _deepLink(petitionId),
         replyTo: Settings.replyTo('individual_studies'),   // module reply-to (Admin → settings); falls back to CONFIG.DEFAULT_REPLY_TO
       });
@@ -1802,12 +1963,12 @@ const IndividualStudiesModule = (() => {
   function _routeToStudent(petitionId, rec, note) {
     Tasks.create({
       module: MODULE, sourceType: SOURCE_TYPE, sourceId: petitionId,
-      label: 'Your individual study needs revisions',
+      label: 'Your undergraduate individual study needs revisions',
       assignedTo: rec.StudentEmail,
     });
     Notify.send({
       to: rec.StudentEmail,
-      subject: 'Your individual-studies petition was returned',
+      subject: 'Your undergraduate individual-studies petition was returned',
       body: _fillNotifyTokens(_notifyTemplate('NOTIFY_RETURNED'), rec) + '\n\n' +
             'What to revise: ' + note + '\n\n' +
             'Revise and resubmit in the portal: ' + _deepLink(petitionId),
@@ -1817,6 +1978,7 @@ const IndividualStudiesModule = (() => {
 
   function _notifyComplete(rec, pdf) {
     const link = (pdf && pdf.url) ? pdf.url : (rec.DocumentLink || '');
+    const blob = _pdfBlobFor(pdf, rec);
     const lines = [
       _fillNotifyTokens(_notifyTemplate('NOTIFY_COMPLETE'), rec),
       '',
@@ -1826,11 +1988,13 @@ const IndividualStudiesModule = (() => {
     if (String(rec.AdvisorComments || '').trim()) {
       lines.push('', 'Note from the undergraduate advisor:', String(rec.AdvisorComments).trim());
     }
-    if (link) lines.push('', 'Your completed petition (PDF): ' + link);
+    if (blob) lines.push('', 'Your completed petition is attached as a PDF' + (link ? ' and also available here: ' + link : '.'));
+    else if (link) lines.push('', 'Your completed petition (PDF): ' + link);
     Notify.send({
       to: rec.StudentEmail,
-      subject: 'Your individual-studies petition is complete',
+      subject: 'Your undergraduate individual-studies petition is complete',
       body: lines.join('\n'),
+      attachments: blob ? [blob] : [],
       replyTo: Settings.replyTo('individual_studies'),   // module reply-to (Admin → settings); falls back to CONFIG.DEFAULT_REPLY_TO
     });
   }
@@ -2064,156 +2228,6 @@ const IndividualStudiesModule = (() => {
 
 
   // ============================================================
-  // PRIVATE — PDF generation (campus form layout, at COMPLETE)
-  // ============================================================
-
-  function _generatePetitionPdf(rec, user) {
-    const student = Auth.getProfile(rec.StudentEmail) || {};
-    const html = _petitionHtml(rec, student);
-    const fileName = _buildFileName(rec, student);
-    return ReportService.generate({
-      module: MODULE,
-      reportKey: 'petition',
-      title: 'Individual Studies Petition — ' + (student.name || rec.StudentEmail),
-      sourceId: rec.PetitionID,
-      params: { petitionId: rec.PetitionID, term: _recTerm(rec), course: rec.Course },
-      html: html,
-      fileName: fileName,
-      orientation: 'portrait',
-      letterhead: false,        // self-contained campus-form layout
-      footerText: '',
-    }, user);
-  }
-
-  /**
-   * Filename: <Year>-<Quarter>_<StudentID>-IS-<CourseToken>_Last-First.pdf
-   * e.g. 2025-Fall_1234567-IS-ANTH199_Oelze... no — Last-First is the student.
-   */
-  function _buildFileName(rec, student) {
-    const courseToken = String(rec.Course || '').replace(/\s+/g, '');
-    const last = (student.lastName || '').trim() || 'Student';
-    const first = (student.firstName || '').trim() || '';
-    const who = first ? (last + '-' + first) : last;
-    return rec.Year + '-' + rec.Quarter + '_' + (student.studentId || 'NOID') +
-           '-IS-' + courseToken + '_' + who + '.pdf';
-  }
-
-  /**
-   * Renders the petition as HTML mirroring the campus form's structure:
-   * student block, course block, the three approval blocks (instructor /
-   * course-sponsoring-agency / major-department), with name/email/timestamp
-   * in lieu of each signature. Single populated line per approval block
-   * (one study per petition). Table-based layout for the HTML->Doc->PDF
-   * pipeline (ReportService notes nested layout tables are fragile, so this
-   * keeps top-level tables simple).
-   */
-  function _petitionHtml(rec, student) {
-    const navy = (CONFIG.BRAND && CONFIG.BRAND.NAVY) || '#003C6C';
-    const e = _esc;
-    const studentName = student.name || rec.StudentEmail;
-    const sponsorName = _facultyLabel(rec.SponsorEmail);
-    const advisorName = rec.AdvisorProcessedBy ? _facultyLabel(rec.AdvisorProcessedBy) : '';
-
-    const row = (label, value) =>
-      '<tr><td style="padding:3px 10px 3px 0;color:#555;white-space:nowrap;vertical-align:top;">' + e(label) +
-      '</td><td style="padding:3px 0;vertical-align:top;">' + (value || '&mdash;') + '</td></tr>';
-
-    const sig = (who, email, at) => {
-      if (!who && !email) return '&mdash;';
-      return e(who || email) + (email ? ' &lt;' + e(email) + '&gt;' : '') +
-             (at ? '<br><span style="color:#777;font-size:9pt;">Approved ' + e(_fmtDate(at)) + '</span>' : '');
-    };
-
-    return ''
-      + '<div style="font-family:Arial,Helvetica,sans-serif;color:#1a1a1a;font-size:10pt;line-height:1.4;">'
-      + '<div style="border-bottom:3px solid ' + navy + ';padding-bottom:8px;margin-bottom:12px;">'
-      +   '<div style="font-size:9pt;color:#555;">University of California, Santa Cruz · Department of Anthropology</div>'
-      +   '<div style="font-size:15pt;font-weight:bold;color:' + navy + ';">Petition for Undergraduate Individual Studies Course</div>'
-      +   '<div style="font-size:8.5pt;color:#777;">Academic Senate, Santa Cruz Regulation 6.5, 9.1</div>'
-      + '</div>'
-
-      // Student / context block
-      + '<table style="width:100%;border-collapse:collapse;margin-bottom:10px;">'
-      +   row('Name', e(studentName))
-      +   row('Student ID', e(student.studentId || ''))
-      +   row('Email', e(rec.StudentEmail))
-      +   row('College', e(rec.College))
-      +   row('Status', e(rec.MajorStatus) + (rec.ClassLevel ? ' · ' + e(rec.ClassLevel) : ''))
-      +   row('Quarter / Year', e(rec.Quarter) + ' ' + e(rec.Year))
-      +   row('Course', e(rec.Course))
-      +   row('Course sponsoring agency', 'Anthropology')
-      +   row('Faculty sponsor', e(sponsorName))
-      +   row('Study site address', e(rec.StudySiteAddress))
-      + '</table>'
-
-      // Proposed course
-      + _block('Title and description of proposed course', e(rec.Title) +
-          (rec.CourseDescription ? '<br><br>' + e(rec.CourseDescription) : ''))
-      + _block('Evidence of preparation for special study', e(rec.EvidenceOfPreparation))
-      + _block('Description of work to be submitted', e(rec.WorkToBeSubmitted))
-      + (String(rec.SyllabusLink || '').trim()
-          ? _block('Syllabus', '<a href="' + e(rec.SyllabusLink) + '">' +
-              e(rec.SyllabusName || 'View syllabus') + '</a>')
-          : '')
-
-      + '<table style="width:100%;border-collapse:collapse;margin-bottom:10px;">'
-      +   row('Written report required', _isTrueStr(rec.ReportRequired) ? 'Yes' : 'No')
-      +   (_isTrueStr(rec.ReportRequired) && rec.ReportDueDate ? row('Report due', e(_plainStr(rec.ReportDueDate))) : '')
-      +   row('Hours per week — with faculty sponsor', e(rec.HoursWithSponsor))
-      +   row('Hours per week — independently', e(rec.HoursIndependent))
-      + '</table>'
-
-      // Student signature
-      + _approvalBlock('Student', sig(studentName, rec.StudentEmail, rec.CreatedAt))
-
-      // Instructor (sponsor) approval — credits + grade option
-      + _approvalBlock('Instructor approval (faculty sponsor)',
-          '<table style="width:100%;border-collapse:collapse;">'
-          + row('Credits', e(rec.Credits))
-          + row('Grade option', e(rec.GradeOption))
-          + (rec.SponsorComments ? row('Comments', e(rec.SponsorComments)) : '')
-          + row('Signed', sig(sponsorName, rec.SponsorEmail, rec.SponsorDecidedAt))
-          + '</table>')
-
-      // Course sponsoring agency approval — class number (advisor)
-      + _approvalBlock('Course sponsoring agency approval',
-          '<table style="width:100%;border-collapse:collapse;">'
-          + row('Class number', e(rec.ClassNumber))
-          + row('Course ID', e(rec.Course) + (rec.ClassSection ? ' · sec ' + e(rec.ClassSection) : ''))
-          + row('Signed', sig(advisorName, rec.AdvisorProcessedBy, rec.AdvisorProcessedAt))
-          + '</table>')
-
-      // Major department approval — only meaningful when over the cap
-      + _approvalBlock('Major department approval',
-          '<table style="width:100%;border-collapse:collapse;">'
-          + row('Total special-study credits', e(rec.TotalSpecialStudyCredits))
-          + row('Authorization required', _isTrueStr(rec.MajorAuthRequired) ? 'Yes (over ' + SPECIAL_STUDY_CREDIT_CAP + ' credits)' : 'No')
-          + (_isTrueStr(rec.MajorAuthRequired)
-              ? row('Authorized by', sig(advisorName, rec.AdvisorProcessedBy, rec.AdvisorProcessedAt))
-              : '')
-          + '</table>')
-
-      + '</div>';
-  }
-
-  function _block(label, value) {
-    const navy = (CONFIG.BRAND && CONFIG.BRAND.NAVY) || '#003C6C';
-    return '<div style="margin-bottom:10px;">'
-      + '<div style="font-size:9pt;font-weight:bold;color:' + navy + ';text-transform:uppercase;letter-spacing:0.4px;">' + _esc(label) + '</div>'
-      + '<div style="padding:4px 0;">' + (value || '&mdash;') + '</div>'
-      + '</div>';
-  }
-
-  function _approvalBlock(label, innerHtml) {
-    const navy = (CONFIG.BRAND && CONFIG.BRAND.NAVY) || '#003C6C';
-    return '<div style="border:1px solid #ccc;border-left:3px solid ' + navy + ';padding:8px 10px;margin-bottom:8px;">'
-      + '<div style="font-size:9pt;font-weight:bold;color:' + navy + ';text-transform:uppercase;letter-spacing:0.4px;margin-bottom:4px;">' + _esc(label) + '</div>'
-      + innerHtml
-      + '</div>';
-  }
-
-
-  // ============================================================
   // PRIVATE — Drive student viewer grant (mirrors TranscriptModule)
   // ============================================================
 
@@ -2226,6 +2240,25 @@ const IndividualStudiesModule = (() => {
    * shapes; falls back to DriveApp.addViewer (which does email) only if the
    * advanced service is somehow unavailable. Best-effort, never throws.
    */
+  /**
+   * Grants read access on a file to several people at once (deduped,
+   * case-insensitive, blanks dropped) — the completed-PDF audience:
+   * student, faculty sponsor, and the advisor role pool. Each grant is
+   * best-effort and silent (no Drive notification), via
+   * _grantStudentViewer; one failure never blocks the others.
+   */
+  function _grantViewers(fileId, emails) {
+    const seen = {};
+    (emails || []).forEach(e => {
+      const email = String(e || '').trim();
+      if (!email) return;
+      const key = email.toLowerCase();
+      if (seen[key]) return;
+      seen[key] = true;
+      _grantStudentViewer(fileId, email);
+    });
+  }
+
   function _grantStudentViewer(fileId, studentEmail) {
     const id = String(fileId || '').trim();
     const email = String(studentEmail || '').trim();
@@ -2534,12 +2567,6 @@ const IndividualStudiesModule = (() => {
   function _plainStr(v) {
     if (v instanceof Date) return _fmtDate(v);
     return v == null ? '' : String(v);
-  }
-
-  function _esc(s) {
-    return String(s == null ? '' : s)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
   }
 
   // ── Sponsor-owned templates ───────────────────────
