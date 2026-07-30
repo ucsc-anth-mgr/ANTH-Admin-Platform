@@ -52,7 +52,7 @@ const CONFIG = {
     // Graduate Individual Studies module — its OWN spreadsheet
     // (per-module storage tier). Tab: Petitions. Blank until setUp()
     // creates it and logs the id to paste back here.
-    GRAD_INDIVIDUAL_STUDIES: '',
+    GRAD_INDIVIDUAL_STUDIES: '1YXEdMiRUhFILSKDSg-Y_IwETsNy7k3B3o03lgAz84Fo',
     // Academic Personnel module — its OWN spreadsheet (per-module storage
     // tier). Tabs: PersonAttributes (person-attribute extension table),
     // Cases (review cases from the Call), ReviewHistory (the APO action
@@ -65,6 +65,10 @@ const CONFIG = {
     SERVICE:       '18VWph7a3gVZwWve0pq_Lhm8olQuf2yI_yZQHWkot3lU',
     // Platform-wide calendar with deadlines.
     CALENDAR:      '1WvFofmDCWm1QbxBjtMtUSAtLoURc-PJFUt2lg7pu_rI',
+    // Coursework Petition module — its OWN spreadsheet (per-module
+    // storage tier). Tabs: Petitions, PetitionItems, Institutions.
+    // Blank until setUp() creates it and logs the id to paste back here.
+    COURSEWORK:    '1QN7MHAW4NXOfQC3d3UXvMio4PLdWn9mR2rMtl3hfyAk',
   },
 
   // Optional: Drive folder where setUp() creates new spreadsheets.
@@ -131,6 +135,11 @@ const CONFIG = {
     PERSONNEL_SETTINGS:'Settings',
     COMPONENTS:        'Components',
     COMMUNICATIONS_LOG:'CommunicationsLog',
+    // Coursework Petition module tabs (live in SHEETS.COURSEWORK)
+    COURSEWORK_PETITIONS:    'Petitions',
+    COURSEWORK_ITEMS:        'PetitionItems',
+    COURSEWORK_INSTITUTIONS: 'Institutions',
+    COURSEWORK_SETTINGS:     'CourseworkSettings',
   },
 
   // ── Storage convention (three tiers) ───────────────────────
@@ -249,6 +258,17 @@ const CONFIG = {
   // but works without it.
   INDIVIDUAL_STUDIES: {
     DRIVE_FOLDER_ID: '1goPXXH3b0v4k4Pn_qyonPJHZW67jOfLn',
+  },
+
+  // ── Coursework Petition module ─────────────────────────────
+  // Drive folder for uploaded supporting documents (per-course transcript
+  // and syllabus PDFs). The completed petition PDF itself is archived by
+  // ReportService under CONFIG.REPORTS.ARCHIVE_FOLDER_ID/coursework_petition/.
+  // Replace-on-reupload benefits from the Advanced Drive Service (already
+  // required by ReportService) for silent student-viewer grants, but works
+  // without it.
+  COURSEWORK: {
+    DRIVE_FOLDER_ID: '16R0gJj6p8Y5Z4RwqbaMMfu0vq8hIm5In',   // create a Drive folder, paste its id
   },
 
   // ── Graduate Individual Studies module ─────────────────────

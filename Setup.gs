@@ -688,6 +688,76 @@ const SETUP_SCHEMA = {
               'Notes', 'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
     seed: [],
   },
+
+  COURSEWORK_PETITIONS: {
+    tab: 'Petitions',
+    // Coursework Petition module — header row, one per submission. Course
+    // lines (targets, documents, decisions, MyUCSC processing) live in the
+    // PetitionItems tab, one row per course. StudentEmail is a routing key
+    // only — name/StudentID come from Auth at display time. There is
+    // deliberately no header-level DUS-decided column: the all-articulated
+    // path may skip the DUS entirely, and per-item DecidedBy is the audit
+    // trail. Stage: SUBMITTED / RETURNED / PENDING_DUS / PENDING_PROCESSING
+    // / COMPLETE / WITHDRAWN. DriveFileID/DocumentLink/FileName are the
+    // canonical PDF, generated via ReportService at COMPLETE. Meta columns
+    // filled by DataService.
+    headers: ['PetitionID', 'StudentEmail', 'Division', 'Stage', 'ReturnNote',
+              'IntakeBy', 'IntakeAt', 'ProcessedBy', 'ProcessedAt',
+              'DriveFileID', 'DocumentLink', 'FileName',
+              'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
+  COURSEWORK_ITEMS: {
+    tab: 'PetitionItems',
+    // Coursework Petition module — one row per course line, keyed to the
+    // Petitions header row. TargetCourse: ANTH1|ANTH2|ANTH3|UD_ELECTIVE.
+    // TypeCode is division-scoped (lower: CCC|FOUR_YEAR|OOS_CC; upper:
+    // EAP|TRANSFER_4YR|FIELD_SCHOOL). Institution is EITHER InstitutionID
+    // (reference list) or InstitutionFreeText (escape hatch; cleared when
+    // the advisor promotes the text onto the list). ReviewPath:
+    // ARTICULATED (approved on the spot at intake; DUS never sees it) |
+    // FACULTY_REVIEW. Decision: APPROVED|DENIED — one vocabulary
+    // regardless of decider; DecidedBy records who (advisor at intake or
+    // DUS at review). Denials are terminal and carry DenialReason, which
+    // the precedent matcher surfaces to future reviewers. MyUCSCAction:
+    // OTHER_CREDIT_QUICK|REQUIREMENT_WAIVER|COURSE_DIRECTIVE, captured at
+    // processing. Uploads live in CONFIG.COURSEWORK.DRIVE_FOLDER_ID.
+    headers: ['ItemID', 'PetitionID', 'TargetCourse', 'TypeCode',
+              'InstitutionID', 'InstitutionFreeText', 'CourseID',
+              'SyllabusFileID', 'SyllabusLink', 'SyllabusName',
+              'TranscriptFileID', 'TranscriptLink', 'TranscriptName',
+              'ReviewPath', 'Decision', 'DenialReason', 'DecidedBy', 'DecidedAt',
+              'MyUCSCAction', 'EnteredBy', 'EnteredAt',
+              'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
+  COURSEWORK_INSTITUTIONS: {
+    tab: 'Institutions',
+    // Coursework Petition module — curated institution reference list.
+    // Starts EMPTY by design and grows via the advisor's Institutions tab
+    // plus promote-from-free-text at intake; precedent matching becomes
+    // exact on InstitutionID as the list fills in. Type: CCC | FOUR_YEAR |
+    // OOS_CC | INTERNATIONAL | FIELD_SCHOOL. Lower-division student
+    // pickers filter to the first three; upper-division shows all active
+    // (course type and institution type are independent there).
+    // Deactivate (Active FALSE) rather than delete — items reference ids.
+    headers: ['InstitutionID', 'Name', 'Type', 'AssistLink', 'Active', 'Notes',
+              'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
+  COURSEWORK_SETTINGS: {
+    tab: 'CourseworkSettings',
+    // Coursework Petition module — UI-managed key/value settings,
+    // mirroring PetitionSettings / TranscriptSettings. Holds the two
+    // student-notification templates (NOTIFY_RETURNED, NOTIFY_COMPLETE),
+    // edited in the module's Settings tab. No seed: a blank/missing key
+    // falls back to the module's NOTIFY_DEFAULTS in code, which is the
+    // correct starting state (and lets default-wording improvements reach
+    // deployments that haven't customized). Lives in the same spreadsheet
+    // as Petitions. Meta columns filled by DataService.
+    headers: ['Key', 'Value', 'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
 };
 
 
@@ -772,6 +842,15 @@ function setUp() {
   _setupTab(serviceSS, SETUP_SCHEMA.SERVICE_NOMINATIONS);
   _setupTab(serviceSS, SETUP_SCHEMA.SERVICE_SETTINGS);
   _tidyDefaultSheet(serviceSS);
+
+  // Coursework Petition module spreadsheet gets its three tabs
+  const courseworkSS = _resolveSpreadsheet(
+    CONFIG.SHEETS.COURSEWORK, 'Portal Coursework Petitions', 'COURSEWORK');
+  _setupTab(courseworkSS, SETUP_SCHEMA.COURSEWORK_PETITIONS);
+  _setupTab(courseworkSS, SETUP_SCHEMA.COURSEWORK_ITEMS);
+  _setupTab(courseworkSS, SETUP_SCHEMA.COURSEWORK_INSTITUTIONS);
+  _setupTab(courseworkSS, SETUP_SCHEMA.COURSEWORK_SETTINGS);
+  _tidyDefaultSheet(courseworkSS);
 
   // Submissions spreadsheet: tabs are created per form type on demand,
   // so we just ensure the spreadsheet exists and remove the default
@@ -948,6 +1027,9 @@ function checkSetup() {
      [SETUP_SCHEMA.SERVICE_CATALOG.tab, SETUP_SCHEMA.SERVICE_ASSIGNMENTS.tab,
       SETUP_SCHEMA.SERVICE_CORRECTIONS.tab, SETUP_SCHEMA.SERVICE_NOMINATIONS.tab,
       SETUP_SCHEMA.SERVICE_SETTINGS.tab]],
+    ['COURSEWORK',   CONFIG.SHEETS.COURSEWORK,
+     [SETUP_SCHEMA.COURSEWORK_PETITIONS.tab, SETUP_SCHEMA.COURSEWORK_ITEMS.tab,
+      SETUP_SCHEMA.COURSEWORK_INSTITUTIONS.tab, SETUP_SCHEMA.COURSEWORK_SETTINGS.tab]],
   ];
   Logger.log('=== Config check ===');
   checks.forEach(([key, id, tabs]) => {
@@ -1009,6 +1091,10 @@ function _schemaPlacement() {
     { sheetKey: 'SERVICE',      def: SETUP_SCHEMA.SERVICE_CORRECTIONS },
     { sheetKey: 'SERVICE',      def: SETUP_SCHEMA.SERVICE_NOMINATIONS },
     { sheetKey: 'SERVICE',      def: SETUP_SCHEMA.SERVICE_SETTINGS },
+    { sheetKey: 'COURSEWORK',   def: SETUP_SCHEMA.COURSEWORK_PETITIONS },
+    { sheetKey: 'COURSEWORK',   def: SETUP_SCHEMA.COURSEWORK_ITEMS },
+    { sheetKey: 'COURSEWORK',   def: SETUP_SCHEMA.COURSEWORK_INSTITUTIONS },
+    { sheetKey: 'COURSEWORK',   def: SETUP_SCHEMA.COURSEWORK_SETTINGS },
   ];
 }
 

@@ -1,0 +1,1176 @@
+<!-- coursework_petition.html — Undergraduate Coursework Petition module UI -->
+<!-- Server-rendered: currentUser, userRoles, visibleTabs are template vars.  -->
+<!-- Tabs render from the TabRegistry (visibleTabs); which roles see each tab -->
+<!-- is edited in Admin → Modules → Tabs. Visibility only: every action is    -->
+<!-- permission-checked in CourseworkPetitionModule.                          -->
+
+<? var cwpTabs = JSON.parse(visibleTabs); ?>
+<? var cwpHas = {}; cwpTabs.forEach(function(t) { cwpHas[t.key] = true; }); ?>
+
+<div id="cwp-module">
+
+  <!-- Tab bar (ARIA tabs pattern; roving tabindex; init() picks landing) -->
+  <div class="module-tabs" role="tablist" aria-label="Coursework Petition sections">
+    <? cwpTabs.forEach(function(t) { ?>
+    <button class="module-tab" role="tab" id="cwp-tabbtn-<?= t.key ?>" aria-selected="false" tabindex="-1"
+            aria-controls="cwp-tab-<?= t.key ?>" data-tab="<?= t.key ?>"
+            onclick="CourseworkPetitionUI.switchTab('<?= t.key ?>')"
+            onkeydown="CourseworkPetitionUI.tabKey(event)">
+      <i class="ti <?= t.icon ?>" aria-hidden="true"></i> <?= t.label ?>
+    </button>
+    <? }); ?>
+  </div>
+
+  <!-- ════ Tab: New Petition (student) ═══════════════════════ -->
+  <? if (cwpHas.new) { ?>
+  <div id="cwp-tab-new" class="tab-panel" role="tabpanel" aria-labelledby="cwp-tabbtn-new" style="display:none;">
+    <div class="card" style="margin-top:20px;max-width:820px;">
+      <div class="card-title"><i class="ti ti-file-plus" aria-hidden="true"></i> Coursework petition</div>
+      <p class="text-sm text-muted" style="margin-bottom:12px;">
+        Petition to have coursework from another institution count toward Anthropology
+        major/minor requirements. Attach a transcript for each course (PDF); a syllabus is
+        strongly encouraged and may be required for courses without an existing articulation
+        agreement. The undergraduate advisor reviews your submission first.
+      </p>
+      <div id="cwp-cap-note" class="text-sm text-muted" style="display:none;margin-bottom:12px;padding:8px 10px;background:var(--color-bg-subtle, #f4f6f8);border-left:3px solid var(--ucsc-navy, #003C6C);"></div>
+
+      <div class="form-group">
+        <label class="form-label">Which requirements are you petitioning? <span class="required" aria-hidden="true">*</span></label>
+        <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
+          <input type="radio" name="cwp-division" value="LOWER" onchange="CourseworkPetitionUI.onDivisionChange()">
+          Lower-division courses (ANTH 1, 2, 3)
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
+          <input type="radio" name="cwp-division" value="UPPER" onchange="CourseworkPetitionUI.onDivisionChange()">
+          Upper-division electives (up to two courses)
+        </label>
+      </div>
+
+      <!-- Lower: one toggle per target course -->
+      <div id="cwp-lower-wrap" style="display:none;">
+        <div class="form-group" id="cwp-lower-toggles"></div>
+      </div>
+      <!-- Upper: number of courses -->
+      <div id="cwp-upper-wrap" style="display:none;">
+        <div class="form-group">
+          <label class="form-label">Number of courses petitioned</label>
+          <select class="form-select" id="cwp-upper-count" style="max-width:120px;" onchange="CourseworkPetitionUI.renderItemForms()">
+            <option value="1">1</option>
+            <option value="2">2</option>
+          </select>
+        </div>
+      </div>
+
+      <div id="cwp-item-forms"></div>
+
+      <div class="form-actions" id="cwp-submit-actions" style="display:none;">
+        <button class="btn btn-primary" id="cwp-submit-btn" onclick="CourseworkPetitionUI.submit()">
+          <i class="ti ti-send" aria-hidden="true"></i> Submit petition
+        </button>
+      </div>
+    </div>
+  </div>
+  <? } ?>
+
+  <!-- ════ Tab: My Petitions (student) ════════════════════════ -->
+  <? if (cwpHas.mine) { ?>
+  <div id="cwp-tab-mine" class="tab-panel" role="tabpanel" aria-labelledby="cwp-tabbtn-mine" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title"><i class="ti ti-list" aria-hidden="true"></i> My petitions</div>
+      <div id="cwp-mine-list" class="text-sm text-muted">Loading…</div>
+    </div>
+  </div>
+  <? } ?>
+
+  <!-- ════ Tab: Intake (advisor) ══════════════════════════════ -->
+  <? if (cwpHas.intake) { ?>
+  <div id="cwp-tab-intake" class="tab-panel" role="tabpanel" aria-labelledby="cwp-tabbtn-intake" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title"><i class="ti ti-inbox" aria-hidden="true"></i> Awaiting intake</div>
+      <p class="text-sm text-muted" style="margin-bottom:10px;">
+        Verify documents and the correct form, then classify each course: <strong>Existing
+        articulation agreement</strong> approves it on the spot (the Director never sees it);
+        <strong>Requires faculty review</strong> queues it for the Director of Undergraduate
+        Studies; <strong>Deny</strong> is terminal (e.g. the elective cap is reached).
+        Return the whole petition for intake problems like missing documents.
+      </p>
+      <div id="cwp-intake-list" class="text-sm text-muted">Loading…</div>
+    </div>
+  </div>
+  <? } ?>
+
+  <!-- ════ Tab: Faculty Review (DUS) ══════════════════════════ -->
+  <? if (cwpHas.dus) { ?>
+  <div id="cwp-tab-dus" class="tab-panel" role="tabpanel" aria-labelledby="cwp-tabbtn-dus" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title"><i class="ti ti-gavel" aria-hidden="true"></i> Awaiting faculty review</div>
+      <p class="text-sm text-muted" style="margin-bottom:10px;">
+        Courses resolved by existing articulation agreements are shown as settled; only the
+        remaining courses need your decision. Denials are final and require a reason.
+      </p>
+      <div id="cwp-dus-list" class="text-sm text-muted">Loading…</div>
+    </div>
+  </div>
+  <? } ?>
+
+  <!-- ════ Tab: Processing (advisor) ══════════════════════════ -->
+  <? if (cwpHas.processing) { ?>
+  <div id="cwp-tab-processing" class="tab-panel" role="tabpanel" aria-labelledby="cwp-tabbtn-processing" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title"><i class="ti ti-checklist" aria-hidden="true"></i> Ready for MyUCSC processing</div>
+      <p class="text-sm text-muted" style="margin-bottom:10px;">
+        Record the MyUCSC action taken for each approved course. Completing the petition
+        generates the archived PDF and notifies the student.
+      </p>
+      <div id="cwp-processing-list" class="text-sm text-muted">Loading…</div>
+    </div>
+  </div>
+  <? } ?>
+
+  <!-- ════ Tab: All Petitions (advisor / DUS) ═════════════════ -->
+  <? if (cwpHas.all) { ?>
+  <div id="cwp-tab-all" class="tab-panel" role="tabpanel" aria-labelledby="cwp-tabbtn-all" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title"><i class="ti ti-archive" aria-hidden="true"></i> All petitions</div>
+      <div class="form-group" style="max-width:340px;">
+        <input class="form-input" id="cwp-all-filter" placeholder="Filter by student, course, institution, stage…"
+               oninput="CourseworkPetitionUI.renderAll()">
+      </div>
+      <div id="cwp-all-list" class="text-sm text-muted">Loading…</div>
+    </div>
+  </div>
+  <? } ?>
+
+  <!-- ════ Tab: Institutions (advisor) ════════════════════════ -->
+  <? if (cwpHas.institutions) { ?>
+  <div id="cwp-tab-institutions" class="tab-panel" role="tabpanel" aria-labelledby="cwp-tabbtn-institutions" style="display:none;">
+    <div class="card" style="margin-top:20px;max-width:820px;">
+      <div class="card-title"><i class="ti ti-building" aria-hidden="true"></i> Institution reference list</div>
+      <p class="text-sm text-muted" style="margin-bottom:12px;">
+        Students pick institutions from this list (with a free-text escape hatch). Promote
+        free-text entries from intake to grow the list — precedent matching becomes exact
+        once an institution is listed. Deactivating removes an entry from student pickers
+        without breaking existing records.
+      </p>
+      <div style="border:1px solid var(--color-border, #ddd);border-radius:6px;padding:12px;margin-bottom:14px;">
+        <div class="form-group">
+          <label class="form-label" for="cwp-inst-name">Name <span class="required" aria-hidden="true">*</span></label>
+          <input class="form-input" id="cwp-inst-name" placeholder="e.g. Cabrillo College">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="cwp-inst-type">Type <span class="required" aria-hidden="true">*</span></label>
+          <select class="form-select" id="cwp-inst-type"></select>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="cwp-inst-assist">ASSIST link (optional)</label>
+          <input class="form-input" id="cwp-inst-assist" placeholder="https://assist.org/…">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="cwp-inst-notes">Notes (optional)</label>
+          <input class="form-input" id="cwp-inst-notes">
+        </div>
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
+            <input type="checkbox" id="cwp-inst-active" checked> Active (shown to students)
+          </label>
+        </div>
+        <input type="hidden" id="cwp-inst-id" value="">
+        <div class="form-actions">
+          <button class="btn btn-primary" onclick="CourseworkPetitionUI.saveInstitution()">
+            <i class="ti ti-device-floppy" aria-hidden="true"></i> <span id="cwp-inst-save-label">Add institution</span>
+          </button>
+          <button class="btn btn-secondary" onclick="CourseworkPetitionUI.resetInstitutionForm()">Clear</button>
+        </div>
+      </div>
+      <div id="cwp-inst-list" class="text-sm text-muted">Loading…</div>
+    </div>
+  </div>
+  <? } ?>
+
+  <!-- ════ Tab: Settings (advisor) ════════════════════════════ -->
+  <? if (cwpHas.settings) { ?>
+  <div id="cwp-tab-settings" class="tab-panel" role="tabpanel" aria-labelledby="cwp-tabbtn-settings" style="display:none;">
+    <div class="card" style="margin-top:20px;max-width:720px;">
+      <div class="card-title"><i class="ti ti-mail" aria-hidden="true"></i> Student notifications</div>
+      <p class="text-sm text-muted" style="margin-bottom:12px;">
+        The message emailed to a student when their petition is returned for revision or
+        completed. You are editing the <strong>introduction</strong> of each message — the
+        essentials are always appended below it and cannot be edited away: the return note
+        and resubmission link (returned); the per-course outcomes, the PDF link, and the
+        Academic Advisement Report line (completed). Tokens <code>{FirstName}</code>,
+        <code>{Name}</code>, and <code>{Division}</code> are filled in automatically.
+      </p>
+      <div class="form-group">
+        <label class="form-label" for="cwp-set-returned">Petition returned for revision</label>
+        <textarea class="form-input" id="cwp-set-returned" rows="4"></textarea>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="cwp-set-complete">Petition complete</label>
+        <textarea class="form-input" id="cwp-set-complete" rows="4"></textarea>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-primary" onclick="CourseworkPetitionUI.saveNotifySettings()">
+          <i class="ti ti-device-floppy" aria-hidden="true"></i> Save settings
+        </button>
+        <button class="btn btn-secondary" onclick="CourseworkPetitionUI.resetNotifySettings()">
+          Reset to defaults
+        </button>
+      </div>
+      <p class="text-sm text-muted" id="cwp-set-hint" style="margin-top:8px;display:none;"></p>
+    </div>
+    <!-- Shell-standard deep-link card (App.deepLinkCard), rendered on tab open. -->
+    <div id="cwp-deeplink-card"></div>
+  </div>
+  <? } ?>
+
+  <!-- ════ Detail modal (shared by every tab) ═════════════════ -->
+  <div id="cwp-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:1000;overflow:auto;padding:30px 16px;">
+    <div class="card" style="max-width:860px;margin:0 auto;position:relative;">
+      <button class="btn btn-secondary btn-sm" style="position:absolute;top:12px;right:12px;"
+              onclick="CourseworkPetitionUI.closeModal()" aria-label="Close">
+        <i class="ti ti-x" aria-hidden="true"></i>
+      </button>
+      <div id="cwp-modal-body"></div>
+    </div>
+  </div>
+
+  <!-- Busy overlay -->
+  <div id="cwp-busy" style="display:none;position:fixed;inset:0;background:rgba(255,255,255,0.6);z-index:1100;align-items:center;justify-content:center;">
+    <div class="card" style="padding:18px 26px;"><span id="cwp-busy-msg">Working…</span></div>
+  </div>
+
+</div>
+
+<script>
+window.CourseworkPetitionUI = (() => {          // window.X — NEVER const
+
+  const MODULE = 'coursework_petition';
+  const _me = '<?= currentUser ?>';
+  const _roles = <?!= userRoles ?>;
+  const _tabs = <?!= visibleTabs ?>;
+  const _hasTab = {};
+  _tabs.forEach(t => { _hasTab[t.key] = true; });
+  const _isSuper = _roles.indexOf('super_admin') !== -1;
+
+  let _boot = null;          // bootstrap payload (targets, types, institutions, cap)
+  const _cache = {};         // petitionId -> last-fetched public record
+  const _files = {};         // "new:<slot>:<kind>" / "rev:<itemId>:<kind>" -> {dataBase64,mimeType,name}
+  let _modalMode = 'view';   // view | intake | dus | processing | revise
+
+  // ── Init ─────────────────────────────────────────────
+  function init() {
+    _busy('Loading…');
+    App.call(MODULE, 'bootstrap', {}, function (b) {
+      _boot = b || {};
+      _idle();
+      _renderStaticPieces();
+
+      const f = window.__focus;
+      const target = f && f.sourceId ? String(f.sourceId) : '';
+
+      if (b.isStudent && _hasTab.new) {
+        switchTab(target === 'form' ? 'new' : (_hasTab.mine ? 'mine' : 'new'));
+      } else if (b.isAdvisor && _hasTab.intake) {
+        switchTab('intake');
+      } else if (b.isDus && _hasTab.dus) {
+        switchTab('dus');
+      } else if (_tabs.length) {
+        switchTab(_tabs[0].key);
+      }
+
+      if (target && target !== 'form') {
+        _busy('Loading petition…');
+        App.call(MODULE, 'get', { petitionId: target }, function (rec) {
+          _idle();
+          _cache[rec.petitionId] = rec;
+          openDetail(rec.petitionId, _modeForStage(rec));
+        }, function () { _idle(); });
+      }
+    }, function (err) { _idle(); _alert(err); });
+  }
+
+  function _modeForStage(rec) {
+    if (_boot.isAdvisor && rec.stage === 'SUBMITTED') return 'intake';
+    if (_boot.isDus && rec.stage === 'PENDING_DUS') return 'dus';
+    if (_boot.isAdvisor && rec.stage === 'PENDING_PROCESSING') return 'processing';
+    return 'view';
+  }
+
+  // ── Tabs (WAI-ARIA pattern, roving tabindex) ─────────
+  function switchTab(tab) {
+    document.querySelectorAll('#cwp-module .tab-panel').forEach(function (p) { p.style.display = 'none'; });
+    document.querySelectorAll('#cwp-module .module-tab').forEach(function (b) {
+      const on = b.dataset.tab === tab;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-selected', on ? 'true' : 'false');
+      b.setAttribute('tabindex', on ? '0' : '-1');
+    });
+    const panel = document.getElementById('cwp-tab-' + tab);
+    if (panel) panel.style.display = 'block';
+
+    if (tab === 'mine')         loadMine();
+    if (tab === 'intake')       loadIntake();
+    if (tab === 'dus')          loadDus();
+    if (tab === 'processing')   loadProcessing();
+    if (tab === 'all')          loadAll();
+    if (tab === 'institutions') loadInstitutions();
+    if (tab === 'settings')     { loadNotifySettings(); _renderDeepLinkCard(); }
+  }
+
+  function tabKey(ev) {
+    if (['ArrowRight', 'ArrowLeft', 'Home', 'End'].indexOf(ev.key) === -1) return;
+    const btns = Array.prototype.slice
+      .call(document.querySelectorAll('#cwp-module .module-tab'))
+      .filter(function (b) { return b.style.display !== 'none'; });
+    if (!btns.length) return;
+    const at = btns.indexOf(ev.currentTarget);
+    if (at === -1) return;
+    ev.preventDefault();
+    let next;
+    if (ev.key === 'Home')     next = 0;
+    else if (ev.key === 'End') next = btns.length - 1;
+    else next = (at + (ev.key === 'ArrowRight' ? 1 : btns.length - 1)) % btns.length;
+    btns[next].focus();
+    btns[next].click();
+  }
+
+  // ── Static pieces drawn once from bootstrap ──────────
+  function _renderStaticPieces() {
+    // Cap note on the student form.
+    const capEl = document.getElementById('cwp-cap-note');
+    if (capEl && _boot.isStudent) {
+      capEl.textContent = 'Upper-division elective cap: ' + _boot.myApprovedUdItems + ' of '
+        + _boot.udCap + ' courses (10 credits) already approved toward the major.';
+      capEl.style.display = 'block';
+    }
+    // Lower-division target toggles.
+    const lt = document.getElementById('cwp-lower-toggles');
+    if (lt) {
+      lt.innerHTML = '<label class="form-label">Which courses?</label>' +
+        (_boot.lowerTargets || []).map(function (t) {
+          return '<label style="display:flex;align-items:center;gap:8px;font-weight:normal;">'
+            + '<input type="checkbox" class="cwp-lower-target" value="' + esc(t.key) + '"'
+            + ' onchange="CourseworkPetitionUI.renderItemForms()"> ' + esc(t.label) + '</label>';
+        }).join('');
+    }
+    // Institution-type select on the Institutions tab.
+    const ts = document.getElementById('cwp-inst-type');
+    if (ts) {
+      ts.innerHTML = (_boot.instTypes || []).map(function (t) {
+        return '<option value="' + esc(t.key) + '">' + esc(t.label) + '</option>';
+      }).join('');
+    }
+  }
+
+  // ═════════════════════════════════════════════════════
+  // NEW PETITION (student)
+  // ═════════════════════════════════════════════════════
+
+  function _division() {
+    const el = document.querySelector('input[name="cwp-division"]:checked');
+    return el ? el.value : '';
+  }
+
+  function onDivisionChange() {
+    const div = _division();
+    document.getElementById('cwp-lower-wrap').style.display = div === 'LOWER' ? 'block' : 'none';
+    document.getElementById('cwp-upper-wrap').style.display = div === 'UPPER' ? 'block' : 'none';
+    Object.keys(_files).forEach(function (k) { if (k.indexOf('new:') === 0) delete _files[k]; });
+    renderItemForms();
+  }
+
+  /** Slots for the current form: LOWER → checked targets; UPPER → count. */
+  function _slots() {
+    const div = _division();
+    if (div === 'LOWER') {
+      return Array.prototype.slice
+        .call(document.querySelectorAll('.cwp-lower-target'))
+        .filter(function (c) { return c.checked; })
+        .map(function (c) { return c.value; });
+    }
+    if (div === 'UPPER') {
+      const n = Number((document.getElementById('cwp-upper-count') || {}).value || 1);
+      const out = [];
+      for (let i = 1; i <= n; i++) out.push('C' + i);
+      return out;
+    }
+    return [];
+  }
+
+  function renderItemForms() {
+    const div = _division();
+    const slots = _slots();
+    const wrap = document.getElementById('cwp-item-forms');
+    document.getElementById('cwp-submit-actions').style.display = slots.length ? 'block' : 'none';
+    if (!slots.length) { wrap.innerHTML = ''; return; }
+
+    const types = div === 'LOWER' ? _boot.lowerTypes : _boot.upperTypes;
+    wrap.innerHTML = slots.map(function (slot, idx) {
+      const heading = div === 'LOWER' ? _lowerLabel(slot) : 'Course #' + (idx + 1);
+      return _itemFormHtml('new:' + slot, heading, div, types, null);
+    }).join('');
+  }
+
+  /**
+   * One course-line editor. prefix keys inputs + the _files slots.
+   * prefill (revise mode) carries the existing item's values.
+   */
+  function _itemFormHtml(prefix, heading, division, types, prefill) {
+    const p = prefill || {};
+    const insts = (_boot.institutions || []).filter(function (i) {
+      if (division !== 'LOWER') return true;
+      return (_boot.lowerInstTypes || []).indexOf(i.type) !== -1;
+    });
+    const options = ['<option value="">— Select an institution —</option>']
+      .concat(insts.map(function (i) {
+        const sel = p.institutionId === i.institutionId ? ' selected' : '';
+        return '<option value="' + esc(i.institutionId) + '"' + sel + '>' + esc(i.name) + '</option>';
+      })).join('');
+    const freeChecked = p.institutionFreeText ? ' checked' : '';
+    const exampleCourse = division === 'LOWER' ? 'ANTH 1' : 'ANTH 101';
+    const hasTranscript = !!p.transcriptLink;
+
+    return ''
+      + '<div class="cwp-item-form" data-prefix="' + esc(prefix) + '" style="border:1px solid var(--color-border, #ddd);border-left:3px solid var(--ucsc-navy, #003C6C);border-radius:6px;padding:12px;margin-bottom:14px;">'
+      + '<div style="font-weight:bold;margin-bottom:8px;">' + esc(heading) + '</div>'
+      + '<div class="form-group">'
+      +   '<label class="form-label">' + (division === 'LOWER' ? 'Institution type' : 'Course type') + ' <span class="required" aria-hidden="true">*</span></label>'
+      +   types.map(function (t) {
+            const sel = p.typeCode === t.key ? ' checked' : '';
+            return '<label style="display:flex;align-items:center;gap:8px;font-weight:normal;">'
+              + '<input type="radio" name="' + esc(prefix) + ':type" value="' + esc(t.key) + '"' + sel + '> '
+              + esc(t.label) + '</label>';
+          }).join('')
+      + '</div>'
+      + '<div class="form-group">'
+      +   '<label class="form-label">Course sponsoring institution <span class="required" aria-hidden="true">*</span></label>'
+      +   '<select class="form-select" id="' + esc(prefix) + ':inst">' + options + '</select>'
+      +   '<label style="display:flex;align-items:center;gap:8px;font-weight:normal;margin-top:6px;">'
+      +     '<input type="checkbox" id="' + esc(prefix) + ':freechk"' + freeChecked
+      +       ' onchange="CourseworkPetitionUI.toggleFreeText(\'' + escJs(prefix) + '\')"> My institution isn\'t listed'
+      +   '</label>'
+      +   '<input class="form-input" id="' + esc(prefix) + ':freetext" placeholder="Type the institution\'s full name"'
+      +     ' value="' + esc(p.institutionFreeText || '') + '" style="margin-top:6px;' + (p.institutionFreeText ? '' : 'display:none;') + '">'
+      + '</div>'
+      + '<div class="form-group">'
+      +   '<label class="form-label">Course ID <span class="required" aria-hidden="true">*</span></label>'
+      +   '<input class="form-input" id="' + esc(prefix) + ':course" placeholder="ex. ' + exampleCourse + '" value="' + esc(p.courseId || '') + '" style="max-width:260px;">'
+      + '</div>'
+      + '<div class="form-group">'
+      +   '<label class="form-label">Transcript (PDF) ' + (hasTranscript
+            ? '<span class="text-muted" style="font-weight:normal;">— on file; upload to replace</span>'
+            : '<span class="required" aria-hidden="true">*</span>') + '</label>'
+      +   '<input type="file" accept="application/pdf" onchange="CourseworkPetitionUI.onFile(this, \'' + escJs(prefix) + '\', \'transcript\')">'
+      + '</div>'
+      + '<div class="form-group">'
+      +   '<label class="form-label">Syllabus (PDF) ' + (p.syllabusLink
+            ? '<span class="text-muted" style="font-weight:normal;">— on file; upload to replace</span>'
+            : '<span class="text-muted" style="font-weight:normal;">— strongly encouraged</span>') + '</label>'
+      +   '<input type="file" accept="application/pdf" onchange="CourseworkPetitionUI.onFile(this, \'' + escJs(prefix) + '\', \'syllabus\')">'
+      + '</div>'
+      + '</div>';
+  }
+
+  function toggleFreeText(prefix) {
+    const chk = document.getElementById(prefix + ':freechk');
+    const txt = document.getElementById(prefix + ':freetext');
+    const sel = document.getElementById(prefix + ':inst');
+    if (!chk || !txt || !sel) return;
+    txt.style.display = chk.checked ? 'block' : 'none';
+    sel.disabled = chk.checked;
+    if (chk.checked) sel.value = '';
+    else txt.value = '';
+  }
+
+  function onFile(input, prefix, kind) {
+    const f = input.files && input.files[0];
+    if (!f) { delete _files[prefix + ':' + kind]; return; }
+    if (f.type && f.type.indexOf('pdf') === -1) {
+      _alert('Please attach a PDF file.');
+      input.value = '';
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = function () {
+      _files[prefix + ':' + kind] = {
+        dataBase64: String(reader.result).split(',')[1] || '',
+        mimeType: f.type || 'application/pdf',
+        name: f.name || '',
+      };
+    };
+    reader.onerror = function () { _alert('Could not read ' + (f.name || 'the file') + '.'); };
+    reader.readAsDataURL(f);
+  }
+
+  /** Read one item editor's values (shared by submit + resubmit). */
+  function _readItemForm(prefix) {
+    const typeEl = document.querySelector('input[name="' + prefix + ':type"]:checked');
+    const freeChk = document.getElementById(prefix + ':freechk');
+    return {
+      typeCode: typeEl ? typeEl.value : '',
+      institutionId: (freeChk && freeChk.checked) ? '' : (document.getElementById(prefix + ':inst') || {}).value || '',
+      institutionFreeText: (freeChk && freeChk.checked)
+        ? ((document.getElementById(prefix + ':freetext') || {}).value || '').trim() : '',
+      courseId: ((document.getElementById(prefix + ':course') || {}).value || '').trim(),
+      transcript: _files[prefix + ':transcript'] || null,
+      syllabus: _files[prefix + ':syllabus'] || null,
+    };
+  }
+
+  function submit() {
+    const div = _division();
+    if (!div) { _alert('Choose lower-division or upper-division first.'); return; }
+    const slots = _slots();
+    if (!slots.length) { _alert('Add at least one course.'); return; }
+
+    const items = slots.map(function (slot) {
+      const it = _readItemForm('new:' + slot);
+      if (div === 'LOWER') it.targetCourse = slot;
+      return it;
+    });
+
+    _busy('Submitting petition…');
+    App.call(MODULE, 'submit', { division: div, items: items }, function (res) {
+      _idle();
+      Object.keys(_files).forEach(function (k) { if (k.indexOf('new:') === 0) delete _files[k]; });
+      _alert('Petition submitted. The undergraduate advisor has been notified.'
+        + (res && res.capNote ? '\n\n' + res.capNote : ''));
+      document.querySelectorAll('input[name="cwp-division"]').forEach(function (r) { r.checked = false; });
+      onDivisionChange();
+      if (_hasTab.mine) switchTab('mine');
+    }, function (err) { _idle(); _alert(err); });
+  }
+
+  // ═════════════════════════════════════════════════════
+  // MY PETITIONS (student)
+  // ═════════════════════════════════════════════════════
+
+  function loadMine() {
+    App.call(MODULE, 'mine', {}, function (rows) {
+      _renderQueue('cwp-mine-list', rows, 'view', 'You have no petitions yet.');
+    }, _alert);
+  }
+
+  function withdraw(petitionId) {
+    if (!confirm('Withdraw this petition? You can file a new one later.')) return;
+    _busy('Withdrawing…');
+    App.call(MODULE, 'withdraw', { petitionId: petitionId }, function () {
+      _idle(); closeModal(); loadMine();
+    }, function (err) { _idle(); _alert(err); });
+  }
+
+  // ═════════════════════════════════════════════════════
+  // QUEUES (intake / dus / processing / all)
+  // ═════════════════════════════════════════════════════
+
+  function loadIntake() {
+    App.call(MODULE, 'intakeQueue', {}, function (rows) {
+      _renderQueue('cwp-intake-list', rows, 'intake', 'Nothing is awaiting intake.');
+    }, _alert);
+  }
+  function loadDus() {
+    App.call(MODULE, 'dusQueue', {}, function (rows) {
+      _renderQueue('cwp-dus-list', rows, 'dus', 'Nothing is awaiting faculty review.');
+    }, _alert);
+  }
+  function loadProcessing() {
+    App.call(MODULE, 'processingQueue', {}, function (rows) {
+      _renderQueue('cwp-processing-list', rows, 'processing', 'Nothing is awaiting processing.');
+    }, _alert);
+  }
+
+  let _allRows = [];
+  function loadAll() {
+    App.call(MODULE, 'allPetitions', {}, function (rows) {
+      _allRows = rows || [];
+      renderAll();
+    }, _alert);
+  }
+  function renderAll() {
+    const q = ((document.getElementById('cwp-all-filter') || {}).value || '').toLowerCase();
+    const rows = !q ? _allRows : _allRows.filter(function (r) {
+      const hay = [r.studentName, r.studentEmail, r.stage, r.division]
+        .concat((r.items || []).map(function (it) { return it.courseId + ' ' + it.institutionLabel; }))
+        .join(' ').toLowerCase();
+      return hay.indexOf(q) !== -1;
+    });
+    _renderQueue('cwp-all-list', rows, 'auto', 'No petitions match.');
+  }
+
+  function _renderQueue(elId, rows, mode, emptyMsg) {
+    const el = document.getElementById(elId);
+    if (!el) return;
+    rows = rows || [];
+    rows.forEach(function (r) { _cache[r.petitionId] = r; });
+    if (!rows.length) { el.innerHTML = '<p class="text-sm text-muted">' + esc(emptyMsg) + '</p>'; return; }
+    el.innerHTML = rows.map(function (r) {
+      const courses = (r.items || []).map(function (it) {
+        return r.division === 'LOWER' ? it.targetLabel.split(':')[0] : it.courseId;
+      }).join(', ');
+      return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 4px;border-bottom:1px solid var(--color-border, #eee);">'
+        + '<div>'
+        +   '<div><strong>' + esc(r.studentName) + '</strong>'
+        +     ' <span class="text-muted">· ' + (r.division === 'LOWER' ? 'Lower division' : 'Upper division') + ' · ' + esc(courses) + '</span></div>'
+        +   '<div class="text-sm text-muted">' + esc(_stageLabel(r.stage)) + ' · submitted ' + esc(r.createdAt) + '</div>'
+        + '</div>'
+        + '<button class="btn btn-secondary btn-sm" onclick="CourseworkPetitionUI.openDetail(\'' + escJs(r.petitionId) + '\', \'' + escJs(mode) + '\')">Open</button>'
+        + '</div>';
+    }).join('');
+  }
+
+  // ═════════════════════════════════════════════════════
+  // DETAIL MODAL — view / intake / dus / processing / revise
+  // ═════════════════════════════════════════════════════
+
+  function openDetail(petitionId, mode) {
+    const rec = _cache[petitionId];
+    if (!rec) {
+      _busy('Loading petition…');
+      App.call(MODULE, 'get', { petitionId: petitionId }, function (r) {
+        _idle(); _cache[r.petitionId] = r; openDetail(r.petitionId, mode);
+      }, function (err) { _idle(); _alert(err); });
+      return;
+    }
+    _modalMode = (mode === 'auto') ? _modeForStage(rec) : (mode || 'view');
+    Object.keys(_files).forEach(function (k) { if (k.indexOf('rev:') === 0) delete _files[k]; });
+    document.getElementById('cwp-modal-body').innerHTML = _detailHtml(rec, _modalMode);
+    document.getElementById('cwp-modal').style.display = 'block';
+  }
+
+  function closeModal() {
+    document.getElementById('cwp-modal').style.display = 'none';
+    document.getElementById('cwp-modal-body').innerHTML = '';
+  }
+
+  function _detailHtml(rec, mode) {
+    const own = rec.studentEmail && rec.studentEmail.toLowerCase() === _me.toLowerCase();
+    let html = ''
+      + '<div class="card-title" style="padding-right:44px;">'
+      +   (rec.division === 'LOWER' ? 'Lower-division' : 'Upper-division') + ' coursework petition'
+      + '</div>'
+      + '<p class="text-sm text-muted" style="margin-bottom:10px;">'
+      +   esc(rec.studentName) + (rec.studentId ? ' · ID ' + esc(rec.studentId) : '')
+      +   ' · ' + esc(rec.studentEmail)
+      +   ' · <strong>' + esc(_stageLabel(rec.stage)) + '</strong>'
+      +   ' · submitted ' + esc(rec.createdAt)
+      + '</p>';
+
+    if (rec.stage === 'RETURNED' && rec.returnNote) {
+      html += '<div style="padding:8px 10px;margin-bottom:10px;background:#fdf3e7;border-left:3px solid var(--color-warning, #b58105);">'
+        + '<strong>Returned:</strong> ' + esc(rec.returnNote) + '</div>';
+    }
+    if (rec.capWarning && (mode === 'intake' || mode === 'dus')) {
+      html += '<div style="padding:8px 10px;margin-bottom:10px;background:#fbeaea;border-left:3px solid var(--color-danger, #c0392b);">'
+        + '<strong>Cap warning:</strong> ' + esc(rec.capWarning) + '</div>';
+    }
+    if (rec.documentLink) {
+      html += '<p style="margin-bottom:10px;"><a href="' + esc(rec.documentLink) + '" target="_blank" rel="noopener">'
+        + '<i class="ti ti-file-type-pdf" aria-hidden="true"></i> Completed petition PDF</a></p>';
+    }
+
+    html += (rec.items || []).map(function (it, idx) {
+      return _itemDetailHtml(rec, it, idx, mode);
+    }).join('');
+
+    // Footer actions per mode.
+    if (mode === 'intake') {
+      html += '<div class="form-group" style="margin-top:14px;">'
+        + '<label class="form-label" for="cwp-return-note">Return to student (intake problems only)</label>'
+        + '<textarea class="form-input" id="cwp-return-note" rows="2" placeholder="What should the student fix?"></textarea>'
+        + '</div>'
+        + '<div class="form-actions">'
+        + '<button class="btn btn-primary" onclick="CourseworkPetitionUI.intakeSubmit(\'' + escJs(rec.petitionId) + '\')">'
+        +   '<i class="ti ti-check" aria-hidden="true"></i> Submit intake decisions</button>'
+        + '<button class="btn btn-secondary" onclick="CourseworkPetitionUI.returnToStudent(\'' + escJs(rec.petitionId) + '\')">'
+        +   '<i class="ti ti-arrow-back-up" aria-hidden="true"></i> Return to student</button>'
+        + '</div>';
+    }
+    if (mode === 'dus') {
+      html += '<div class="form-actions" style="margin-top:14px;">'
+        + '<button class="btn btn-primary" onclick="CourseworkPetitionUI.dusSubmit(\'' + escJs(rec.petitionId) + '\')">'
+        +   '<i class="ti ti-check" aria-hidden="true"></i> Submit decisions</button>'
+        + '</div>';
+    }
+    if (mode === 'processing') {
+      html += '<div class="form-actions" style="margin-top:14px;">'
+        + '<button class="btn btn-primary" onclick="CourseworkPetitionUI.processSubmit(\'' + escJs(rec.petitionId) + '\')">'
+        +   '<i class="ti ti-check" aria-hidden="true"></i> Complete petition</button>'
+        + '</div>';
+    }
+    if (mode === 'view' && own && rec.stage === 'RETURNED') {
+      html += '<div class="form-actions" style="margin-top:14px;">'
+        + '<button class="btn btn-primary" onclick="CourseworkPetitionUI.openRevise(\'' + escJs(rec.petitionId) + '\')">'
+        +   '<i class="ti ti-edit" aria-hidden="true"></i> Revise and resubmit</button>'
+        + '</div>';
+    }
+    if (mode === 'revise') {
+      html += '<div class="form-actions" style="margin-top:14px;">'
+        + '<button class="btn btn-primary" onclick="CourseworkPetitionUI.resubmit(\'' + escJs(rec.petitionId) + '\')">'
+        +   '<i class="ti ti-send" aria-hidden="true"></i> Resubmit petition</button>'
+        + '</div>';
+    }
+    if (own && ['SUBMITTED', 'RETURNED', 'PENDING_DUS'].indexOf(rec.stage) !== -1 && mode !== 'revise') {
+      html += '<div style="margin-top:10px;">'
+        + '<button class="btn btn-secondary btn-sm" onclick="CourseworkPetitionUI.withdraw(\'' + escJs(rec.petitionId) + '\')">'
+        +   'Withdraw petition</button></div>';
+    }
+    if (_isSuper) {
+      html += '<div style="margin-top:16px;border-top:1px solid var(--color-border, #eee);padding-top:12px;">'
+        + '<button class="btn btn-danger btn-sm" onclick="CourseworkPetitionUI.deletePetition(\'' + escJs(rec.petitionId) + '\')">'
+        +   '<i class="ti ti-trash" aria-hidden="true"></i> Delete petition</button>'
+        + ' <span class="text-muted" style="font-size:12px;">Removes the record, items, uploads, and tasks. Irreversible.</span>'
+        + '</div>';
+    }
+    return html;
+  }
+
+  function _itemDetailHtml(rec, it, idx, mode) {
+    const heading = rec.division === 'LOWER' ? it.targetLabel : 'Course #' + (idx + 1) + ' — ' + it.courseId;
+    const decided = !!it.decision;
+    let body = ''
+      + '<div class="text-sm" style="margin-bottom:6px;">'
+      +   esc(it.typeLabel) + ' · <strong>' + esc(it.institutionLabel) + '</strong>'
+      +   (it.institutionId ? '' : ' <span class="text-muted">(not on the institution list)</span>')
+      +   ' · ' + esc(it.courseId)
+      + '</div>'
+      + '<div class="text-sm" style="margin-bottom:6px;">'
+      +   (it.transcriptLink
+          ? '<a href="' + esc(it.transcriptLink) + '" target="_blank" rel="noopener">Transcript</a>'
+          : '<span class="text-muted">No transcript</span>')
+      +   ' · '
+      +   (it.syllabusLink
+          ? '<a href="' + esc(it.syllabusLink) + '" target="_blank" rel="noopener">Syllabus</a>'
+          : '<span class="text-muted">No syllabus</span>')
+      + '</div>';
+
+    if (decided) {
+      body += '<div class="text-sm" style="margin-bottom:6px;">'
+        + '<strong>' + esc(it.decision) + '</strong>'
+        + (it.reviewPath === 'ARTICULATED' ? ' — existing articulation agreement' : '')
+        + (it.denialReason ? ' — ' + esc(it.denialReason) : '')
+        + (it.decidedBy ? ' <span class="text-muted">(' + esc(it.decidedBy) + ', ' + esc(it.decidedAt) + ')</span>' : '')
+        + '</div>';
+    }
+    if (it.myUcscAction) {
+      body += '<div class="text-sm" style="margin-bottom:6px;">MyUCSC: ' + esc(it.myUcscActionLabel)
+        + (it.enteredBy ? ' <span class="text-muted">(' + esc(it.enteredBy) + ', ' + esc(it.enteredAt) + ')</span>' : '')
+        + '</div>';
+    }
+
+    // Precedents (reviewer payloads only).
+    if (it.precedents && it.precedents.length) {
+      body += '<div class="text-sm" style="margin:6px 0;padding:6px 8px;background:var(--color-bg-subtle, #f4f6f8);border-radius:4px;">'
+        + '<strong>Precedents for ' + esc(it.courseId) + ' from ' + esc(it.institutionLabel) + ':</strong><br>'
+        + it.precedents.map(function (p) {
+            return '• ' + esc(p.decision) + ' ' + esc(p.decidedAt)
+              + (p.reviewPath === 'ARTICULATED' ? ' (articulation)' : '')
+              + (p.denialReason ? ' — ' + esc(p.denialReason) : '');
+          }).join('<br>')
+        + '</div>';
+    } else if (mode === 'intake' || mode === 'dus') {
+      body += '<div class="text-sm text-muted" style="margin:6px 0;">No prior decisions for this course/institution.</div>';
+    }
+
+    // Mode-specific controls.
+    if (mode === 'intake' && !decided) {
+      body += ''
+        + '<div class="form-group" style="margin-top:8px;">'
+        + '<label class="form-label">Resolution</label>'
+        + '<select class="form-select" id="cwp-res:' + esc(it.itemId) + '" style="max-width:380px;"'
+        +   ' onchange="CourseworkPetitionUI.onResolutionChange(\'' + escJs(it.itemId) + '\')">'
+        +   '<option value="">— Choose —</option>'
+        +   '<option value="ARTICULATED">Existing articulation agreement (approve)</option>'
+        +   '<option value="FACULTY_REVIEW">Requires faculty review (send to Director)</option>'
+        +   '<option value="DENY">Deny (terminal — needs a reason)</option>'
+        + '</select>'
+        + '<input class="form-input" id="cwp-resreason:' + esc(it.itemId) + '" placeholder="Reason for denial"'
+        +   ' style="margin-top:6px;display:none;max-width:380px;">'
+        + '</div>';
+      if (!it.institutionId && it.institutionFreeText) {
+        body += '<button class="btn btn-secondary btn-sm" onclick="CourseworkPetitionUI.promoteInstitution(\''
+          + escJs(it.itemId) + '\', \'' + escJs(it.institutionFreeText) + '\')">'
+          + '<i class="ti ti-building-plus" aria-hidden="true"></i> Add "' + esc(it.institutionFreeText) + '" to the institution list</button>';
+      }
+    }
+    if (mode === 'dus' && it.reviewPath === 'FACULTY_REVIEW' && !decided) {
+      body += ''
+        + '<div class="form-group" style="margin-top:8px;">'
+        + '<label class="form-label">Decision</label>'
+        + '<select class="form-select" id="cwp-dus:' + esc(it.itemId) + '" style="max-width:300px;"'
+        +   ' onchange="CourseworkPetitionUI.onDusChange(\'' + escJs(it.itemId) + '\')">'
+        +   '<option value="">— Choose —</option>'
+        +   '<option value="APPROVED">Approve</option>'
+        +   '<option value="DENIED">Deny</option>'
+        + '</select>'
+        + '<input class="form-input" id="cwp-dusreason:' + esc(it.itemId) + '" placeholder="Reason for denial"'
+        +   ' style="margin-top:6px;display:none;max-width:380px;">'
+        + '</div>';
+    }
+    if (mode === 'processing' && it.decision === 'APPROVED' && !it.myUcscAction) {
+      body += ''
+        + '<div class="form-group" style="margin-top:8px;">'
+        + '<label class="form-label">MyUCSC action taken</label>'
+        + '<select class="form-select" id="cwp-act:' + esc(it.itemId) + '" style="max-width:300px;">'
+        +   '<option value="">— Choose —</option>'
+        +   (_boot.myUcscActions || []).map(function (a) {
+              return '<option value="' + esc(a.key) + '">' + esc(a.label) + '</option>';
+            }).join('')
+        + '</select>'
+        + '</div>';
+    }
+
+    let inner = body;
+    if (mode === 'revise') {
+      const types = rec.division === 'LOWER' ? _boot.lowerTypes : _boot.upperTypes;
+      inner = _itemFormHtml('rev:' + it.itemId, heading, rec.division, types, it);
+      return inner;   // the editor carries its own bordered box + heading
+    }
+    return '<div style="border:1px solid var(--color-border, #ddd);border-left:3px solid var(--ucsc-navy, #003C6C);border-radius:6px;padding:10px 12px;margin-bottom:10px;">'
+      + '<div style="font-weight:bold;margin-bottom:6px;">' + esc(heading) + '</div>'
+      + inner
+      + '</div>';
+  }
+
+  function onResolutionChange(itemId) {
+    const sel = document.getElementById('cwp-res:' + itemId);
+    const reason = document.getElementById('cwp-resreason:' + itemId);
+    if (sel && reason) reason.style.display = sel.value === 'DENY' ? 'block' : 'none';
+  }
+  function onDusChange(itemId) {
+    const sel = document.getElementById('cwp-dus:' + itemId);
+    const reason = document.getElementById('cwp-dusreason:' + itemId);
+    if (sel && reason) reason.style.display = sel.value === 'DENIED' ? 'block' : 'none';
+  }
+
+  // ── Intake actions ───────────────────────────────────
+  function intakeSubmit(petitionId) {
+    const rec = _cache[petitionId];
+    if (!rec) return;
+    const items = [];
+    let bad = '';
+    (rec.items || []).forEach(function (it) {
+      if (it.decision) return;   // already decided (shouldn't happen at intake)
+      const sel = document.getElementById('cwp-res:' + it.itemId);
+      const res = sel ? sel.value : '';
+      if (!res) { bad = 'Choose a resolution for every course.'; return; }
+      const entry = { itemId: it.itemId, resolution: res };
+      if (res === 'DENY') {
+        entry.denialReason = ((document.getElementById('cwp-resreason:' + it.itemId) || {}).value || '').trim();
+        if (!entry.denialReason) bad = 'Every denial needs a reason.';
+      }
+      items.push(entry);
+    });
+    if (bad) { _alert(bad); return; }
+    _busy('Recording intake decisions…');
+    App.call(MODULE, 'intakeSubmit', { petitionId: petitionId, items: items }, function (res) {
+      _idle(); delete _cache[petitionId]; closeModal(); loadIntake();
+      _alert('Intake complete — petition moved to ' + _stageLabel(res.stage) + '.');
+    }, function (err) { _idle(); _alert(err); });
+  }
+
+  function returnToStudent(petitionId) {
+    const note = ((document.getElementById('cwp-return-note') || {}).value || '').trim();
+    if (!note) { _alert('Add a note telling the student what to fix.'); return; }
+    _busy('Returning to student…');
+    App.call(MODULE, 'returnToStudent', { petitionId: petitionId, note: note }, function () {
+      _idle(); delete _cache[petitionId]; closeModal(); loadIntake();
+    }, function (err) { _idle(); _alert(err); });
+  }
+
+  function promoteInstitution(itemId, name) {
+    const type = prompt('Institution type key — one of: '
+      + (_boot.instTypes || []).map(function (t) { return t.key; }).join(', '), 'CCC');
+    if (!type) return;
+    _busy('Adding institution…');
+    App.call(MODULE, 'promoteInstitution', { itemId: itemId, name: name, type: type.trim().toUpperCase() }, function (res) {
+      _idle();
+      _alert('"' + res.name + '" added to the institution list and linked to this course line.');
+      App.call(MODULE, 'bootstrap', {}, function (b) { _boot = b || _boot; });
+      // Refresh the open record so the label reflects the link.
+      App.call(MODULE, 'get', { petitionId: Object.keys(_cache).find(function (k) {
+        return (_cache[k].items || []).some(function (it) { return it.itemId === itemId; });
+      }) || '' }, function (r) { if (r && r.petitionId) { _cache[r.petitionId] = r; openDetail(r.petitionId, _modalMode); } });
+    }, function (err) { _idle(); _alert(err); });
+  }
+
+  // ── DUS actions ──────────────────────────────────────
+  function dusSubmit(petitionId) {
+    const rec = _cache[petitionId];
+    if (!rec) return;
+    const decisions = [];
+    let bad = '';
+    (rec.items || []).forEach(function (it) {
+      if (it.reviewPath !== 'FACULTY_REVIEW' || it.decision) return;
+      const sel = document.getElementById('cwp-dus:' + it.itemId);
+      const d = sel ? sel.value : '';
+      if (!d) { bad = 'Decide every open course.'; return; }
+      const entry = { itemId: it.itemId, decision: d };
+      if (d === 'DENIED') {
+        entry.denialReason = ((document.getElementById('cwp-dusreason:' + it.itemId) || {}).value || '').trim();
+        if (!entry.denialReason) bad = 'Every denial needs a reason.';
+      }
+      decisions.push(entry);
+    });
+    if (bad) { _alert(bad); return; }
+    _busy('Recording decisions…');
+    App.call(MODULE, 'dusSubmit', { petitionId: petitionId, decisions: decisions }, function (res) {
+      _idle(); delete _cache[petitionId]; closeModal(); loadDus();
+      _alert('Decisions recorded — petition moved to ' + _stageLabel(res.stage) + '.');
+    }, function (err) { _idle(); _alert(err); });
+  }
+
+  // ── Processing actions ───────────────────────────────
+  function processSubmit(petitionId) {
+    const rec = _cache[petitionId];
+    if (!rec) return;
+    const actions = [];
+    let bad = '';
+    (rec.items || []).forEach(function (it) {
+      if (it.decision !== 'APPROVED') return;
+      if (it.myUcscAction) { actions.push({ itemId: it.itemId, myUcscAction: it.myUcscAction }); return; }
+      const sel = document.getElementById('cwp-act:' + it.itemId);
+      const a = sel ? sel.value : '';
+      if (!a) { bad = 'Record the MyUCSC action for every approved course.'; return; }
+      actions.push({ itemId: it.itemId, myUcscAction: a });
+    });
+    if (bad) { _alert(bad); return; }
+    _busy('Completing petition…');
+    App.call(MODULE, 'processSubmit', { petitionId: petitionId, actions: actions }, function (res) {
+      _idle(); delete _cache[petitionId]; closeModal(); loadProcessing();
+      _alert('Petition complete. The student has been notified.'
+        + (res && res.pdfUrl ? '\n\nPDF: ' + res.pdfUrl : ''));
+    }, function (err) { _idle(); _alert(err); });
+  }
+
+  // ── Revise / resubmit (student) ──────────────────────
+  function openRevise(petitionId) {
+    openDetail(petitionId, 'revise');
+  }
+
+  function resubmit(petitionId) {
+    const rec = _cache[petitionId];
+    if (!rec) return;
+    const items = (rec.items || []).map(function (it) {
+      const v = _readItemForm('rev:' + it.itemId);
+      v.itemId = it.itemId;
+      if (rec.division === 'LOWER') v.targetCourse = it.targetCourse;
+      return v;
+    });
+    _busy('Resubmitting…');
+    App.call(MODULE, 'resubmit', { petitionId: petitionId, items: items }, function () {
+      _idle(); delete _cache[petitionId]; closeModal();
+      _alert('Petition resubmitted. The undergraduate advisor has been notified.');
+      loadMine();
+    }, function (err) { _idle(); _alert(err); });
+  }
+
+  function deletePetition(petitionId) {
+    if (!confirm('Delete this petition, its uploads, and its tasks? This cannot be undone.')) return;
+    _busy('Deleting…');
+    App.call(MODULE, 'deletePetition', { petitionId: petitionId }, function () {
+      _idle(); delete _cache[petitionId]; closeModal();
+      loadAll();
+    }, function (err) { _idle(); _alert(err); });
+  }
+
+  // ═════════════════════════════════════════════════════
+  // INSTITUTIONS (advisor)
+  // ═════════════════════════════════════════════════════
+
+  function loadInstitutions() {
+    App.call(MODULE, 'listInstitutionsAll', {}, function (rows) {
+      const el = document.getElementById('cwp-inst-list');
+      if (!el) return;
+      rows = rows || [];
+      if (!rows.length) {
+        el.innerHTML = '<p class="text-sm text-muted">The list is empty — it grows as you add '
+          + 'institutions here or promote free-text entries at intake.</p>';
+        return;
+      }
+      el.innerHTML = rows.map(function (r) {
+        return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 4px;border-bottom:1px solid var(--color-border, #eee);">'
+          + '<div>'
+          +   '<strong>' + esc(r.name) + '</strong> <span class="text-muted">· ' + esc(r.typeLabel) + '</span>'
+          +   (r.active ? '' : ' <span style="color:var(--color-danger, #c0392b);">· inactive</span>')
+          +   (r.assistLink ? ' · <a href="' + esc(r.assistLink) + '" target="_blank" rel="noopener">ASSIST</a>' : '')
+          + '</div>'
+          + '<button class="btn btn-secondary btn-sm" onclick=\'CourseworkPetitionUI.editInstitution(' + jsonAttr(r) + ')\'>Edit</button>'
+          + '</div>';
+      }).join('');
+    }, _alert);
+  }
+
+  function editInstitution(r) {
+    document.getElementById('cwp-inst-id').value = r.institutionId || '';
+    document.getElementById('cwp-inst-name').value = r.name || '';
+    document.getElementById('cwp-inst-type').value = r.type || '';
+    document.getElementById('cwp-inst-assist').value = r.assistLink || '';
+    document.getElementById('cwp-inst-notes').value = r.notes || '';
+    document.getElementById('cwp-inst-active').checked = r.active !== false;
+    document.getElementById('cwp-inst-save-label').textContent = 'Save changes';
+  }
+
+  function resetInstitutionForm() {
+    ['cwp-inst-id', 'cwp-inst-name', 'cwp-inst-assist', 'cwp-inst-notes'].forEach(function (id) {
+      const el = document.getElementById(id); if (el) el.value = '';
+    });
+    document.getElementById('cwp-inst-active').checked = true;
+    document.getElementById('cwp-inst-save-label').textContent = 'Add institution';
+  }
+
+  function saveInstitution() {
+    const payload = {
+      institutionId: document.getElementById('cwp-inst-id').value,
+      name: document.getElementById('cwp-inst-name').value,
+      type: document.getElementById('cwp-inst-type').value,
+      assistLink: document.getElementById('cwp-inst-assist').value,
+      notes: document.getElementById('cwp-inst-notes').value,
+      active: document.getElementById('cwp-inst-active').checked,
+    };
+    _busy('Saving institution…');
+    App.call(MODULE, 'saveInstitution', payload, function () {
+      _idle(); resetInstitutionForm(); loadInstitutions();
+      App.call(MODULE, 'bootstrap', {}, function (b) { _boot = b || _boot; });
+    }, function (err) { _idle(); _alert(err); });
+  }
+
+  // ═════════════════════════════════════════════════════
+  // SETTINGS (advisor) — notification templates + deep link
+  // ═════════════════════════════════════════════════════
+
+  let _settingsDefaults = null;   // for the Reset button
+
+  function loadNotifySettings() {
+    App.call(MODULE, 'getSettings', {}, function (s) {
+      s = s || {};
+      _settingsDefaults = s.defaults || null;
+      const r = document.getElementById('cwp-set-returned');
+      const c = document.getElementById('cwp-set-complete');
+      if (r) r.value = (s.templates && s.templates.NOTIFY_RETURNED) || '';
+      if (c) c.value = (s.templates && s.templates.NOTIFY_COMPLETE) || '';
+      _settingsHint('');
+    }, _alert);
+  }
+
+  function saveNotifySettings() {
+    const payload = {
+      notifyReturned: (document.getElementById('cwp-set-returned') || {}).value || '',
+      notifyComplete: (document.getElementById('cwp-set-complete') || {}).value || '',
+    };
+    _busy('Saving settings…');
+    App.call(MODULE, 'saveSettings', payload, function (s) {
+      _idle();
+      // Re-fill from the server's effective values (a blank or default-
+      // identical edit round-trips back as the default wording).
+      if (s && s.templates) {
+        const r = document.getElementById('cwp-set-returned');
+        const c = document.getElementById('cwp-set-complete');
+        if (r) r.value = s.templates.NOTIFY_RETURNED || '';
+        if (c) c.value = s.templates.NOTIFY_COMPLETE || '';
+      }
+      _settingsHint('Saved.');
+    }, function (err) { _idle(); _alert(err); });
+  }
+
+  /** Restores the default wording in the editors (not saved until Save). */
+  function resetNotifySettings() {
+    if (!_settingsDefaults) return;
+    const r = document.getElementById('cwp-set-returned');
+    const c = document.getElementById('cwp-set-complete');
+    if (r) r.value = _settingsDefaults.NOTIFY_RETURNED || '';
+    if (c) c.value = _settingsDefaults.NOTIFY_COMPLETE || '';
+    _settingsHint('Defaults restored — click Save settings to keep them.');
+  }
+
+  function _settingsHint(msg) {
+    const el = document.getElementById('cwp-set-hint');
+    if (!el) return;
+    el.textContent = msg || '';
+    el.style.display = msg ? 'block' : 'none';
+  }
+
+  /** Shell-standard deep-link card: the student form link (?focus=form —
+   *  init() routes that token to the New Petition tab), with copy button. */
+  function _renderDeepLinkCard() {
+    const el = document.getElementById('cwp-deeplink-card');
+    if (!el) return;
+    el.innerHTML = (window.App && App.deepLinkCard)
+      ? App.deepLinkCard(MODULE, {
+          title: 'Direct link to the petition form',
+          note: 'Share this link with students to send them straight to the New Petition form. They will sign in first if needed.',
+          roles: ['undergraduate_student'],
+          focus: 'form',
+        })
+      : '';
+  }
+
+  // ═════════════════════════════════════════════════════
+  // Helpers
+  // ═════════════════════════════════════════════════════
+
+  function _lowerLabel(key) {
+    const t = (_boot.lowerTargets || []).find(function (x) { return x.key === key; });
+    return t ? t.label : key;
+  }
+
+  function _stageLabel(stage) {
+    const map = {
+      SUBMITTED: 'Awaiting intake',
+      RETURNED: 'Returned to student',
+      PENDING_DUS: 'Awaiting faculty review',
+      PENDING_PROCESSING: 'Awaiting MyUCSC processing',
+      COMPLETE: 'Complete',
+      WITHDRAWN: 'Withdrawn',
+    };
+    return map[stage] || stage;
+  }
+
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+  function escJs(s) {
+    return String(s == null ? '' : s).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  }
+  // JSON destined for a single-quoted HTML attribute: onclick='fn(JSON)'.
+  // '&' first so later entities aren't double-escaped (free-text safety).
+  function jsonAttr(obj) {
+    return JSON.stringify(obj)
+      .replace(/&/g, '&amp;')
+      .replace(/'/g, '&#39;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  function _busy(msg) {
+    const m = document.getElementById('cwp-busy-msg');
+    if (m) m.textContent = msg || 'Working…';
+    const el = document.getElementById('cwp-busy');
+    if (el) el.style.display = 'flex';
+  }
+  function _idle() {
+    const el = document.getElementById('cwp-busy');
+    if (el) el.style.display = 'none';
+  }
+  function _alert(msg) {
+    _idle();
+    alert(typeof msg === 'string' ? msg : (msg && msg.message) || 'Something went wrong.');
+  }
+
+  return {
+    init, switchTab, tabKey,
+    onDivisionChange, renderItemForms, toggleFreeText, onFile, submit,
+    loadMine, withdraw,
+    loadIntake, loadDus, loadProcessing, loadAll, renderAll,
+    openDetail, closeModal,
+    onResolutionChange, onDusChange,
+    intakeSubmit, returnToStudent, promoteInstitution,
+    dusSubmit, processSubmit,
+    openRevise, resubmit, deletePetition,
+    loadInstitutions, editInstitution, resetInstitutionForm, saveInstitution,
+    loadNotifySettings, saveNotifySettings, resetNotifySettings,
+  };
+})();
+CourseworkPetitionUI.init();
+</script>

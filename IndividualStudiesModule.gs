@@ -82,16 +82,16 @@ const IndividualStudiesModule = (() => {
   //     each is listed under its most natural tab. Phase 2 should treat an
   //     action as permitted if ANY visible tab owns it.
   const TABS = [
-    { key: 'new', label: 'New Petition', icon: 'ti-file-plus',
+    { key: 'new', label: 'New Undergraduate Petition', icon: 'ti-file-plus',
       roles: ['undergraduate_student', 'undergraduate_non_major'],
       actions: ['formData', 'submit', 'templatesForSponsor'] },
     { key: 'mine', label: 'My Petitions', icon: 'ti-list',
       roles: ['undergraduate_student', 'undergraduate_non_major'],
       actions: ['mine', 'get', 'withdraw'] },
-    { key: 'review', label: 'Review Queue', icon: 'ti-gavel',
+    { key: 'review', label: 'Undergrad Review', icon: 'ti-gavel',
       roles: ['individual_studies_sponsor'],
       actions: ['sponsorQueue', 'sponsorApprove', 'sponsorReturn', 'requestRoomAccess'] },
-    { key: 'sponsored', label: 'Sponsored', icon: 'ti-user-check',
+    { key: 'sponsored', label: 'Undergrad Sponsored', icon: 'ti-user-check',
       roles: ['individual_studies_sponsor'],
       actions: ['sponsored', 'saveAsTemplate'] },
     { key: 'templates', label: 'My Templates', icon: 'ti-template',

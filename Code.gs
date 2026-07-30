@@ -296,6 +296,11 @@ function getModuleHTML(moduleKey) {
  * Calendarservice.gs and Calendarmodule.gs must be in the project
  * BEFORE this Code.gs is saved, or the app fails with
  * "CalendarModule is not defined".
+ *
+ * NOTE: CourseworkPetitionModule is likewise ACTIVE — save
+ * CourseworkPetitionModule.gs (and coursework_petition.html) BEFORE
+ * saving this Code.gs, or the app fails with
+ * "CourseworkPetitionModule is not defined".
  */
 function getModuleHandler(name) {
   const handlers = {
@@ -308,6 +313,7 @@ function getModuleHandler(name) {
     PersonnelModule:   PersonnelModule,
     ServiceModule:     ServiceModule,
     CalendarModule:    CalendarModule,
+    CourseworkPetitionModule: CourseworkPetitionModule,
     // HRModule:       HRModule,
   };
   if (!handlers[name]) throw new Error('Handler not found: ' + name);
@@ -320,7 +326,7 @@ function getModuleHandler(name) {
  * Used by the Module Manager to validate sheet entries.
  */
 function getRegisteredHandlers() {
-  return ['AdminModule', 'SubmissionsModule', 'UserManagerModule', 'ThesisModule', 'TranscriptModule', 'IndividualStudiesModule', 'PersonnelModule', 'ServiceModule', 'CalendarModule'];
+  return ['AdminModule', 'SubmissionsModule', 'UserManagerModule', 'ThesisModule', 'TranscriptModule', 'IndividualStudiesModule', 'PersonnelModule', 'ServiceModule', 'CalendarModule', 'CourseworkPetitionModule'];
 }
 
 
