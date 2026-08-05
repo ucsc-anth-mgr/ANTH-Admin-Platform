@@ -65,6 +65,10 @@ const PersonnelModule = (() => {
                 'listCommitteeMembers', 'assignComponent', 'markComponentDrafted',
                 'reopenComponent', 'committeeWorkload', 'exportWorkloadToSheet',
                 'caseAssignments'] },
+    { key: 'letters', label: 'Letter writers', icon: 'ti-mailbox',
+      roles: [], floor: 'super_admin',
+      actions: ['listLetterCases', 'listWriters', 'upsertWriter', 'setWriterStage',
+                'addWriterNote', 'uploadWriterEvidence', 'removeWriterEvidence', 'removeWriter'] },
     { key: 'anticipated', label: 'Anticipated Call', icon: 'ti-crystal-ball',
       roles: [], floor: 'super_admin',
       actions: ['listAnticipatedCandidates', 'exportAnticipatedToSheet',
@@ -3860,6 +3864,322 @@ const PersonnelModule = (() => {
   }
 
 
+  // ============================================================
+  // Phase 8 — External letter writers (promotion & above-scale)
+  // ============================================================
+  // The solicitation pipeline: who was suggested (and BY WHOM — the file
+  // cares about candidate-suggested vs committee-identified), who was
+  // asked, who accepted, whose letter is in. Stage movement is free;
+  // every change lands in the append-only notes trail. Acceptance-email
+  // PDFs are stored as evidence in the module's Drive folder. The letters
+  // themselves arrive through a separate campus system.
+
+  function WRITERS_TAB() { return CONFIG.TABS.LETTER_WRITERS; }
+  function LETTER_STAGES() {
+    return (CONFIG.PERSONNEL && CONFIG.PERSONNEL.LETTER_STAGES) || [];
+  }
+  function _stageLabel(key) {
+    const s = LETTER_STAGES().find(x => x.key === String(key));
+    return s ? s.label : String(key);
+  }
+
+  function _liveCases() {
+    return DataService.getAll(SHEET(), CASES_TAB()).filter(c => {
+      const status = String(c.Status || '').toLowerCase();
+      return status !== 'closed' && status !== 'deferred' && status !== 'completed';
+    });
+  }
+
+  function _candidateName(c) {
+    const p = Auth.getProfile(_email(c.CandidateEmail));
+    return p ? (p.nameLastFirst || p.name) : c.CandidateEmail;
+  }
+
+  /**
+   * The cases the letter-writer switcher offers: promotion cases
+   * automatically (they always carry external letters), plus any case that
+   * already has writer rows (how an above-scale merit joins — there is no
+   * 'above scale' review type, so tracking is opted in per case via the
+   * "track another case" picker rather than guessed from rank). Also
+   * returns the remaining live cases for that picker.
+   */
+  function listLetterCases(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const writers = DataService.getAll(SHEET(), WRITERS_TAB());
+    const trackedIds = {};
+    writers.forEach(w => { trackedIds[w.CaseID] = true; });
+
+    const tracked = [], others = [];
+    _liveCases().forEach(c => {
+      const isPromotion = String(c.ReviewType) === 'promotion';
+      const entry = {
+        caseId: c.CaseID,
+        candidate: _candidateName(c),
+        reviewType: c.ReviewType,
+        academicYear: c.AcademicYear,
+      };
+      if (isPromotion || trackedIds[c.CaseID]) tracked.push(entry);
+      else others.push(entry);
+    });
+    const byName = (a, b) => String(a.candidate).localeCompare(String(b.candidate));
+    tracked.sort(byName); others.sort(byName);
+
+    // Stage counts per tracked case, for the switcher's at-a-glance line.
+    const counts = {};
+    writers.forEach(w => {
+      const c = (counts[w.CaseID] = counts[w.CaseID] || {});
+      const s = String(w.Stage || 'suggested');
+      c[s] = (c[s] || 0) + 1;
+    });
+    tracked.forEach(t => { t.stageCounts = counts[t.caseId] || {}; });
+
+    return { cases: tracked, others: others, stages: LETTER_STAGES() };
+  }
+
+  /** The writer roster for one case, with the letters-due date for context. */
+  function listWriters(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const caseId = String((payload || {}).caseId || '').trim();
+    if (!caseId) throw new Error('caseId is required.');
+    const cases = DataService.query(SHEET(), CASES_TAB(), 'CaseID', caseId);
+    if (!cases.length) throw new Error('No such case: ' + caseId);
+    const c = cases[0];
+
+    let lettersDue = '';
+    try {
+      const cyc = getCycle({ academicYear: String(c.AcademicYear).trim() }, user, ['super_admin']);
+      lettersDue = (cyc.lettersDue && cyc.lettersDue.date) || '';
+    } catch (err) {}
+
+    const rows = DataService.query(SHEET(), WRITERS_TAB(), 'CaseID', caseId).map(w => {
+      let evidence = [];
+      try { evidence = JSON.parse(w.EvidenceLinks || '[]') || []; } catch (e) {}
+      return {
+        writerId: w.WriterID,
+        name: w.Name, rank: w.Rank || '', discipline: w.Discipline || '',
+        affiliation: w.Affiliation || '', email: w.Email || '',
+        homepage: w.Homepage || '',
+        suggestedBy: w.SuggestedBy || 'committee',
+        stage: String(w.Stage || 'suggested'),
+        stageLabel: _stageLabel(w.Stage || 'suggested'),
+        notesLog: String(w.NotesLog || ''),
+        evidence: evidence,
+      };
+    });
+    // Pipeline order, then name.
+    const order = {}; LETTER_STAGES().forEach((s, i) => order[s.key] = i);
+    rows.sort((a, b) => {
+      const d = (order[a.stage] || 0) - (order[b.stage] || 0);
+      return d !== 0 ? d : String(a.name).localeCompare(String(b.name));
+    });
+
+    const accepted = rows.filter(r => ['accepted', 'file_sent', 'letter_submitted'].indexOf(r.stage) !== -1).length;
+    const submitted = rows.filter(r => r.stage === 'letter_submitted').length;
+    return {
+      caseId: caseId,
+      candidate: _candidateName(c),
+      reviewType: c.ReviewType,
+      academicYear: c.AcademicYear,
+      lettersDue: lettersDue,
+      writers: rows,
+      summary: { total: rows.length, accepted: accepted, submitted: submitted },
+      stages: LETTER_STAGES(),
+    };
+  }
+
+  function _writerRow(writerId) {
+    const rows = DataService.query(SHEET(), WRITERS_TAB(), 'WriterID', String(writerId || '').trim());
+    if (!rows.length) throw new Error('No such letter writer: ' + writerId);
+    return rows[0];
+  }
+
+  function _appendNote(existingLog, text, user) {
+    const stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm');
+    const who = _email(user) || 'system';
+    const line = '[' + stamp + ' — ' + who + '] ' + text;
+    return existingLog ? (existingLog + '\n' + line) : line;
+  }
+
+  /**
+   * Create or update a writer. Identity fields only — stage moves through
+   * setWriterStage (so they always log), notes through addWriterNote.
+   * @param {Object} payload - { writerId?, caseId, name, affiliation,
+   *                             email, homepage, suggestedBy }
+   */
+  function upsertWriter(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const p = payload || {};
+    const name = String(p.name || '').trim();
+    if (!name) throw new Error('The writer\'s name is required.');
+    const homepage = String(p.homepage || '').trim();
+    if (homepage && !/^https?:\/\//i.test(homepage)) {
+      throw new Error('The homepage needs a full link starting with http(s)://.');
+    }
+    const email = String(p.email || '').trim();
+    const suggestedBy = String(p.suggestedBy || 'committee').trim() === 'candidate' ? 'candidate' : 'committee';
+
+    if (p.writerId) {
+      const w = _writerRow(p.writerId);
+      DataService.update(SHEET(), WRITERS_TAB(), 'WriterID', w.WriterID, {
+        Name: name, Rank: String(p.rank || '').trim(),
+        Discipline: String(p.discipline || '').trim(),
+        Affiliation: String(p.affiliation || '').trim(),
+        Email: email, Homepage: homepage, SuggestedBy: suggestedBy,
+      });
+      return { writerId: w.WriterID, status: 'updated' };
+    }
+
+    const caseId = String(p.caseId || '').trim();
+    if (!caseId) throw new Error('caseId is required.');
+    if (!DataService.query(SHEET(), CASES_TAB(), 'CaseID', caseId).length) {
+      throw new Error('No such case: ' + caseId);
+    }
+    const id = DataService.generateId('WRT');
+    DataService.insert(SHEET(), WRITERS_TAB(), {
+      WriterID: id, CaseID: caseId,
+      Name: name, Rank: String(p.rank || '').trim(),
+      Discipline: String(p.discipline || '').trim(),
+      Affiliation: String(p.affiliation || '').trim(),
+      Email: email, Homepage: homepage, SuggestedBy: suggestedBy,
+      Stage: 'suggested',
+      NotesLog: _appendNote('', 'Added to the roster (' +
+        (suggestedBy === 'candidate' ? 'suggested by the candidate' : 'identified by the committee') + ').', user),
+      EvidenceLinks: '[]',
+    });
+    return { writerId: id, status: 'created' };
+  }
+
+  /** Move a writer's stage — free movement, always logged. */
+  function setWriterStage(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const p = payload || {};
+    const stage = String(p.stage || '').trim();
+    if (!LETTER_STAGES().some(s => s.key === stage)) throw new Error('Unknown stage: ' + stage);
+    const w = _writerRow(p.writerId);
+    const from = String(w.Stage || 'suggested');
+    if (from === stage) return { writerId: w.WriterID, stage: stage, changed: false };
+    DataService.update(SHEET(), WRITERS_TAB(), 'WriterID', w.WriterID, {
+      Stage: stage,
+      NotesLog: _appendNote(String(w.NotesLog || ''),
+        'Stage: ' + _stageLabel(from) + ' → ' + _stageLabel(stage) + '.', user),
+    });
+    return { writerId: w.WriterID, stage: stage, changed: true };
+  }
+
+  /** Append a follow-up note to the writer's trail. */
+  function addWriterNote(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const p = payload || {};
+    const note = String(p.note || '').trim();
+    if (!note) throw new Error('The note is empty.');
+    const w = _writerRow(p.writerId);
+    DataService.update(SHEET(), WRITERS_TAB(), 'WriterID', w.WriterID, {
+      NotesLog: _appendNote(String(w.NotesLog || ''), note, user),
+    });
+    return { writerId: w.WriterID };
+  }
+
+  /**
+   * Store an acceptance-email PDF as evidence on the writer, in the module's
+   * Drive folder under LetterWriters/<year>/<candidate>/. Multiple PDFs per
+   * writer are fine (acceptance plus later correspondence). PDFs only.
+   * @param {Object} payload - { writerId, filename, base64 }
+   */
+  function uploadWriterEvidence(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const p = payload || {};
+    const w = _writerRow(p.writerId);
+    const filename = String(p.filename || '').trim() || 'evidence.pdf';
+    if (!/\.pdf$/i.test(filename)) throw new Error('Evidence uploads are PDFs only (got "' + filename + '").');
+    const b64 = String(p.base64 || '');
+    if (!b64) throw new Error('No file content received.');
+
+    const cases = DataService.query(SHEET(), CASES_TAB(), 'CaseID', w.CaseID);
+    const c = cases.length ? cases[0] : null;
+    const year = c ? String(c.AcademicYear).trim() : 'unknown-year';
+    const who = c ? _candidateName(c).replace(/[^\w\- ,]/g, '').trim() : 'unknown-candidate';
+
+    let bytes;
+    try { bytes = Utilities.base64Decode(b64); }
+    catch (err) { throw new Error('The file content could not be decoded.'); }
+    const blob = Utilities.newBlob(bytes, 'application/pdf', filename);
+
+    const rootId = (CONFIG.PERSONNEL && CONFIG.PERSONNEL.EXPORT_FOLDER_ID) || '';
+    let folder;
+    try {
+      let parent = rootId ? DriveApp.getFolderById(rootId) : DriveApp.getRootFolder();
+      const sub = (parentF, name) => {
+        const it = parentF.getFoldersByName(name);
+        return it.hasNext() ? it.next() : parentF.createFolder(name);
+      };
+      folder = sub(sub(sub(parent, 'LetterWriters'), year), who);
+    } catch (err) {
+      throw new Error('Could not open the module Drive folder — check that the portal account has edit access. (' + err + ')');
+    }
+    const file = folder.createFile(blob);
+
+    let evidence = [];
+    try { evidence = JSON.parse(w.EvidenceLinks || '[]') || []; } catch (e) {}
+    evidence.push({
+      name: filename, url: file.getUrl(), fileId: file.getId(),
+      uploadedAt: Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd'),
+    });
+    DataService.update(SHEET(), WRITERS_TAB(), 'WriterID', w.WriterID, {
+      EvidenceLinks: JSON.stringify(evidence),
+      NotesLog: _appendNote(String(w.NotesLog || ''), 'Evidence uploaded: ' + filename + '.', user),
+    });
+    return { writerId: w.WriterID, evidence: evidence };
+  }
+
+  /**
+   * Remove one uploaded evidence PDF from a writer: the link comes off the
+   * row, and the Drive file is moved to TRASH (recoverable for ~30 days —
+   * a wrong-file upload shouldn't be unfixable, and a right-file deletion
+   * shouldn't be unrecoverable). Logged in the notes trail.
+   * @param {Object} payload - { writerId, fileId }
+   */
+  function removeWriterEvidence(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const p = payload || {};
+    const w = _writerRow(p.writerId);
+    const fileId = String(p.fileId || '').trim();
+    if (!fileId) throw new Error('fileId is required.');
+
+    let evidence = [];
+    try { evidence = JSON.parse(w.EvidenceLinks || '[]') || []; } catch (e) {}
+    const item = evidence.find(e => e.fileId === fileId);
+    if (!item) throw new Error('That evidence item is not on this writer.');
+    evidence = evidence.filter(e => e.fileId !== fileId);
+
+    let trashed = false;
+    try { DriveApp.getFileById(fileId).setTrashed(true); trashed = true; }
+    catch (err) { Logger.log('removeWriterEvidence: could not trash ' + fileId + ': ' + err); }
+
+    DataService.update(SHEET(), WRITERS_TAB(), 'WriterID', w.WriterID, {
+      EvidenceLinks: JSON.stringify(evidence),
+      NotesLog: _appendNote(String(w.NotesLog || ''),
+        'Evidence removed: ' + (item.name || fileId) +
+        (trashed ? ' (file moved to Drive trash).' : ' (link removed; the Drive file could not be trashed — remove it by hand if needed).'),
+        user),
+    });
+    return { writerId: w.WriterID, evidence: evidence, trashed: trashed };
+  }
+
+  /** Remove a writer row (with the UI confirming first). The Drive evidence
+   *  files are NOT deleted — records outlive roster pruning. */
+  function removeWriter(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const w = _writerRow((payload || {}).writerId);
+    const sheet = SpreadsheetApp.openById(SHEET()).getSheetByName(WRITERS_TAB());
+    const data = sheet.getDataRange().getValues();
+    const idCol = data[0].indexOf('WriterID');
+    for (let i = data.length - 1; i >= 1; i--) {
+      if (data[i][idCol] === w.WriterID) { sheet.deleteRow(i + 1); break; }
+    }
+    return { removed: w.WriterID, name: w.Name };
+  }
+
+
   // ── Cycle deadline auto-matching ───────────────────────────
   // APO's calendar titles are structured and carry the cycle year, so the
   // division deadlines can simply be found rather than hunted for by hand.
@@ -4324,6 +4644,15 @@ const PersonnelModule = (() => {
     TABS: TABS,
     getVisibleTabs,
     myAssignments,
+    // External letter writers
+    listLetterCases,
+    listWriters,
+    upsertWriter,
+    setWriterStage,
+    addWriterNote,
+    uploadWriterEvidence,
+    removeWriterEvidence,
+    removeWriter,
     ping,
     getAttributes,
     getPersonSummary,

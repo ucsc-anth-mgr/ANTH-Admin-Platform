@@ -23,6 +23,10 @@
       style="border:none;background:none;padding:8px 14px;border-bottom:2px solid transparent;cursor:pointer;font-weight:600;">
       <i class="ti ti-clipboard-list"></i> Cases
     </button>
+    <button class="btn btn-tab" id="tab-letters" onclick="PersonnelUI.showTab('letters')"
+      style="border:none;background:none;padding:8px 14px;border-bottom:2px solid transparent;cursor:pointer;font-weight:600;">
+      <i class="ti ti-mailbox"></i> Letter writers
+    </button>
     <button class="btn btn-tab" id="tab-anticipated" onclick="PersonnelUI.showTab('anticipated')"
       style="border:none;background:none;padding:8px 14px;border-bottom:2px solid transparent;cursor:pointer;font-weight:600;">
       <i class="ti ti-crystal-ball"></i> Anticipated Call
@@ -358,6 +362,82 @@ Assistant Professor	Hernandez Garavito	Carla	5	o	6	2	17	Reappt with salary incre
 
   </div>
 
+  <!-- ============================ LETTER WRITERS TAB ============================ -->
+  <div id="view-letters" style="display:none;">
+    <div class="card">
+      <div class="card-title between">
+        <span><i class="ti ti-mailbox"></i> External letter writers</span>
+        <button class="btn btn-secondary btn-sm" onclick="PersonnelUI.loadLetterCases()"><i class="ti ti-refresh"></i> Refresh</button>
+      </div>
+      <p class="text-muted text-sm" style="margin:-8px 0 12px;">
+        The solicitation pipeline for promotion and above-scale files: Suggested → Proposed →
+        Solicited → Declined / Accepted → File sent → Letter submitted. Stage moves are free and
+        every change lands in the writer's notes trail. Letters themselves arrive through the
+        campus system — acceptance-email PDFs are stored here as the record.
+      </p>
+      <div class="form-row" style="align-items:flex-end;">
+        <div class="form-group" style="flex:1;">
+          <label class="form-label">Candidate</label>
+          <select class="form-select" id="lw-case" onchange="PersonnelUI.loadWriters()"></select>
+        </div>
+        <div class="form-group" style="flex:1;">
+          <label class="form-label">Track letters for another case (e.g. above scale)</label>
+          <div style="display:flex;gap:8px;">
+            <select class="form-select" id="lw-other-case" style="flex:1;"></select>
+            <button class="btn btn-secondary" onclick="PersonnelUI.trackOtherCase()"><i class="ti ti-plus"></i> Track</button>
+          </div>
+        </div>
+      </div>
+      <div id="lw-summary"></div>
+      <div id="lw-roster"><p class="text-muted text-sm">Choose a candidate.</p></div>
+    </div>
+
+    <div class="card" style="max-width:640px;">
+      <div class="card-title"><i class="ti ti-user-plus"></i> <span id="lw-form-title">Add a letter writer</span></div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Name <span class="required">*</span></label>
+          <input type="text" class="form-input" id="lw-name" placeholder="e.g. Prof. Jane Smith">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Title</label>
+          <input type="text" class="form-input" id="lw-rank" placeholder="e.g. Professor">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Discipline / department</label>
+          <input type="text" class="form-input" id="lw-discipline" placeholder="e.g. Anthropology">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Affiliation</label>
+          <input type="text" class="form-input" id="lw-affiliation" placeholder="e.g. Stanford University">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Email</label>
+          <input type="text" class="form-input" id="lw-email" placeholder="jsmith@stanford.edu">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Homepage / profile</label>
+          <input type="text" class="form-input" id="lw-homepage" placeholder="https://…">
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Suggested by</label>
+        <select class="form-select" id="lw-suggestedby" style="max-width:240px;">
+          <option value="committee">The committee</option>
+          <option value="candidate">The candidate</option>
+        </select>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-primary" id="lw-save-btn" onclick="PersonnelUI.saveWriter()"><i class="ti ti-check"></i> <span id="lw-save-label">Add writer</span></button>
+        <button class="btn btn-secondary" onclick="PersonnelUI.clearWriterForm()">Clear</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ============================ ANTICIPATED CALL TAB ============================ -->
   <div id="view-anticipated" style="display:none;">
     <div class="card">
@@ -580,7 +660,7 @@ window.PersonnelUI = (() => {
       const tabs = (res && res.tabs) || [];
       _visibleTabs = tabs.map(t => t.key);
       const allTabs = { roster: 'tab-roster', mycases: 'tab-mycases', import: 'tab-import', cases: 'tab-cases',
-                        anticipated: 'tab-anticipated', comms: 'tab-comms', settings: 'tab-settings' };
+                        letters: 'tab-letters', anticipated: 'tab-anticipated', comms: 'tab-comms', settings: 'tab-settings' };
       Object.keys(allTabs).forEach(k => {
         if (_visibleTabs.indexOf(k) === -1) {
           const btn = document.getElementById(allTabs[k]);
@@ -614,9 +694,9 @@ window.PersonnelUI = (() => {
     // nothing is clickable while the bar is hidden, but a programmatic call
     // must not slip through either.
     if (_visibleTabs === null || _visibleTabs.indexOf(which) === -1) return;
-    const views = { roster: 'view-roster', mycases: 'view-mycases', import: 'view-import', cases: 'view-cases',
+    const views = { roster: 'view-roster', mycases: 'view-mycases', import: 'view-import', cases: 'view-cases', letters: 'view-letters',
                     anticipated: 'view-anticipated', comms: 'view-comms', settings: 'view-settings' };
-    const tabs  = { roster: 'tab-roster', mycases: 'tab-mycases', import: 'tab-import', cases: 'tab-cases',
+    const tabs  = { roster: 'tab-roster', mycases: 'tab-mycases', import: 'tab-import', cases: 'tab-cases', letters: 'tab-letters',
                     anticipated: 'tab-anticipated', comms: 'tab-comms', settings: 'tab-settings' };
     const on  = '2px solid var(--ucsc-navy, #003C6C)';
     const off = '2px solid transparent';
@@ -632,6 +712,7 @@ window.PersonnelUI = (() => {
     if (which === 'settings') loadSettings();
     if (which === 'comms') loadComms();
     if (which === 'mycases') loadMyAssignments();
+    if (which === 'letters') loadLetterCases();
   }
 
   // ── Roster load / render ───────────────────────────────────
@@ -901,6 +982,239 @@ window.PersonnelUI = (() => {
   function backToRoster() {
     document.getElementById('roster-detail').style.display = 'none';
     document.getElementById('roster-list').style.display = 'block';
+  }
+
+  // ── External letter writers ─────────────────────────────────
+  let _lwStages = [];
+  let _lwEditing = null;   // writerId being edited in the form, or null
+
+  function loadLetterCases() {
+    App.call('personnel', 'listLetterCases', {}, res => {
+      _lwStages = res.stages || [];
+      const sel = document.getElementById('lw-case');
+      const prev = sel.value;
+      const cases = res.cases || [];
+      sel.innerHTML = cases.length
+        ? cases.map(c => {
+            const cnt = c.stageCounts || {};
+            const bits = _lwStages.map(s => cnt[s.key] ? cnt[s.key] + ' ' + s.label.toLowerCase() : '').filter(Boolean);
+            return `<option value="${c.caseId}">${c.candidate} — ${c.reviewType} ${c.academicYear}${bits.length ? ' (' + bits.join(', ') + ')' : ''}</option>`;
+          }).join('')
+        : '<option value="">No promotion or tracked cases</option>';
+      if (prev && cases.some(c => c.caseId === prev)) sel.value = prev;
+      const osel = document.getElementById('lw-other-case');
+      osel.innerHTML = '<option value="">— choose a case —</option>' +
+        (res.others || []).map(c => `<option value="${c.caseId}">${c.candidate} — ${c.reviewType} ${c.academicYear}</option>`).join('');
+      if (sel.value) loadWriters();
+      else document.getElementById('lw-roster').innerHTML = '<p class="text-muted text-sm">No cases carry external letters yet.</p>';
+    });
+  }
+
+  function trackOtherCase() {
+    const caseId = document.getElementById('lw-other-case').value;
+    if (!caseId) { Toast.show('Choose a case to track.', 'error'); return; }
+    // Tracking = having writers. Adding the first writer is what persists it;
+    // until then, just switch the view to the chosen case.
+    const osel = document.getElementById('lw-other-case');
+    const label = osel.options[osel.selectedIndex].text;
+    const sel = document.getElementById('lw-case');
+    if (!Array.from(sel.options).some(o => o.value === caseId)) {
+      sel.insertAdjacentHTML('beforeend', `<option value="${caseId}">${label}</option>`);
+    }
+    sel.value = caseId;
+    loadWriters();
+    Toast.show('Tracking ' + label + ' — add its first writer below to make it stick.', 'success');
+  }
+
+  function loadWriters() {
+    const caseId = document.getElementById('lw-case').value;
+    const out = document.getElementById('lw-roster');
+    if (!caseId) { out.innerHTML = '<p class="text-muted text-sm">Choose a candidate.</p>'; return; }
+    out.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
+    App.call('personnel', 'listWriters', { caseId: caseId }, res => {
+      _lwStages = res.stages || _lwStages;
+      const s = res.summary || {};
+      document.getElementById('lw-summary').innerHTML = `
+        <div class="text-sm" style="margin-bottom:10px;">
+          <span class="badge badge-navy">${s.submitted || 0} of ${s.accepted || 0} accepted letters submitted</span>
+          <span class="badge">${s.total || 0} writer(s) on the roster</span>
+          ${res.lettersDue ? `<span class="text-muted" style="margin-left:8px;">Letters due ${res.lettersDue}</span>` : ''}
+        </div>`;
+      const rows = res.writers || [];
+      if (!rows.length) {
+        out.innerHTML = '<div class="empty-state">No letter writers yet — add the first below.</div>';
+        return;
+      }
+      out.innerHTML = `<div class="table-wrap"><table class="data-table">
+        <thead><tr><th>Writer</th><th>Suggested by</th><th>Stage</th><th>Evidence</th><th>Notes</th><th></th></tr></thead>
+        <tbody>${rows.map(w => _writerRowHtml(w)).join('')}</tbody>
+      </table></div>`;
+      // DOM-assigned values (never embed arbitrary text in HTML attributes)
+      rows.forEach(w => {
+        const st = document.getElementById('lw-stage-' + w.writerId);
+        if (st) st.value = w.stage;
+      });
+    }, () => { out.innerHTML = '<p class="text-muted text-sm">Could not load the roster.</p>'; });
+  }
+
+  function _esc(s) {
+    return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  }
+
+  function _writerRowHtml(w) {
+    const name = w.homepage
+      ? `<a href="${_esc(w.homepage)}" target="_blank" rel="noopener" style="color:var(--ucsc-navy);">${_esc(w.name)}</a>`
+      : `<strong>${_esc(w.name)}</strong>`;
+    const rankAffil = [w.rank, w.discipline, w.affiliation].filter(Boolean).map(_esc).join(' · ');
+    const stageOpts = _lwStages.map(s => `<option value="${s.key}">${s.label}</option>`).join('');
+    const evidence = (w.evidence || []).map(e =>
+      `<div class="text-sm" style="display:flex;align-items:center;gap:6px;">
+         <a href="${_esc(e.url)}" target="_blank" rel="noopener" style="flex:1;min-width:0;"><i class="ti ti-file-type-pdf"></i> ${_esc(e.name)}</a>
+         <span class="text-muted">${_esc(e.uploadedAt || '')}</span>
+         <a class="edit-link danger" title="Remove this PDF (moves the file to Drive trash)"
+            onclick="PersonnelUI.deleteEvidence('${w.writerId}', '${_esc(e.fileId)}', '${_esc(e.name).replace(/'/g, "\\'")}')"><i class="ti ti-x"></i></a>
+       </div>`).join('');
+    const noteLines = String(w.notesLog || '').split('\n').filter(Boolean);
+    const lastNote = noteLines.length ? noteLines[noteLines.length - 1] : '';
+    return `
+      <tr>
+        <td>${name}
+            <div class="text-sm text-muted">${rankAffil}</div>
+            ${w.email ? `<div class="text-sm text-muted">${_esc(w.email)}</div>` : ''}</td>
+        <td>${w.suggestedBy === 'candidate' ? '<span class="badge badge-gold">candidate</span>' : '<span class="badge">committee</span>'}</td>
+        <td>
+          <select class="form-select" id="lw-stage-${w.writerId}" style="min-width:150px;"
+                  onchange="PersonnelUI.changeWriterStage('${w.writerId}', this.value)">${stageOpts}</select>
+        </td>
+        <td style="min-width:160px;">
+          ${evidence || '<span class="text-sm text-muted">—</span>'}
+          <input type="file" id="lw-file-${w.writerId}" accept="application/pdf" style="display:none;"
+                 onchange="PersonnelUI.uploadEvidence('${w.writerId}')">
+          <button class="btn btn-secondary btn-sm" id="lw-up-${w.writerId}" style="margin-top:4px;"
+                  onclick="document.getElementById('lw-file-${w.writerId}').click()">
+            <i class="ti ti-upload"></i> Upload PDF</button>
+        </td>
+        <td style="min-width:220px;max-width:340px;">
+          ${lastNote ? `<div class="text-sm" style="margin-bottom:4px;">${_esc(lastNote)}</div>` : ''}
+          ${noteLines.length > 1 ? `<details class="text-sm text-muted" style="margin-bottom:4px;"><summary>${noteLines.length - 1} earlier</summary>${noteLines.slice(0, -1).map(l => `<div>${_esc(l)}</div>`).join('')}</details>` : ''}
+          <div style="display:flex;gap:6px;">
+            <input type="text" class="form-input" id="lw-note-${w.writerId}" placeholder="Add a follow-up note…" style="font-size:12.5px;padding:4px 8px;">
+            <button class="btn btn-secondary btn-sm" onclick="PersonnelUI.addNote('${w.writerId}')"><i class="ti ti-plus"></i></button>
+          </div>
+        </td>
+        <td style="white-space:nowrap;">
+          <a class="edit-link" onclick="PersonnelUI.editWriter('${w.writerId}')"><i class="ti ti-pencil"></i> Edit</a>
+          <a class="edit-link danger" onclick="PersonnelUI.deleteWriter('${w.writerId}', '${_esc(w.name).replace(/'/g, "\\'")}')"><i class="ti ti-trash"></i></a>
+        </td>
+      </tr>`;
+  }
+
+  function changeWriterStage(writerId, stage) {
+    App.call('personnel', 'setWriterStage', { writerId: writerId, stage: stage }, res => {
+      if (res.changed) Toast.show('Stage updated — logged in the notes trail.', 'success');
+      loadWriters(); loadLetterCases();
+    }, () => loadWriters());
+  }
+
+  function addNote(writerId) {
+    const input = document.getElementById('lw-note-' + writerId);
+    const note = (input.value || '').trim();
+    if (!note) return;
+    App.call('personnel', 'addWriterNote', { writerId: writerId, note: note }, () => {
+      Toast.show('Note added.', 'success');
+      loadWriters();
+    });
+  }
+
+  function uploadEvidence(writerId) {
+    const input = document.getElementById('lw-file-' + writerId);
+    const file = input.files && input.files[0];
+    if (!file) return;
+    if (!/\.pdf$/i.test(file.name)) { Toast.show('PDFs only.', 'error'); input.value = ''; return; }
+    if (file.size > 15 * 1024 * 1024) { Toast.show('That PDF is over 15 MB — too large to upload here.', 'error'); input.value = ''; return; }
+    FormHelper.setLoading('lw-up-' + writerId, true);
+    const reader = new FileReader();
+    reader.onload = () => {
+      const base64 = String(reader.result).split(',')[1] || '';
+      App.call('personnel', 'uploadWriterEvidence',
+        { writerId: writerId, filename: file.name, base64: base64 }, () => {
+          FormHelper.setLoading('lw-up-' + writerId, false);
+          Toast.show('Evidence stored in the module Drive folder.', 'success');
+          loadWriters();
+        }, () => { FormHelper.setLoading('lw-up-' + writerId, false); input.value = ''; });
+    };
+    reader.onerror = () => { FormHelper.setLoading('lw-up-' + writerId, false); Toast.show('Could not read the file.', 'error'); };
+    reader.readAsDataURL(file);
+  }
+
+  function deleteEvidence(writerId, fileId, name) {
+    if (!confirm('Remove "' + name + '"?\n\nThe link comes off the writer and the PDF moves to the Drive trash (recoverable for about 30 days).')) return;
+    App.call('personnel', 'removeWriterEvidence', { writerId: writerId, fileId: fileId }, res => {
+      Toast.show(res.trashed ? 'Removed — the PDF is in the Drive trash.' : 'Link removed. The Drive file could not be trashed; remove it by hand if needed.', res.trashed ? 'success' : 'error');
+      loadWriters();
+    });
+  }
+
+  function editWriter(writerId) {
+    // Pull current values from the loaded roster via a fresh fetch (cheap,
+    // and avoids stashing state that can go stale).
+    const caseId = document.getElementById('lw-case').value;
+    App.call('personnel', 'listWriters', { caseId: caseId }, res => {
+      const w = (res.writers || []).find(x => x.writerId === writerId);
+      if (!w) return;
+      _lwEditing = writerId;
+      document.getElementById('lw-form-title').textContent = 'Edit: ' + w.name;
+      document.getElementById('lw-save-label').textContent = 'Save changes';
+      document.getElementById('lw-name').value = w.name || '';
+      document.getElementById('lw-rank').value = w.rank || '';
+      document.getElementById('lw-discipline').value = w.discipline || '';
+      document.getElementById('lw-affiliation').value = w.affiliation || '';
+      document.getElementById('lw-email').value = w.email || '';
+      document.getElementById('lw-homepage').value = w.homepage || '';
+      document.getElementById('lw-suggestedby').value = w.suggestedBy || 'committee';
+      document.getElementById('lw-name').focus();
+    });
+  }
+
+  function clearWriterForm() {
+    _lwEditing = null;
+    document.getElementById('lw-form-title').textContent = 'Add a letter writer';
+    document.getElementById('lw-save-label').textContent = 'Add writer';
+    ['lw-name','lw-rank','lw-discipline','lw-affiliation','lw-email','lw-homepage'].forEach(id => document.getElementById(id).value = '');
+    document.getElementById('lw-suggestedby').value = 'committee';
+  }
+
+  function saveWriter() {
+    const caseId = document.getElementById('lw-case').value;
+    if (!caseId && !_lwEditing) { Toast.show('Choose a candidate first.', 'error'); return; }
+    const payload = {
+      writerId: _lwEditing || undefined,
+      caseId: caseId,
+      name: document.getElementById('lw-name').value.trim(),
+      rank: document.getElementById('lw-rank').value.trim(),
+      discipline: document.getElementById('lw-discipline').value.trim(),
+      affiliation: document.getElementById('lw-affiliation').value.trim(),
+      email: document.getElementById('lw-email').value.trim(),
+      homepage: document.getElementById('lw-homepage').value.trim(),
+      suggestedBy: document.getElementById('lw-suggestedby').value,
+    };
+    if (!payload.name) { Toast.show('The writer\'s name is required.', 'error'); return; }
+    FormHelper.setLoading('lw-save-btn', true);
+    App.call('personnel', 'upsertWriter', payload, res => {
+      FormHelper.setLoading('lw-save-btn', false);
+      Toast.show('Writer ' + res.status + '.', 'success');
+      clearWriterForm();
+      loadWriters(); loadLetterCases();
+    }, () => FormHelper.setLoading('lw-save-btn', false));
+  }
+
+  function deleteWriter(writerId, name) {
+    if (!confirm('Remove "' + name + '" from the roster?\n\nThe notes trail goes with the row; any uploaded evidence PDFs stay in the Drive folder.')) return;
+    App.call('personnel', 'removeWriter', { writerId: writerId }, res => {
+      Toast.show('Removed: ' + res.name, 'success');
+      loadWriters(); loadLetterCases();
+    });
   }
 
   // ── My cases (committee member's own queue) ─────────────────
@@ -2745,6 +3059,8 @@ window.PersonnelUI = (() => {
     loadSettings, loadGaps, saveGaps, loadCycle, pickDeadline, cancelPick,
     searchDeadlines, chooseDeadline, previewCycleSchedule, setLettersDate,
     proposeCycleDate, toggleCycleCalendar, exportCycleSchedule,
+    loadLetterCases, loadWriters, trackOtherCase, saveWriter, clearWriterForm,
+    editWriter, deleteWriter, changeWriterStage, addNote, uploadEvidence, deleteEvidence,
     loadMyAssignments, myMarkDrafted,
     loadComms, loadTemplateEditor, saveTemplate, generateDrafts,
     sendDraft, sendAllDrafts, draftDraft, draftAllDrafts, copyDraft, loadCommLog,
