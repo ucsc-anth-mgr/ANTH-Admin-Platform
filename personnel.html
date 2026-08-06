@@ -213,7 +213,7 @@
         <div style="display:flex;justify-content:space-between;align-items:center;">
           <div class="card-title" style="margin:0;"><i class="ti ti-clipboard-list"></i> Review cases</div>
           <div style="display:flex;gap:8px;">
-            <button class="btn btn-secondary" onclick="PersonnelUI.showAddCase()"><i class="ti ti-plus"></i> Add case</button>
+            <button class="btn btn-secondary" id="cases-add-btn" onclick="PersonnelUI.showAddCase()"><i class="ti ti-plus"></i> Add case</button>
             <button class="btn btn-secondary" onclick="PersonnelUI.showCallImport()"><i class="ti ti-file-upload"></i> Import from Call</button>
           </div>
         </div>
@@ -380,7 +380,7 @@ Assistant Professor	Hernandez Garavito	Carla	5	o	6	2	17	Reappt with salary incre
           <label class="form-label">Candidate</label>
           <select class="form-select" id="lw-case" onchange="PersonnelUI.loadWriters()"></select>
         </div>
-        <div class="form-group" style="flex:1;">
+        <div class="form-group" id="lw-track-group" style="flex:1;">
           <label class="form-label">Track letters for another case (e.g. above scale)</label>
           <div style="display:flex;gap:8px;">
             <select class="form-select" id="lw-other-case" style="flex:1;"></select>
@@ -392,7 +392,7 @@ Assistant Professor	Hernandez Garavito	Carla	5	o	6	2	17	Reappt with salary incre
       <div id="lw-roster"><p class="text-muted text-sm">Choose a candidate.</p></div>
     </div>
 
-    <div class="card" style="max-width:640px;">
+    <div class="card" id="lw-add-card" style="max-width:640px;">
       <div class="card-title"><i class="ti ti-user-plus"></i> <span id="lw-form-title">Add a letter writer</span></div>
       <div class="form-row">
         <div class="form-group">
@@ -651,6 +651,8 @@ window.PersonnelUI = (() => {
   let _sortDir = 1;           // 1 = asc, -1 = desc
 
   let _visibleTabs = null;   // keys this user may see (null until loaded)
+  let _canEdit = true;       // false = view-only (department chair): mutation
+                             // affordances are not rendered; server gates enforce
 
   function init() {
     // Ask the server which tabs this user's roles qualify for (computed
@@ -661,6 +663,7 @@ window.PersonnelUI = (() => {
     App.call('personnel', 'getVisibleTabs', {}, res => {
       const tabs = (res && res.tabs) || [];
       _visibleTabs = tabs.map(t => t.key);
+      _canEdit = res.canEdit !== false;
       const allTabs = { roster: 'tab-roster', mycases: 'tab-mycases', import: 'tab-import', cases: 'tab-cases',
                         letters: 'tab-letters', anticipated: 'tab-anticipated', comms: 'tab-comms', settings: 'tab-settings' };
       Object.keys(allTabs).forEach(k => {
@@ -715,6 +718,17 @@ window.PersonnelUI = (() => {
     if (which === 'comms') loadComms();
     if (which === 'mycases') loadMyAssignments();
     if (which === 'letters') loadLetterCases();
+    // View-only roles: mutation entry points are not offered.
+    if (!_canEdit) {
+      ['cases-add-btn', 'wl-export-btn', 'cyc-export-btn'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.style.display = 'none';
+      });
+      const lwAdd = document.getElementById('lw-add-card');
+      if (lwAdd) lwAdd.style.display = 'none';
+      const lwTrack = document.getElementById('lw-track-group');
+      if (lwTrack) lwTrack.style.display = 'none';
+    }
   }
 
   // ── Roster load / render ───────────────────────────────────
@@ -1052,7 +1066,7 @@ window.PersonnelUI = (() => {
         <tbody>${rows.map(w => _writerRowHtml(w)).join('')}</tbody>
       </table></div>`;
       // DOM-assigned values (never embed arbitrary text in HTML attributes)
-      rows.forEach(w => {
+      if (_canEdit) rows.forEach(w => {
         const st = document.getElementById('lw-stage-' + w.writerId);
         if (st) st.value = w.stage;
       });
@@ -1074,8 +1088,8 @@ window.PersonnelUI = (() => {
       `<div class="text-sm" style="display:flex;align-items:center;gap:6px;">
          <a href="${_esc(e.url)}" target="_blank" rel="noopener" style="flex:1;min-width:0;"><i class="ti ti-file-type-pdf"></i> ${_esc(e.name)}</a>
          <span class="text-muted">${_esc(e.uploadedAt || '')}</span>
-         <a class="edit-link danger" title="Remove this PDF (moves the file to Drive trash)"
-            onclick="PersonnelUI.deleteEvidence('${w.writerId}', '${_esc(e.fileId)}', '${_esc(e.name).replace(/'/g, "\\'")}')"><i class="ti ti-x"></i></a>
+         ${_canEdit ? `<a class="edit-link danger" title="Remove this PDF (moves the file to Drive trash)"
+            onclick="PersonnelUI.deleteEvidence('${w.writerId}', '${_esc(e.fileId)}', '${_esc(e.name).replace(/'/g, "\\'")}')"><i class="ti ti-x"></i></a>` : ''}
        </div>`).join('');
     const noteLines = String(w.notesLog || '').split('\n').filter(Boolean);
     const lastNote = noteLines.length ? noteLines[noteLines.length - 1] : '';
@@ -1085,29 +1099,32 @@ window.PersonnelUI = (() => {
             <div class="text-sm text-muted">${rankAffil}</div>
             ${w.email ? `<div class="text-sm text-muted">${_esc(w.email)}</div>` : ''}</td>
         <td>${w.suggestedBy === 'candidate' ? '<span class="badge badge-gold">candidate</span>' : '<span class="badge">committee</span>'}</td>
-        <td>
-          <select class="form-select" id="lw-stage-${w.writerId}" style="min-width:150px;"
-                  onchange="PersonnelUI.changeWriterStage('${w.writerId}', this.value)">${stageOpts}</select>
+        <td>${_canEdit
+          ? `<select class="form-select" id="lw-stage-${w.writerId}" style="min-width:150px;"
+                  onchange="PersonnelUI.changeWriterStage('${w.writerId}', this.value)">${stageOpts}</select>`
+          : `<span class="badge badge-navy">${_esc(w.stageLabel || w.stage)}</span>`}
         </td>
         <td style="min-width:160px;">
           ${evidence || '<span class="text-sm text-muted">—</span>'}
+          ${_canEdit ? `
           <input type="file" id="lw-file-${w.writerId}" accept="application/pdf" style="display:none;"
                  onchange="PersonnelUI.uploadEvidence('${w.writerId}')">
           <button class="btn btn-secondary btn-sm" id="lw-up-${w.writerId}" style="margin-top:4px;"
                   onclick="document.getElementById('lw-file-${w.writerId}').click()">
-            <i class="ti ti-upload"></i> Upload PDF</button>
+            <i class="ti ti-upload"></i> Upload PDF</button>` : ''}
         </td>
         <td style="min-width:220px;max-width:340px;">
           ${lastNote ? `<div class="text-sm" style="margin-bottom:4px;">${_esc(lastNote)}</div>` : ''}
           ${noteLines.length > 1 ? `<details class="text-sm text-muted" style="margin-bottom:4px;"><summary>${noteLines.length - 1} earlier</summary>${noteLines.slice(0, -1).map(l => `<div>${_esc(l)}</div>`).join('')}</details>` : ''}
-          <div style="display:flex;gap:6px;">
+          ${_canEdit ? `<div style="display:flex;gap:6px;">
             <input type="text" class="form-input" id="lw-note-${w.writerId}" placeholder="Add a follow-up note…" style="font-size:12.5px;padding:4px 8px;">
             <button class="btn btn-secondary btn-sm" onclick="PersonnelUI.addNote('${w.writerId}')"><i class="ti ti-plus"></i></button>
-          </div>
+          </div>` : ''}
         </td>
         <td style="white-space:nowrap;">
+          ${_canEdit ? `
           <a class="edit-link" onclick="PersonnelUI.editWriter('${w.writerId}')"><i class="ti ti-pencil"></i> Edit</a>
-          <a class="edit-link danger" onclick="PersonnelUI.deleteWriter('${w.writerId}', '${_esc(w.name).replace(/'/g, "\\'")}')"><i class="ti ti-trash"></i></a>
+          <a class="edit-link danger" onclick="PersonnelUI.deleteWriter('${w.writerId}', '${_esc(w.name).replace(/'/g, "\\'")}')"><i class="ti ti-trash"></i></a>` : ''}
         </td>
       </tr>`;
   }
@@ -2285,26 +2302,33 @@ window.PersonnelUI = (() => {
       if (c.isElected)       f.push('<span class="badge badge-gold" title="Elected — not listed on the Call">elected</span>');
       return f.join(' ');
     };
+    const typeLabel = key => {
+      const t = _reviewTypes.find(x => x.key === key);
+      return t ? t.label : key;
+    };
     const body = rows.map(c =>
       `<tr>
         <td>${c.name}</td>
         <td>${c.academicYear}</td>
-        <td>
-          <select class="form-select" style="min-width:150px;" onchange="PersonnelUI.changeCaseType('${c.caseId}', this.value)">
-            ${_typeOptions(c.reviewType)}
-          </select>
+        <td>${_canEdit
+          ? `<select class="form-select" style="min-width:150px;" onchange="PersonnelUI.changeCaseType('${c.caseId}', this.value)">
+              ${_typeOptions(c.reviewType)}
+            </select>`
+          : `<span class="text-sm">${typeLabel(c.reviewType)}</span>`}
         </td>
         <td class="text-sm">${c.subjectRank || '—'}${c.step ? ' · step ' + c.step : ''} ${flags(c)}</td>
-        <td>
-          <select class="form-select" style="min-width:120px;" onchange="PersonnelUI.changeCaseStatus('${c.caseId}', this.value)">
-            ${_statusOptions(c.status)}
-          </select>
+        <td>${_canEdit
+          ? `<select class="form-select" style="min-width:120px;" onchange="PersonnelUI.changeCaseStatus('${c.caseId}', this.value)">
+              ${_statusOptions(c.status)}
+            </select>`
+          : statusBadge(c.status)}
         </td>
-        <td>
-          <input type="text" class="form-input" style="min-width:120px;font-size:12px;"
+        <td>${_canEdit
+          ? `<input type="text" class="form-input" style="min-width:120px;font-size:12px;"
                  value="${c.effectiveDate || ''}" placeholder="yyyy-mm-dd"
                  title="Effective date — the clock reset. Set this for in-progress and completed cases."
-                 onchange="PersonnelUI.changeCaseEffective('${c.caseId}', this.value)">
+                 onchange="PersonnelUI.changeCaseEffective('${c.caseId}', this.value)">`
+          : `<span class="text-sm">${c.effectiveDate || '—'}</span>`}
         </td>
         <td style="white-space:nowrap;">
           <button class="btn btn-secondary btn-sm" title="Work out this case's deadlines"
@@ -2408,15 +2432,31 @@ window.PersonnelUI = (() => {
       return `<div style="background:var(--ucsc-navy,#003C6C);height:8px;border-radius:4px;width:${pct}%;min-width:${n ? 4 : 0}px;"></div>`;
     };
 
+    const today = new Date().toISOString().slice(0, 10);
+    const itemLine = it => {
+      const overdue = it.status !== 'drafted' && it.dueAt && it.dueAt < today;
+      return `<div style="line-height:1.5;">
+        ${it.status === 'drafted'
+          ? '<i class="ti ti-check" style="color:var(--color-success,#2e7d32);"></i>'
+          : '<i class="ti ti-pencil" style="color:var(--ucsc-navy,#003C6C);"></i>'}
+        ${it.candidate} — ${it.component}
+        ${it.dueAt ? `<span class="text-muted">· due ${it.dueAt}</span>` : ''}
+        ${overdue ? '<span class="badge badge-danger" style="margin-left:4px;">overdue</span>' : ''}
+      </div>`;
+    };
     const body = rows.map(m => `
       <tr>
-        <td>${m.name}</td>
-        <td style="min-width:110px;"><div style="display:flex;align-items:center;gap:8px;">${bar(m.assigned)}<span>${m.assigned}</span></div></td>
-        <td>${m.drafted}</td>
-        <td><strong>${m.total}</strong></td>
-        <td>${m.major}</td>
-        <td>${m.minor}</td>
-        <td class="text-sm text-muted">${m.dueSoonest || '—'}</td>
+        <td style="min-width:230px;">${m.name}
+          ${m.items && m.items.length
+            ? `<div class="text-sm" style="margin-top:4px;color:#444;">${m.items.map(itemLine).join('')}</div>`
+            : '<div class="text-sm text-muted" style="margin-top:4px;">no assignments</div>'}
+        </td>
+        <td style="min-width:110px;vertical-align:top;"><div style="display:flex;align-items:center;gap:8px;">${bar(m.assigned)}<span>${m.assigned}</span></div></td>
+        <td style="vertical-align:top;">${m.drafted}</td>
+        <td style="vertical-align:top;"><strong>${m.total}</strong></td>
+        <td style="vertical-align:top;">${m.major}</td>
+        <td style="vertical-align:top;">${m.minor}</td>
+        <td class="text-sm text-muted" style="vertical-align:top;">${m.dueSoonest || '—'}</td>
       </tr>`).join('');
 
     card.innerHTML = `
@@ -2435,7 +2475,7 @@ window.PersonnelUI = (() => {
           </div>
         </div>
         <div class="table-wrap" style="margin-top:10px;"><table class="data-table">
-          <thead><tr><th>Member</th><th>Open drafts</th><th>Drafted</th><th>Total</th>
+          <thead><tr><th>Member &amp; assignments</th><th>Open drafts</th><th>Drafted</th><th>Total</th>
             <th title="Promotion and mid-career components">Major</th>
             <th title="Merit and salary-increase components">Minor</th>
             <th>Nearest deadline</th></tr></thead>
@@ -2565,19 +2605,26 @@ window.PersonnelUI = (() => {
                      : s === 'assigned' ? '<span class="badge badge-navy">assigned</span>'
                      : '<span class="badge">unassigned</span>';
 
+    const assigneeName = sel => {
+      const m = members.find(x => x.email === sel);
+      return m ? m.name : (sel || '—');
+    };
     const rows = (res.components || []).map(c => `
       <tr>
         <td><strong>${c.label}</strong></td>
-        <td>
-          <select class="form-select" style="min-width:180px;" ${noPool ? 'disabled' : ''}
+        <td>${_canEdit
+          ? `<select class="form-select" style="min-width:180px;" ${noPool ? 'disabled' : ''}
                   onchange="PersonnelUI.assignDraft('${c.componentId}', this.value, '${res.caseId}')">
-            ${opts(c.assignedTo)}
-          </select>
+              ${opts(c.assignedTo)}
+            </select>`
+          : `<span class="text-sm">${assigneeName(c.assignedTo)}</span>`}
         </td>
         <td class="text-sm">${c.dueAt || (res.draftsDue ? `<span class="text-muted">${res.draftsDue}</span>` : '—')}</td>
         <td>${badge(c.status)}</td>
         <td style="white-space:nowrap;">
-          ${c.status === 'assigned'
+          ${!_canEdit
+            ? (c.status === 'drafted' ? `<span class="text-sm text-muted">${c.draftedAt || ''}</span>` : '')
+            : c.status === 'assigned'
             ? `<button class="btn btn-secondary btn-sm" onclick="PersonnelUI.markDrafted('${c.componentId}', '${res.caseId}')"><i class="ti ti-check"></i> Mark drafted</button>`
             : c.status === 'drafted'
             ? `<span class="text-sm text-muted">${c.draftedAt || ''}</span>

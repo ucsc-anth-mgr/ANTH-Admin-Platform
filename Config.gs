@@ -411,7 +411,8 @@ const CONFIG = {
     // ── External letter writers (promotion & above-scale files) ─
     // The solicitation pipeline for external referees. Stage flow:
     //   suggested → proposed → solicited → declined | accepted
-    //   → file_sent → letter_submitted
+    //   → file_sent → acknowledged → letter_submitted
+    // ('acknowledged' = the writer confirmed access to the review file.)
     // Movement is FREE (corrections and skips happen in real life); every
     // stage change is auto-logged into the writer's notes trail. 'declined'
     // is terminal in practice but nothing enforces it. Letters themselves
@@ -424,6 +425,7 @@ const CONFIG = {
       { key: 'declined',         label: 'Declined' },
       { key: 'accepted',         label: 'Accepted' },
       { key: 'file_sent',        label: 'File sent' },
+      { key: 'acknowledged',     label: 'Acknowledged' },
       { key: 'letter_submitted', label: 'Letter submitted' },
     ],
 

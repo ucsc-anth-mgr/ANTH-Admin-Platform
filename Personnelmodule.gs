@@ -58,15 +58,17 @@ const PersonnelModule = (() => {
       actions: ['detectColumns', 'previewRankImport', 'commitRankImport',
                 'detectHistoryColumns', 'previewHistoryImport', 'commitHistoryImport'] },
     { key: 'cases', label: 'Cases', icon: 'ti-clipboard-list',
-      roles: [], floor: 'super_admin',
+      roles: ['department_chair'], floor: 'super_admin',
       actions: ['listCases', 'listReviewTypes', 'updateCase', 'createCase',
                 'checkCaseEligibility', 'detectCallColumns', 'previewCallImport',
                 'commitCallImport', 'computeScheduleForCase', 'listCaseComponents',
                 'listCommitteeMembers', 'assignComponent', 'markComponentDrafted',
                 'reopenComponent', 'committeeWorkload', 'exportWorkloadToSheet',
                 'caseAssignments'] },
+    // department_chair: VIEW access — the reads admit the chair; every
+    // mutation stays super_admin.
     { key: 'letters', label: 'Letter writers', icon: 'ti-mailbox',
-      roles: [], floor: 'super_admin',
+      roles: ['department_chair'], floor: 'super_admin',
       actions: ['listLetterCases', 'listWriters', 'upsertWriter', 'setWriterStage',
                 'addWriterNote', 'uploadWriterEvidence', 'removeWriterEvidence', 'removeWriter'] },
     { key: 'anticipated', label: 'Anticipated Call', icon: 'ti-crystal-ball',
@@ -778,6 +780,19 @@ const PersonnelModule = (() => {
     throw new Error('Roster data is limited to the personnel committee and administrators.');
   }
 
+  /**
+   * View access for the department chair: the chair sees Cases and Letter
+   * writers (reads only) — every mutation stays super_admin. 'department_chair'
+   * is an identity role assigned in Admin → Users, per the platform's
+   * roles-as-identity convention.
+   */
+  function _requireCaseView(roles) {
+    roles = roles || [];
+    if (roles.indexOf('super_admin') !== -1) return;
+    if (roles.indexOf('department_chair') !== -1) return;
+    throw new Error('Case data is limited to the department chair and administrators.');
+  }
+
   function _requireSuperAdmin(roles) {
     if (!roles || roles.indexOf('super_admin') === -1) {
       throw new Error('Only a super_admin may import rank/step data.');
@@ -808,7 +823,9 @@ const PersonnelModule = (() => {
    * the case forms.
    */
   function listReviewTypes(payload, user, roles) {
-    _requireRosterAccess(roles);
+    // Vocabulary for both the roster/committee views and the chair's case
+    // view — anyone with either access level may read the type labels.
+    try { _requireRosterAccess(roles); } catch (e) { _requireCaseView(roles); }
     const types = REVIEW_TYPES();
     return {
       reviewTypes: Object.keys(types).map(k => ({
@@ -1090,7 +1107,7 @@ const PersonnelModule = (() => {
    * @param {Object} payload - { academicYear? }
    */
   function listCases(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireCaseView(roles);
     const p = payload || {};
     const wantYear = String(p.academicYear || '').trim();
     let rows = DataService.getAll(SHEET(), CASES_TAB());
@@ -2382,7 +2399,7 @@ const PersonnelModule = (() => {
    *            indefiniteStep, isAcceleration, lastAdvancement, summary }
    */
   function checkCaseEligibility(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireCaseView(roles);
     const p = payload || {};
     const email = _email(p.email);
     if (!email) throw new Error('email is required.');
@@ -2645,7 +2662,7 @@ const PersonnelModule = (() => {
    * assigns the committee; we only read it.
    */
   function listCommitteeMembers(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireCaseView(roles);
     let members = [];
     try {
       members = Auth.usersWithRole(COMMITTEE_ROLE()) || [];
@@ -2668,7 +2685,7 @@ const PersonnelModule = (() => {
    * @param {Object} payload - { caseId }
    */
   function listCaseComponents(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireCaseView(roles);
     const id = String((payload || {}).caseId || '').trim();
     if (!id) throw new Error('caseId is required.');
 
@@ -2905,7 +2922,7 @@ const PersonnelModule = (() => {
    * @param {Object} payload - { academicYear? — restrict to one cycle }
    */
   function committeeWorkload(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireCaseView(roles);
     const year = String((payload || {}).academicYear || '').trim();
 
     // Which cases are in scope, and which of them are major reviews.
@@ -2923,10 +2940,11 @@ const PersonnelModule = (() => {
     });
 
     // Tally the components of in-scope cases per assignee.
-    const perMember = {};   // email -> tallies
+    const perMember = {};   // email -> tallies + the assignments themselves
     let unassigned = 0, unassignedMajor = 0;
-    const blank = () => ({ assigned: 0, drafted: 0, major: 0, minor: 0, dueSoonest: '' });
+    const blank = () => ({ assigned: 0, drafted: 0, major: 0, minor: 0, dueSoonest: '', items: [] });
 
+    const compTypes = COMPONENT_TYPES();
     DataService.getAll(SHEET(), COMPONENTS_TAB()).forEach(comp => {
       const c = caseById[comp.CaseID];
       if (!c) return;                                  // out of scope
@@ -2946,6 +2964,16 @@ const PersonnelModule = (() => {
       if (due && status !== 'drafted' && (!m.dueSoonest || due < m.dueSoonest)) {
         m.dueSoonest = due;
       }
+      // The assignment itself, so the card can show WHAT, not just how much.
+      const candidate = Auth.getProfile(c.candidateEmail);
+      m.items.push({
+        caseId: comp.CaseID,
+        candidate: candidate ? (candidate.nameLastFirst || candidate.name) : c.candidateEmail,
+        component: (compTypes[comp.ComponentType] && compTypes[comp.ComponentType].label) || comp.ComponentType,
+        reviewType: c.reviewType,
+        dueAt: due,
+        status: status,
+      });
     });
 
     // Every role-holder appears, workload or not.
@@ -2966,6 +2994,15 @@ const PersonnelModule = (() => {
 
     const rows = Object.keys(inPool).map(email => {
       const m = perMember[email] || blank();
+      // Open work first, then by due date, then candidate — the member's
+      // own reading order.
+      m.items.sort((a, b) => {
+        const ao = a.status === 'drafted' ? 1 : 0, bo = b.status === 'drafted' ? 1 : 0;
+        if (ao !== bo) return ao - bo;
+        const ad = a.dueAt || '9999', bd = b.dueAt || '9999';
+        if (ad !== bd) return ad < bd ? -1 : 1;
+        return String(a.candidate).localeCompare(String(b.candidate));
+      });
       return {
         email: email,
         name: inPool[email],
@@ -2975,6 +3012,7 @@ const PersonnelModule = (() => {
         major: m.major,
         minor: m.minor,
         dueSoonest: m.dueSoonest,
+        items: m.items,
       };
     });
     // Heaviest open load first — the balance question reads top-to-bottom.
@@ -2999,7 +3037,7 @@ const PersonnelModule = (() => {
    * @param {Object} payload - { academicYear? — restrict to one cycle }
    */
   function caseAssignments(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireCaseView(roles);
     const year = String((payload || {}).academicYear || '').trim();
     const types = COMPONENT_TYPES();
 
@@ -3400,7 +3438,9 @@ const PersonnelModule = (() => {
     let home = keys[0] || '';
     if (isSuper && keys.indexOf('roster') !== -1) home = 'roster';
     else if (!isSuper && keys.indexOf('mycases') !== -1) home = 'mycases';
-    return { tabs: visible, home: home };
+    // canEdit tells the UI whether to render mutation affordances at all —
+    // the server-side action gates remain the enforcement.
+    return { tabs: visible, home: home, canEdit: isSuper };
   }
 
   function COMM_LOG_TAB() { return CONFIG.TABS.COMMUNICATIONS_LOG; }
@@ -3991,7 +4031,7 @@ const PersonnelModule = (() => {
    * returns the remaining live cases for that picker.
    */
   function listLetterCases(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireCaseView(roles);
     const writers = DataService.getAll(SHEET(), WRITERS_TAB());
     const trackedIds = {};
     writers.forEach(w => { trackedIds[w.CaseID] = true; });
@@ -4025,7 +4065,7 @@ const PersonnelModule = (() => {
 
   /** The writer roster for one case, with the letters-due date for context. */
   function listWriters(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireCaseView(roles);
     const caseId = String((payload || {}).caseId || '').trim();
     if (!caseId) throw new Error('caseId is required.');
     const cases = DataService.query(SHEET(), CASES_TAB(), 'CaseID', caseId);
@@ -4060,7 +4100,8 @@ const PersonnelModule = (() => {
       return d !== 0 ? d : String(a.name).localeCompare(String(b.name));
     });
 
-    const accepted = rows.filter(r => ['accepted', 'file_sent', 'letter_submitted'].indexOf(r.stage) !== -1).length;
+    // Every stage from acceptance onward counts as an accepted writer.
+    const accepted = rows.filter(r => ['accepted', 'file_sent', 'acknowledged', 'letter_submitted'].indexOf(r.stage) !== -1).length;
     const submitted = rows.filter(r => r.stage === 'letter_submitted').length;
     return {
       caseId: caseId,
@@ -4606,7 +4647,9 @@ const PersonnelModule = (() => {
   function computeCycleSchedule(payload, user, roles) {
     _requireSuperAdmin(roles);
     const p = payload || {};
-    const cycle = getCycle({ academicYear: p.academicYear }, user, roles);
+    // Internal read, elevated: this function's own guard is the boundary;
+    // the cycle actions themselves stay admin-only externally.
+    const cycle = getCycle({ academicYear: p.academicYear }, user, ['super_admin']);
     const warnings = [];
 
     // The two timelines run against DIFFERENT division deadlines: merit files
@@ -4654,7 +4697,7 @@ const PersonnelModule = (() => {
    * @param {Object} payload - { caseId, actualLettersAddedDate? }
    */
   function computeScheduleForCase(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireCaseView(roles);
     const p = payload || {};
     const id = String(p.caseId || '').trim();
     if (!id) throw new Error('caseId is required.');
@@ -4664,7 +4707,9 @@ const PersonnelModule = (() => {
     const c = found[0];
 
     const year = String(c.AcademicYear || '').trim();
-    const cycle = getCycle({ academicYear: year }, user, roles);
+    // Internal read, elevated: this function's own guard is the boundary;
+    // the cycle actions themselves stay admin-only externally.
+    const cycle = getCycle({ academicYear: year }, user, ['super_admin']);
 
     // The Division's submission deadline depends on the review type: merit and
     // salary-increase files go by the merit deadline; promotion and mid-career
