@@ -75,7 +75,7 @@ const PersonnelModule = (() => {
                 'exportAnticipatedToCsv'] },
     { key: 'comms', label: 'Communications', icon: 'ti-mail',
       roles: [], floor: 'super_admin',
-      actions: ['getCommTemplates', 'saveCommTemplate', 'previewCommunication',
+      actions: ['getCommTemplates', 'saveCommTemplate', 'addCommTemplate', 'removeCommTemplate', 'previewCommunication',
                 'sendCommunications', 'draftCommunications', 'logCopiedCommunication',
                 'listCommunicationsLog', 'listPolicyDocs', 'savePolicyDocs'] },
     { key: 'settings', label: 'Calendar', icon: 'ti-calendar-cog',
@@ -3406,10 +3406,47 @@ const PersonnelModule = (() => {
   function COMM_LOG_TAB() { return CONFIG.TABS.COMMUNICATIONS_LOG; }
   const COMM_KINDS = ['assignments', 'schedule', 'policy'];
 
-  /** The template for a kind: the CONFIG default overlaid with any Settings-tab override. */
+  // ── Custom template kinds ──────────────────────────────────
+  // User-created templates beyond the three built-ins, registered as JSON
+  // in the Settings sheet: [{key, label}]. The key is generated once from
+  // the label and PERMANENT (it names the subject/body settings rows and
+  // appears in the communications log); the label stays editable in the
+  // registry. Custom templates merge every token — {Assignments} and
+  // {Schedule} work in any template that mentions them.
+  const CUSTOM_KINDS_KEY = 'COMM_CUSTOM_KINDS';
+
+  function _customKinds() {
+    try {
+      const row = DataService.getAll(SHEET(), SETTINGS_TAB())
+        .find(r => String(r.Key || '').trim() === CUSTOM_KINDS_KEY);
+      if (!row || !row.Value) return [];
+      const list = JSON.parse(row.Value);
+      return Array.isArray(list)
+        ? list.filter(k => k && String(k.key || '').trim() && String(k.label || '').trim())
+        : [];
+    } catch (err) { Logger.log('_customKinds: ' + err); return []; }
+  }
+
+  function _allKindKeys() {
+    return COMM_KINDS.concat(_customKinds().map(k => k.key));
+  }
+
+  function _saveCustomKinds(list) {
+    const value = list.length ? JSON.stringify(list) : '';
+    const existing = DataService.getAll(SHEET(), SETTINGS_TAB())
+      .find(r => String(r.Key || '').trim() === CUSTOM_KINDS_KEY);
+    if (existing) DataService.update(SHEET(), SETTINGS_TAB(), 'Key', CUSTOM_KINDS_KEY, { Value: value });
+    else DataService.insert(SHEET(), SETTINGS_TAB(), { Key: CUSTOM_KINDS_KEY, Value: value });
+  }
+
+  /** The template for a kind: the CONFIG default overlaid with any Settings-tab
+   *  override. Custom kinds have no CONFIG defaults — their label comes from
+   *  the registry and their text lives entirely in Settings. */
   function _commTemplate(kind) {
     const defaults = ((CONFIG.PERSONNEL && CONFIG.PERSONNEL.COMM_TEMPLATES) || {})[kind] || {};
-    const out = { label: defaults.label || kind, subject: defaults.subject || '', body: defaults.body || '' };
+    const custom = _customKinds().find(k => k.key === kind);
+    const out = { label: defaults.label || (custom && custom.label) || kind,
+                  subject: defaults.subject || '', body: defaults.body || '' };
     try {
       DataService.getAll(SHEET(), SETTINGS_TAB()).forEach(r => {
         const k = String(r.Key || '').trim();
@@ -3424,9 +3461,52 @@ const PersonnelModule = (() => {
   function getCommTemplates(payload, user, roles) {
     _requireSuperAdmin(roles);
     return {
-      kinds: COMM_KINDS.map(k => Object.assign({ kind: k }, _commTemplate(k))),
+      kinds: COMM_KINDS.map(k => Object.assign({ kind: k, builtIn: true }, _commTemplate(k)))
+        .concat(_customKinds().map(c => Object.assign({ kind: c.key, builtIn: false }, _commTemplate(c.key)))),
       tokens: '{Name} {FirstName} {Year} {Assignments} {Schedule} {PolicyDocs} {PortalLink}',
     };
+  }
+
+  /**
+   * Register a new custom template kind. The key is slugged from the label
+   * once and never changes; the template starts blank for the editor.
+   * @param {Object} payload - { label }
+   */
+  function addCommTemplate(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const label = String((payload || {}).label || '').trim();
+    if (!label) throw new Error('Give the template a name.');
+    let key = 'c_' + label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40);
+    if (!key || key === 'c_') throw new Error('That name has no usable characters.');
+    const all = _allKindKeys();
+    if (all.indexOf(key) !== -1) {
+      let n = 2; while (all.indexOf(key + '_' + n) !== -1) n++;
+      key = key + '_' + n;
+    }
+    const list = _customKinds();
+    list.push({ key: key, label: label });
+    _saveCustomKinds(list);
+    return { kind: key, label: label };
+  }
+
+  /** Remove a CUSTOM template kind (built-ins are permanent). The log keeps
+   *  any messages already sent under it — the kind key in old log rows just
+   *  no longer resolves to a live template. */
+  function removeCommTemplate(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const kind = String((payload || {}).kind || '').trim();
+    if (COMM_KINDS.indexOf(kind) !== -1) throw new Error('The built-in templates can be edited but not removed.');
+    const list = _customKinds();
+    if (!list.some(k => k.key === kind)) throw new Error('No such custom template: ' + kind);
+    _saveCustomKinds(list.filter(k => k.key !== kind));
+    // Blank its settings rows so stale text doesn't resurrect on key reuse.
+    ['_SUBJECT', '_BODY'].forEach(suffix => {
+      const key = 'COMM_' + kind + suffix;
+      const row = DataService.getAll(SHEET(), SETTINGS_TAB())
+        .find(r => String(r.Key || '').trim() === key);
+      if (row) DataService.update(SHEET(), SETTINGS_TAB(), 'Key', key, { Value: '' });
+    });
+    return { removed: kind };
   }
 
   // ── Policy documents (the references drafts point at) ──────
@@ -3519,7 +3599,7 @@ const PersonnelModule = (() => {
     _requireSuperAdmin(roles);
     const p = payload || {};
     const kind = String(p.kind || '').trim();
-    if (COMM_KINDS.indexOf(kind) === -1) throw new Error('Unknown message kind: ' + kind);
+    if (_allKindKeys().indexOf(kind) === -1) throw new Error('Unknown message kind: ' + kind);
     const put = (key, value) => {
       const existing = DataService.getAll(SHEET(), SETTINGS_TAB())
         .find(r => String(r.Key || '').trim() === key);
@@ -3598,7 +3678,7 @@ const PersonnelModule = (() => {
     _requireSuperAdmin(roles);
     const p = payload || {};
     const kind = String(p.kind || '').trim();
-    if (COMM_KINDS.indexOf(kind) === -1) throw new Error('Unknown message kind: ' + kind);
+    if (_allKindKeys().indexOf(kind) === -1) throw new Error('Unknown message kind: ' + kind);
     const year = String(p.academicYear || '').trim();
     if (!year) throw new Error('academicYear is required.');
 
@@ -3613,8 +3693,12 @@ const PersonnelModule = (() => {
     const tmpl = _commTemplate(kind);
     const portalLink = (typeof Links !== 'undefined' && Links.deepLink)
       ? (Links.deepLink('personnel') || '') : '';
-    // Blocks shared by every recipient are built once.
-    const scheduleBlock = kind === 'schedule' ? _scheduleBlockFor(year, user, roles) : '';
+    // Blocks shared by every recipient are built once — computed when the
+    // template actually uses the token, so custom templates can carry
+    // {Schedule} or {Assignments} too.
+    const usesSchedule = (tmpl.subject + tmpl.body).indexOf('{Schedule}') !== -1;
+    const usesAssignments = (tmpl.subject + tmpl.body).indexOf('{Assignments}') !== -1;
+    const scheduleBlock = usesSchedule ? _scheduleBlockFor(year, user, roles) : '';
     const policyDocsBlock = _policyDocsBlock();
 
     const drafts = [];
@@ -3626,9 +3710,12 @@ const PersonnelModule = (() => {
       const firstName = profile ? (profile.firstName || name) : name;
 
       let assignmentsBlock = '';
-      if (kind === 'assignments') {
+      if (usesAssignments) {
         assignmentsBlock = _assignmentsBlockFor(email, year, user, roles);
-        if (!assignmentsBlock) { skipped.push(name); return; }   // nothing to notify
+        // Only the built-in assignment notice skips empty-handed members —
+        // a custom template mentioning {Assignments} goes to everyone, with
+        // the block simply empty for those with nothing open.
+        if (kind === 'assignments' && !assignmentsBlock) { skipped.push(name); return; }
       }
 
       const fill = s => String(s || '')
@@ -3674,7 +3761,7 @@ const PersonnelModule = (() => {
     _requireSuperAdmin(roles);
     const p = payload || {};
     const kind = String(p.kind || '').trim();
-    if (COMM_KINDS.indexOf(kind) === -1) throw new Error('Unknown message kind: ' + kind);
+    if (_allKindKeys().indexOf(kind) === -1) throw new Error('Unknown message kind: ' + kind);
     const year = String(p.academicYear || '').trim();
     const drafts = Array.isArray(p.drafts) ? p.drafts : [];
     if (!drafts.length) throw new Error('Nothing to send.');
@@ -3722,7 +3809,7 @@ const PersonnelModule = (() => {
     _requireSuperAdmin(roles);
     const p = payload || {};
     const kind = String(p.kind || '').trim();
-    if (COMM_KINDS.indexOf(kind) === -1) throw new Error('Unknown message kind: ' + kind);
+    if (_allKindKeys().indexOf(kind) === -1) throw new Error('Unknown message kind: ' + kind);
     const year = String(p.academicYear || '').trim();
     const drafts = Array.isArray(p.drafts) ? p.drafts : [];
     if (!drafts.length) throw new Error('Nothing to draft.');
@@ -4694,6 +4781,8 @@ const PersonnelModule = (() => {
     // Communications
     getCommTemplates,
     saveCommTemplate,
+    addCommTemplate,
+    removeCommTemplate,
     previewCommunication,
     sendCommunications,
     draftCommunications,

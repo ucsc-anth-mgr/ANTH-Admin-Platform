@@ -480,11 +480,7 @@ Assistant Professor	Hernandez Garavito	Carla	5	o	6	2	17	Reappt with salary incre
       <div class="form-row">
         <div class="form-group">
           <label class="form-label">Message kind</label>
-          <select class="form-select" id="comm-kind">
-            <option value="assignments">Drafting assignments (one per member)</option>
-            <option value="schedule">Cycle schedule &amp; deadlines</option>
-            <option value="policy">Policy / process notice</option>
-          </select>
+          <select class="form-select" id="comm-kind"></select>
         </div>
         <div class="form-group">
           <label class="form-label">Academic year</label>
@@ -507,10 +503,16 @@ Assistant Professor	Hernandez Garavito	Carla	5	o	6	2	17	Reappt with salary incre
         <code>{Name}</code> <code>{FirstName}</code> <code>{Year}</code>
         <code>{Assignments}</code> <code>{Schedule}</code> <code>{PolicyDocs}</code> <code>{PortalLink}</code>.
       </p>
-      <div class="form-row">
-        <div class="form-group">
+      <div class="form-row" style="align-items:flex-end;">
+        <div class="form-group" style="flex:1;">
           <label class="form-label">Template</label>
           <select class="form-select" id="tmpl-kind" onchange="PersonnelUI.loadTemplateEditor()"></select>
+        </div>
+        <div class="form-group" style="flex:0 0 auto;">
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-secondary" onclick="PersonnelUI.newTemplate()"><i class="ti ti-plus"></i> New template</button>
+            <button class="btn btn-secondary" id="tmpl-del-btn" onclick="PersonnelUI.deleteTemplate()" style="display:none;"><i class="ti ti-trash"></i> Delete</button>
+          </div>
         </div>
       </div>
       <div class="form-group">
@@ -1284,14 +1286,47 @@ window.PersonnelUI = (() => {
       const start = now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
       y.value = start + '-' + String((start + 1) % 100).padStart(2, '0');
     }
-    App.call('personnel', 'getCommTemplates', {}, res => {
-      _commTemplates = res.kinds || [];
-      const sel = document.getElementById('tmpl-kind');
-      sel.innerHTML = _commTemplates.map(t => `<option value="${t.kind}">${t.label}</option>`).join('');
-      loadTemplateEditor();
-    });
+    _reloadTemplates();
     loadPolicyDocs();
     loadCommLog();
+  }
+
+  function _reloadTemplates(selectKind) {
+    App.call('personnel', 'getCommTemplates', {}, res => {
+      _commTemplates = res.kinds || [];
+      const opts = _commTemplates.map(t =>
+        `<option value="${t.kind}">${t.label}${t.builtIn ? '' : ' (custom)'}</option>`).join('');
+      const tsel = document.getElementById('tmpl-kind');
+      const prev = selectKind || tsel.value;
+      tsel.innerHTML = opts;
+      if (prev && _commTemplates.some(t => t.kind === prev)) tsel.value = prev;
+      const csel = document.getElementById('comm-kind');
+      const cprev = csel.value;
+      csel.innerHTML = opts;
+      if (cprev && _commTemplates.some(t => t.kind === cprev)) csel.value = cprev;
+      loadTemplateEditor();
+    });
+  }
+
+  function newTemplate() {
+    const label = prompt('Name for the new template (e.g. "Vote reminder"):');
+    if (label === null) return;
+    if (!label.trim()) { Toast.show('The template needs a name.', 'error'); return; }
+    App.call('personnel', 'addCommTemplate', { label: label.trim() }, res => {
+      Toast.show('Template created — write its subject and body, then save.', 'success');
+      _reloadTemplates(res.kind);
+    });
+  }
+
+  function deleteTemplate() {
+    const kind = document.getElementById('tmpl-kind').value;
+    const t = _commTemplates.find(x => x.kind === kind);
+    if (!t || t.builtIn) return;
+    if (!confirm('Delete the "' + t.label + '" template?\n\nMessages already sent under it stay in the log.')) return;
+    App.call('personnel', 'removeCommTemplate', { kind: kind }, () => {
+      Toast.show('Template deleted.', 'success');
+      _reloadTemplates();
+    });
   }
 
   function loadTemplateEditor() {
@@ -1300,6 +1335,8 @@ window.PersonnelUI = (() => {
     if (!t) return;
     document.getElementById('tmpl-subject').value = t.subject || '';
     document.getElementById('tmpl-body').value = t.body || '';
+    const del = document.getElementById('tmpl-del-btn');
+    if (del) del.style.display = t.builtIn ? 'none' : 'inline-flex';
   }
 
   function saveTemplate() {
@@ -3062,7 +3099,7 @@ window.PersonnelUI = (() => {
     loadLetterCases, loadWriters, trackOtherCase, saveWriter, clearWriterForm,
     editWriter, deleteWriter, changeWriterStage, addNote, uploadEvidence, deleteEvidence,
     loadMyAssignments, myMarkDrafted,
-    loadComms, loadTemplateEditor, saveTemplate, generateDrafts,
+    loadComms, loadTemplateEditor, saveTemplate, newTemplate, deleteTemplate, generateDrafts,
     sendDraft, sendAllDrafts, draftDraft, draftAllDrafts, copyDraft, loadCommLog,
     addPolicyDocRow, removePolicyDocRow, savePolicyDocs,
   };
