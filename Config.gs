@@ -32,6 +32,7 @@ const CONFIG = {
     AUDIT_LOG:     '1Jog3zXwu5dpAuWuJ8I-VPjbqH4ybRlc3yl1zUzh1HxE',        // Tab: AuditLog
     SUBMISSIONS:   '1zacvd0FhWcjKldhKt9Fan3lWY0QkRAZ3Ol45wobBZl4',  // Tab per form type
     // Senior Thesis module — its OWN spreadsheet (per-module storage tier).
+    // Tabs: Thesis, ThesisEnrollment (ANTH 195S enrollment petitions).
     THESIS:        '16MiWlHY0mTFuBioI5mc1nV3mmiIEbgBssG3h7jO4tBc',
     // Transcript / ASSIST-articulation module — its OWN spreadsheet
     // (per-module storage tier). Tabs: Articulations, ArticulationReview,
@@ -48,6 +49,10 @@ const CONFIG = {
     // (per-module storage tier). Tab: Petitions. Blank until setUp()
     // creates it and logs the id to paste back here.
     INDIVIDUAL_STUDIES: '1YXEdMiRUhFILSKDSg-Y_IwETsNy7k3B3o03lgAz84Fo',
+    // Graduate Individual Studies module — its OWN spreadsheet
+    // (per-module storage tier). Tab: Petitions. Blank until setUp()
+    // creates it and logs the id to paste back here.
+    GRAD_INDIVIDUAL_STUDIES: '',
     // Academic Personnel module — its OWN spreadsheet (per-module storage
     // tier). Tabs: PersonAttributes (person-attribute extension table),
     // Cases (review cases from the Call), ReviewHistory (the APO action
@@ -64,7 +69,7 @@ const CONFIG = {
     // storage tier). Tabs: Petitions, PetitionItems, Institutions,
     // CourseworkSettings. Blank until setUp() creates it and logs the
     // id to paste back here.
-    COURSEWORK:    '1QN7MHAW4NXOfQC3d3UXvMio4PLdWn9mR2rMtl3hfyAk',
+    COURSEWORK:    '',
   },
 
   // Optional: Drive folder where setUp() creates new spreadsheets.
@@ -95,6 +100,9 @@ const CONFIG = {
     REQUESTS:    'Requests',
     IMPORT_POLICY: 'ImportPolicy',
     NOTIFY_RULES: 'NotifyRules',
+    // Per-module, per-role tab visibility overrides (TabRegistry.gs).
+    // Machine-managed via Admin → Modules → Tabs — not for hand editing.
+    MODULE_TABS: 'ModuleTabs',
     // Platform-wide, module-keyed settings (Settings.gs). Lives in
     // USERS_CONFIG with the other config tabs. Machine-managed via the
     // Admin UI — not intended for hand editing.
@@ -103,6 +111,8 @@ const CONFIG = {
     REPORTS:     'Reports',
     THESIS_ELIGIBILITY: 'ThesisEligibility',
     THESIS_SETTINGS: 'ThesisSettings',
+    // ANTH 195S enrollment petitions (Thesis module; lives in SHEETS.THESIS)
+    THESIS_ENROLLMENT: 'ThesisEnrollment',
     // Transcript / ASSIST-articulation module tabs (live in SHEETS.TRANSCRIPT)
     ARTICULATIONS:        'Articulations',
     ARTICULATION_REVIEW:  'ArticulationReview',
@@ -115,6 +125,9 @@ const CONFIG = {
     INDIVIDUAL_STUDIES:     'Petitions',
     // Sponsor-owned petition templates (same spreadsheet as Petitions)
     INDIVIDUAL_STUDIES_TEMPLATES: 'Templates',
+    // Graduate Individual Studies module tab (lives in
+    // SHEETS.GRAD_INDIVIDUAL_STUDIES)
+    GRAD_INDIVIDUAL_STUDIES: 'Petitions',
     // Academic Personnel module tabs (live in SHEETS.PERSONNEL)
     PERSON_ATTRIBUTES: 'PersonAttributes',
     CASES:             'Cases',
@@ -188,6 +201,11 @@ const CONFIG = {
     // Drive Service enabled: Apps Script editor → Services (+) → Drive API.
     // Without it, resubmission still works but creates a new file ID.
     DRIVE_FOLDER_ID: '1KZ62caXh6IO-fLghGzaPJAC1b-qI50he',
+    // Drive folder for ANTH 195S ENROLLMENT documents: the generated
+    // enrollment-petition PDFs (moved here after ReportService archives
+    // them — the move keeps the file id, so the Reports index stays
+    // valid) and optional syllabus uploads.
+    ENROLLMENT_DRIVE_FOLDER_ID: '1kr3l1hUL3GAPwjNj_G74uqDFqV3_tsTf',
   },
 
   // ── Transcript / ASSIST articulation module ────────────────
@@ -244,6 +262,25 @@ const CONFIG = {
     DRIVE_FOLDER_ID: '1goPXXH3b0v4k4Pn_qyonPJHZW67jOfLn',
   },
 
+  // ── Graduate Individual Studies module ─────────────────────
+  // The archived petition is NOT composed from HTML — it is the official
+  // campus AcroForm, filled field-by-field (via PdfFill/pdf-lib) at the
+  // terminal workflow transition, then flattened and archived through
+  // ReportService (which files it under <ARCHIVE_FOLDER>/<module>/ and
+  // indexes it in the Reports tab, same as every generated report).
+  GRAD_INDIVIDUAL_STUDIES: {
+    // Drive file id of the BLANK fillable petition template
+    // ("GISP_form.pdf" — 16 named AcroForm fields: ClassNumber, Course,
+    // StudentName, Quarter, Year, StudentEmail, StudySite, Subject,
+    // StudyOutline, WeeklyContactHours, FinalPaperRequired,
+    // StudentSignature, StudentSignDate, SponsorName, SponsorSignature,
+    // SponsorSignDate). Set-once infrastructure pointer, like the other
+    // Drive ids here — NOT a UI-managed setting. If campus revises the
+    // form, regenerate the AcroForm with the SAME field names and swap
+    // this id; no code change.
+    TEMPLATE_FILE_ID: '10ahVmEgKwXa8rKJwu_PsVWGt-EDvu7kS',
+  },
+
   // ── Coursework Petition module ─────────────────────────────
   // Drive folder for uploaded supporting documents (per-course transcript
   // and syllabus PDFs). The completed petition PDF itself is archived by
@@ -252,7 +289,7 @@ const CONFIG = {
   // student-viewer grant silent; without it the DriveApp fallback sends a
   // share-notification email, which is harmless.
   COURSEWORK: {
-    DRIVE_FOLDER_ID: '16R0gJj6p8Y5Z4RwqbaMMfu0vq8hIm5In',   // create a Drive folder, paste its id
+    DRIVE_FOLDER_ID: '',   // create a Drive folder, paste its id
   },
 
   // ── Academic Personnel module ──────────────────────────────
