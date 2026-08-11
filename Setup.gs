@@ -79,6 +79,18 @@ const SETUP_SCHEMA = {
       ['visitor', '', ''],
     ],
   },
+  MODULE_TABS: {
+    tab: 'ModuleTabs',
+    // Per-module, per-role tab visibility overrides (TabRegistry.gs).
+    // One row per (Module, Tab). Roles is a comma list ('*' = anyone the
+    // module admits; blank = fall back to the code manifest's defaults);
+    // Enabled FALSE hides the tab from everyone, super admins included.
+    // No seed: rows are written lazily by Admin → Modules → Tabs — a
+    // module with no rows runs on its code-declared defaults, which is
+    // the correct starting state. Machine-managed — not for hand editing.
+    headers: ['Module', 'Tab', 'Roles', 'Enabled'],
+    seed: [],
+  },
   THESIS_ELIGIBILITY: {
     tab: 'ThesisEligibility',
     // Who may sponsor / read senior theses. Roles is the base set; the
@@ -163,6 +175,38 @@ const SETUP_SCHEMA = {
               'ReaderEmail', 'HonorsDecision', 'ReaderComments', 'ReaderCommentFileID', 'ReaderCommentLink',
               'ReaderDecidedBy', 'ReaderDecidedAt',
               'AdvisorProcessedBy', 'AdvisorProcessedAt', 'MilestoneEntered', 'ReturnNote',
+              'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
+  THESIS_ENROLLMENT: {
+    tab: 'ThesisEnrollment',
+    // ANTH 195S enrollment petitions (Thesis module — the front half of
+    // the thesis lifecycle). One petition per (student, term); the course
+    // is fixed at ANTH 195S, so IS's four-part key collapses to two.
+    // StudentEmail / SponsorEmail are routing keys — names and Student ID
+    // come from Auth at display time; petition-specific facts (College,
+    // MajorStatus, ClassLevel, StudySiteAddress…) are stored here.
+    // StudentConfirmed/At and SponsorVerified record the two REQUIRED
+    // attestations (195S-vs-198), printed on the generated PDF. TermCode
+    // is the canonical registrar key; Quarter/Year are display labels.
+    // Credits come from the imported schedule. The canonical PDF is
+    // generated at COMPLETE via ReportService and filed into
+    // CONFIG.THESIS.ENROLLMENT_DRIVE_FOLDER_ID (DriveFileID/DocumentLink
+    // filled then). Meta columns filled by DataService.
+    headers: ['EnrollmentID', 'StudentEmail', 'TermCode', 'Quarter', 'Year', 'Course', 'SponsorEmail',
+              'StudySiteAddress', 'Title', 'CourseDescription', 'EvidenceOfPreparation',
+              'WorkToBeSubmitted', 'ReportRequired', 'ReportDueDate',
+              'HoursWithSponsor', 'HoursIndependent',
+              'College', 'MajorStatus', 'ClassLevel',
+              'Stage',
+              'Credits', 'GradeOption',
+              'StudentConfirmed', 'StudentConfirmedAt',
+              'SponsorVerified', 'SponsorComments', 'SponsorDecidedBy', 'SponsorDecidedAt',
+              'ClassNumber', 'ClassSection', 'ClassNumberSource',
+              'TotalSpecialStudyCredits', 'MajorAuthRequired', 'MajorAuthorized',
+              'AdvisorComments', 'AdvisorProcessedBy', 'AdvisorProcessedAt',
+              'SyllabusFileID', 'SyllabusLink', 'SyllabusName',
+              'DriveFileID', 'FileName', 'DocumentLink', 'ReturnNote',
               'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
     seed: [],
   },
@@ -323,11 +367,63 @@ const SETUP_SCHEMA = {
     // at apply time. ReportRequired/ReportDueText are sponsor-owned and ride
     // silently onto the petition at submit. Lives in the same spreadsheet as
     // Petitions. Meta columns filled by DataService.
-    headers: ['TemplateID', 'SponsorEmail', 'Name', 'IsDefault',
+    // Audience ('undergrad' | 'grad'; blank = undergrad, covering rows
+    // written before the column existed) switches which form a template
+    // serves — and, for grad templates, reinterprets the generic
+    // columns: Title<-Subject, WorkToBeSubmitted<-WorkOutline,
+    // HoursWithSponsor<-WeeklyContactHours, ReportRequired<-
+    // FinalPaperRequired. Run addMissingColumns() to append it to an
+    // existing tab.
+    headers: ['TemplateID', 'SponsorEmail', 'Name', 'IsDefault', 'Audience',
               'Course', 'Title', 'CourseDescription', 'WorkToBeSubmitted',
               'EvidenceOfPreparation', 'GradeOption', 'HoursWithSponsor',
               'ReportRequired', 'ReportDueText', 'RoomAccessRoom', 'Active',
               'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
+
+  INDIVIDUAL_STUDIES_GRAD: {
+    tab: 'GradPetitions',
+    // Graduate Individual Studies petitions (GIS-prefixed ids; same
+    // module, parallel audience). Fixed course/unit pairs (ANTH
+    // 297A–299C — Units is intrinsic to the course, not read from the
+    // schedule); no grade option, no credit cap, no SR 760 split —
+    // WeeklyContactHours is a single number. Subject/WorkOutline
+    // replace the undergrad text fields; Outline* hold the optional
+    // attached outline document (replace-in-place, like the undergrad
+    // syllabus). DeadlineDate is the term's enrollment/fee-payment
+    // deadline resolved from the calendar at submission;
+    // LateSubmission flags a submission after it (calendar failure
+    // degrades to blank/FALSE). The canonical PDF is generated at
+    // COMPLETE via ReportService. Meta columns filled by DataService.
+    headers: ['PetitionID', 'StudentEmail', 'TermCode', 'Quarter', 'Year', 'Course', 'Units', 'SponsorEmail',
+              'StudySite', 'Subject', 'WorkOutline',
+              'WeeklyContactHours', 'FinalPaperRequired',
+              'Stage', 'LateSubmission', 'DeadlineDate',
+              'SponsorComments', 'SponsorDecidedBy', 'SponsorDecidedAt',
+              'ClassNumber', 'ClassSection', 'ClassNumberSource',
+              'AdvisorComments', 'AdvisorProcessedBy', 'AdvisorProcessedAt',
+              'OutlineFileID', 'OutlineLink', 'OutlineName',
+              'RoomAccessRequested', 'RoomAccessRoom', 'RoomAccessNote',
+              'RoomAccessRequestedBy', 'RoomAccessRequestedAt',
+              'DriveFileID', 'FileName', 'DocumentLink', 'ReturnNote',
+              'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
+
+  INDIVIDUAL_STUDIES_SETTINGS: {
+    tab: 'PetitionSettings',
+    // Individual Studies — UI-managed key/value settings, mirroring
+    // ThesisSettings / TranscriptSettings. The module already reads and
+    // writes this tab (getSettings/saveSettings: the two student
+    // notification templates); this schema entry gives it a real home —
+    // without it, setUp() never created the tab and saving from the
+    // Settings tab failed. No seed: blank/missing keys fall back to the
+    // module's NOTIFY_DEFAULTS in code, which is the correct starting
+    // state. The graduate build will add its keys (deadline pattern,
+    // grad notify templates) to this same tab. Lives in the same
+    // spreadsheet as Petitions. Meta columns filled by DataService.
+    headers: ['Key', 'Value'],
     seed: [],
   },
 
@@ -612,6 +708,76 @@ const SETUP_SCHEMA = {
               'Notes', 'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
     seed: [],
   },
+
+  COURSEWORK_PETITIONS: {
+    tab: 'Petitions',
+    // Coursework Petition module — header row, one per submission. Course
+    // lines (targets, documents, decisions, MyUCSC processing) live in the
+    // PetitionItems tab, one row per course. StudentEmail is a routing key
+    // only — name/StudentID come from Auth at display time. There is
+    // deliberately no header-level DUS-decided column: the all-articulated
+    // path may skip the DUS entirely, and per-item DecidedBy is the audit
+    // trail. Stage: SUBMITTED / RETURNED / PENDING_DUS / PENDING_PROCESSING
+    // / COMPLETE / WITHDRAWN. DriveFileID/DocumentLink/FileName are the
+    // canonical PDF, generated via ReportService at COMPLETE. Meta columns
+    // filled by DataService.
+    headers: ['PetitionID', 'StudentEmail', 'Division', 'Stage', 'ReturnNote',
+              'IntakeBy', 'IntakeAt', 'ProcessedBy', 'ProcessedAt',
+              'DriveFileID', 'DocumentLink', 'FileName',
+              'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
+  COURSEWORK_ITEMS: {
+    tab: 'PetitionItems',
+    // Coursework Petition module — one row per course line, keyed to the
+    // Petitions header row. TargetCourse: ANTH1|ANTH2|ANTH3|UD_ELECTIVE.
+    // TypeCode is division-scoped (lower: CCC|FOUR_YEAR|OOS_CC; upper:
+    // EAP|TRANSFER_4YR|FIELD_SCHOOL). Institution is EITHER InstitutionID
+    // (reference list) or InstitutionFreeText (escape hatch; cleared when
+    // the advisor promotes the text onto the list). ReviewPath:
+    // ARTICULATED (approved on the spot at intake; DUS never sees it) |
+    // FACULTY_REVIEW. Decision: APPROVED|DENIED — one vocabulary
+    // regardless of decider; DecidedBy records who (advisor at intake or
+    // DUS at review). Denials are terminal and carry DenialReason, which
+    // the precedent matcher surfaces to future reviewers. MyUCSCAction:
+    // OTHER_CREDIT_QUICK|REQUIREMENT_WAIVER|COURSE_DIRECTIVE, captured at
+    // processing. Uploads live in CONFIG.COURSEWORK.DRIVE_FOLDER_ID.
+    headers: ['ItemID', 'PetitionID', 'TargetCourse', 'TypeCode',
+              'InstitutionID', 'InstitutionFreeText', 'CourseID',
+              'SyllabusFileID', 'SyllabusLink', 'SyllabusName',
+              'TranscriptFileID', 'TranscriptLink', 'TranscriptName',
+              'ReviewPath', 'Decision', 'DenialReason', 'DecidedBy', 'DecidedAt',
+              'MyUCSCAction', 'EnteredBy', 'EnteredAt',
+              'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
+  COURSEWORK_INSTITUTIONS: {
+    tab: 'Institutions',
+    // Coursework Petition module — curated institution reference list.
+    // Starts EMPTY by design and grows via the advisor's Institutions tab
+    // plus promote-from-free-text at intake; precedent matching becomes
+    // exact on InstitutionID as the list fills in. Type: CCC | FOUR_YEAR |
+    // OOS_CC | INTERNATIONAL | FIELD_SCHOOL. Lower-division student
+    // pickers filter to the first three; upper-division shows all active
+    // (course type and institution type are independent there).
+    // Deactivate (Active FALSE) rather than delete — items reference ids.
+    headers: ['InstitutionID', 'Name', 'Type', 'AssistLink', 'Active', 'Notes',
+              'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
+  COURSEWORK_SETTINGS: {
+    tab: 'CourseworkSettings',
+    // Coursework Petition module — UI-managed key/value settings,
+    // mirroring PetitionSettings / TranscriptSettings. Holds the two
+    // student-notification templates (NOTIFY_RETURNED, NOTIFY_COMPLETE),
+    // edited in the module's Settings tab. No seed: a blank/missing key
+    // falls back to the module's NOTIFY_DEFAULTS in code, which is the
+    // correct starting state (and lets default-wording improvements reach
+    // deployments that haven't customized). Lives in the same spreadsheet
+    // as Petitions. Meta columns filled by DataService.
+    headers: ['Key', 'Value', 'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
 };
 
 
@@ -643,6 +809,7 @@ function setUp() {
   _setupTab(usersSS, SETUP_SCHEMA.THESIS_ELIGIBILITY);
   _setupTab(usersSS, SETUP_SCHEMA.THESIS_SETTINGS);
   _setupTab(usersSS, SETUP_SCHEMA.SETTINGS);
+  _setupTab(usersSS, SETUP_SCHEMA.MODULE_TABS);
 
   // Audit spreadsheet gets the AuditLog tab
   _setupTab(auditSS, SETUP_SCHEMA.AUDIT);
@@ -652,8 +819,10 @@ function setUp() {
   _setupTab(platformSS, SETUP_SCHEMA.TASKS);
   _setupTab(platformSS, SETUP_SCHEMA.REPORTS);
 
-  // Senior Thesis spreadsheet gets the Thesis tab
+  // Senior Thesis spreadsheet gets the Thesis tab and the ANTH 195S
+  // ThesisEnrollment tab (the enrollment front half of the lifecycle)
   _setupTab(thesisSS, SETUP_SCHEMA.THESIS);
+  _setupTab(thesisSS, SETUP_SCHEMA.THESIS_ENROLLMENT);
   _tidyDefaultSheet(thesisSS);
 
   // Transcript / ASSIST-articulation spreadsheet gets its tabs
@@ -668,9 +837,12 @@ function setUp() {
   _setupTab(classScheduleSS, SETUP_SCHEMA.CLASS_SCHEDULE_IMPORTS);
   _tidyDefaultSheet(classScheduleSS);
 
-  // Individual Studies module spreadsheet gets the Petitions tab
+  // Individual Studies module spreadsheet gets Petitions + Templates +
+  // PetitionSettings (the module's UI-managed key/value settings tab)
   _setupTab(indStudiesSS, SETUP_SCHEMA.INDIVIDUAL_STUDIES);
   _setupTab(indStudiesSS, SETUP_SCHEMA.INDIVIDUAL_STUDIES_TEMPLATES);
+  _setupTab(indStudiesSS, SETUP_SCHEMA.INDIVIDUAL_STUDIES_SETTINGS);
+  _setupTab(indStudiesSS, SETUP_SCHEMA.INDIVIDUAL_STUDIES_GRAD);
   _tidyDefaultSheet(indStudiesSS);
 
   // Academic Personnel module spreadsheet gets the PersonAttributes + Cases tabs
@@ -691,6 +863,15 @@ function setUp() {
   _setupTab(serviceSS, SETUP_SCHEMA.SERVICE_NOMINATIONS);
   _setupTab(serviceSS, SETUP_SCHEMA.SERVICE_SETTINGS);
   _tidyDefaultSheet(serviceSS);
+
+  // Coursework Petition module spreadsheet gets its three tabs
+  const courseworkSS = _resolveSpreadsheet(
+    CONFIG.SHEETS.COURSEWORK, 'Portal Coursework Petitions', 'COURSEWORK');
+  _setupTab(courseworkSS, SETUP_SCHEMA.COURSEWORK_PETITIONS);
+  _setupTab(courseworkSS, SETUP_SCHEMA.COURSEWORK_ITEMS);
+  _setupTab(courseworkSS, SETUP_SCHEMA.COURSEWORK_INSTITUTIONS);
+  _setupTab(courseworkSS, SETUP_SCHEMA.COURSEWORK_SETTINGS);
+  _tidyDefaultSheet(courseworkSS);
 
   // Submissions spreadsheet: tabs are created per form type on demand,
   // so we just ensure the spreadsheet exists and remove the default
@@ -865,19 +1046,24 @@ function _ensureSuperAdminNote() {
  */
 function checkSetup() {
   const checks = [
-    ['USERS_CONFIG', CONFIG.SHEETS.USERS_CONFIG, [SETUP_SCHEMA.USERS.tab, SETUP_SCHEMA.ROLES.tab, SETUP_SCHEMA.MODULES.tab, SETUP_SCHEMA.SETTINGS.tab]],
+    ['USERS_CONFIG', CONFIG.SHEETS.USERS_CONFIG, [SETUP_SCHEMA.USERS.tab, SETUP_SCHEMA.ROLES.tab, SETUP_SCHEMA.MODULES.tab, SETUP_SCHEMA.SETTINGS.tab, SETUP_SCHEMA.MODULE_TABS.tab]],
     ['AUDIT_LOG',    CONFIG.SHEETS.AUDIT_LOG,    [SETUP_SCHEMA.AUDIT.tab]],
     ['SUBMISSIONS',  CONFIG.SHEETS.SUBMISSIONS,  []],
     ['PLATFORM',     CONFIG.SHEETS.PLATFORM,     [SETUP_SCHEMA.TASKS.tab, SETUP_SCHEMA.REPORTS.tab]],
-    ['THESIS',       CONFIG.SHEETS.THESIS,       [SETUP_SCHEMA.THESIS.tab]],
+    ['THESIS',       CONFIG.SHEETS.THESIS,       [SETUP_SCHEMA.THESIS.tab, SETUP_SCHEMA.THESIS_ENROLLMENT.tab]],
     ['TRANSCRIPT',   CONFIG.SHEETS.TRANSCRIPT,   [SETUP_SCHEMA.ARTICULATIONS.tab, SETUP_SCHEMA.ARTICULATION_REVIEW.tab, SETUP_SCHEMA.TRANSCRIPTS.tab, SETUP_SCHEMA.TRANSCRIPT_SETTINGS.tab]],
     ['CLASS_SCHEDULE', CONFIG.SHEETS.CLASS_SCHEDULE, [SETUP_SCHEMA.CLASS_SCHEDULE.tab, SETUP_SCHEMA.CLASS_SCHEDULE_IMPORTS.tab]],
-    ['INDIVIDUAL_STUDIES', CONFIG.SHEETS.INDIVIDUAL_STUDIES, [SETUP_SCHEMA.INDIVIDUAL_STUDIES.tab, SETUP_SCHEMA.INDIVIDUAL_STUDIES_TEMPLATES.tab]],
+    ['INDIVIDUAL_STUDIES', CONFIG.SHEETS.INDIVIDUAL_STUDIES,
+     [SETUP_SCHEMA.INDIVIDUAL_STUDIES.tab, SETUP_SCHEMA.INDIVIDUAL_STUDIES_TEMPLATES.tab,
+      SETUP_SCHEMA.INDIVIDUAL_STUDIES_SETTINGS.tab, SETUP_SCHEMA.INDIVIDUAL_STUDIES_GRAD.tab]],
     ['PERSONNEL',    CONFIG.SHEETS.PERSONNEL,    [SETUP_SCHEMA.PERSON_ATTRIBUTES.tab, SETUP_SCHEMA.CASES.tab, SETUP_SCHEMA.REVIEW_HISTORY.tab, SETUP_SCHEMA.COMPONENTS.tab, SETUP_SCHEMA.CYCLES.tab, SETUP_SCHEMA.PERSONNEL_SETTINGS.tab, SETUP_SCHEMA.COMMUNICATIONS_LOG.tab, SETUP_SCHEMA.LETTER_WRITERS.tab]],
     ['SERVICE',      CONFIG.SHEETS.SERVICE,
      [SETUP_SCHEMA.SERVICE_CATALOG.tab, SETUP_SCHEMA.SERVICE_ASSIGNMENTS.tab,
       SETUP_SCHEMA.SERVICE_CORRECTIONS.tab, SETUP_SCHEMA.SERVICE_NOMINATIONS.tab,
       SETUP_SCHEMA.SERVICE_SETTINGS.tab]],
+    ['COURSEWORK',   CONFIG.SHEETS.COURSEWORK,
+     [SETUP_SCHEMA.COURSEWORK_PETITIONS.tab, SETUP_SCHEMA.COURSEWORK_ITEMS.tab,
+      SETUP_SCHEMA.COURSEWORK_INSTITUTIONS.tab, SETUP_SCHEMA.COURSEWORK_SETTINGS.tab]],
   ];
   Logger.log('=== Config check ===');
   checks.forEach(([key, id, tabs]) => {
@@ -911,10 +1097,12 @@ function _schemaPlacement() {
     { sheetKey: 'USERS_CONFIG', def: SETUP_SCHEMA.THESIS_ELIGIBILITY },
     { sheetKey: 'USERS_CONFIG', def: SETUP_SCHEMA.THESIS_SETTINGS },
     { sheetKey: 'USERS_CONFIG', def: SETUP_SCHEMA.SETTINGS },
+    { sheetKey: 'USERS_CONFIG', def: SETUP_SCHEMA.MODULE_TABS },
     { sheetKey: 'AUDIT_LOG',    def: SETUP_SCHEMA.AUDIT },
     { sheetKey: 'PLATFORM',     def: SETUP_SCHEMA.TASKS },
     { sheetKey: 'PLATFORM',     def: SETUP_SCHEMA.REPORTS },
     { sheetKey: 'THESIS',       def: SETUP_SCHEMA.THESIS },
+    { sheetKey: 'THESIS',       def: SETUP_SCHEMA.THESIS_ENROLLMENT },
     { sheetKey: 'TRANSCRIPT',   def: SETUP_SCHEMA.ARTICULATIONS },
     { sheetKey: 'TRANSCRIPT',   def: SETUP_SCHEMA.ARTICULATION_REVIEW },
     { sheetKey: 'TRANSCRIPT',   def: SETUP_SCHEMA.TRANSCRIPTS },
@@ -923,6 +1111,8 @@ function _schemaPlacement() {
     { sheetKey: 'CLASS_SCHEDULE', def: SETUP_SCHEMA.CLASS_SCHEDULE_IMPORTS },
     { sheetKey: 'INDIVIDUAL_STUDIES', def: SETUP_SCHEMA.INDIVIDUAL_STUDIES },
     { sheetKey: 'INDIVIDUAL_STUDIES', def: SETUP_SCHEMA.INDIVIDUAL_STUDIES_TEMPLATES },
+    { sheetKey: 'INDIVIDUAL_STUDIES', def: SETUP_SCHEMA.INDIVIDUAL_STUDIES_SETTINGS },
+    { sheetKey: 'INDIVIDUAL_STUDIES', def: SETUP_SCHEMA.INDIVIDUAL_STUDIES_GRAD },
     { sheetKey: 'PERSONNEL',    def: SETUP_SCHEMA.PERSON_ATTRIBUTES },
     { sheetKey: 'PERSONNEL',    def: SETUP_SCHEMA.CASES },
     { sheetKey: 'PERSONNEL',    def: SETUP_SCHEMA.REVIEW_HISTORY },
@@ -936,6 +1126,10 @@ function _schemaPlacement() {
     { sheetKey: 'SERVICE',      def: SETUP_SCHEMA.SERVICE_CORRECTIONS },
     { sheetKey: 'SERVICE',      def: SETUP_SCHEMA.SERVICE_NOMINATIONS },
     { sheetKey: 'SERVICE',      def: SETUP_SCHEMA.SERVICE_SETTINGS },
+    { sheetKey: 'COURSEWORK',   def: SETUP_SCHEMA.COURSEWORK_PETITIONS },
+    { sheetKey: 'COURSEWORK',   def: SETUP_SCHEMA.COURSEWORK_ITEMS },
+    { sheetKey: 'COURSEWORK',   def: SETUP_SCHEMA.COURSEWORK_INSTITUTIONS },
+    { sheetKey: 'COURSEWORK',   def: SETUP_SCHEMA.COURSEWORK_SETTINGS },
   ];
 }
 
