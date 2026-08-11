@@ -252,9 +252,25 @@
     </div>
   </div>
 
-  <!-- Busy overlay -->
+  <!-- Busy overlay: message + progress bar. The bar runs in two modes —
+       determinate (real numbers: file reading, the access sync) and an
+       animated indeterminate sweep (atomic server calls, which report
+       nothing until they return). -->
+  <style>
+    @keyframes cwp-busy-sweep {
+      0%   { margin-left: -40%; }
+      100% { margin-left: 100%; }
+    }
+    #cwp-busy-bar.cwp-indet { animation: cwp-busy-sweep 1.2s linear infinite; }
+  </style>
   <div id="cwp-busy" style="display:none;position:fixed;inset:0;background:rgba(255,255,255,0.6);z-index:1100;align-items:center;justify-content:center;">
-    <div class="card" style="padding:18px 26px;"><span id="cwp-busy-msg">Working…</span></div>
+    <div class="card" style="padding:18px 26px;min-width:300px;max-width:380px;">
+      <div id="cwp-busy-msg" style="margin-bottom:10px;">Working…</div>
+      <div style="height:6px;background:var(--color-border, #e3e6ea);border-radius:3px;overflow:hidden;">
+        <div id="cwp-busy-bar" style="height:100%;width:40%;background:var(--ucsc-navy, #003C6C);border-radius:3px;transition:width 0.2s;"></div>
+      </div>
+      <div id="cwp-busy-detail" class="text-sm text-muted" style="margin-top:8px;display:none;"></div>
+    </div>
   </div>
 
 </div>
@@ -508,15 +524,31 @@ window.CourseworkPetitionUI = (() => {          // window.X — NEVER const
       input.value = '';
       return;
     }
+    // Large PDFs take a visible moment to read into the browser; show the
+    // real byte progress. Small files read instantly — no overlay flash.
+    const showProgress = f.size > 3 * 1024 * 1024;
     const reader = new FileReader();
+    if (showProgress) {
+      _busyProgress('Reading ' + (f.name || 'file') + '…', 0, f.size, _fmtBytes(f.size));
+      reader.onprogress = function (e) {
+        if (e && e.lengthComputable) {
+          _busyProgress('Reading ' + (f.name || 'file') + '…', e.loaded, e.total,
+            _fmtBytes(e.loaded) + ' of ' + _fmtBytes(e.total));
+        }
+      };
+    }
     reader.onload = function () {
       _files[prefix + ':' + kind] = {
         dataBase64: String(reader.result).split(',')[1] || '',
         mimeType: f.type || 'application/pdf',
         name: f.name || '',
       };
+      if (showProgress) _idle();
     };
-    reader.onerror = function () { _alert('Could not read ' + (f.name || 'the file') + '.'); };
+    reader.onerror = function () {
+      if (showProgress) _idle();
+      _alert('Could not read ' + (f.name || 'the file') + '.');
+    };
     reader.readAsDataURL(f);
   }
 
@@ -547,7 +579,11 @@ window.CourseworkPetitionUI = (() => {          // window.X — NEVER const
       return it;
     });
 
-    _busy('Submitting petition…');
+    const pending = _pendingBytes('new:');
+    _busy('Submitting petition…', pending.count
+      ? 'Uploading ' + pending.count + ' document' + (pending.count === 1 ? '' : 's')
+        + ' (' + _fmtBytes(pending.bytes) + ') — this can take a moment.'
+      : '');
     App.call(MODULE, 'submit', { division: div, items: items }, function (res) {
       _idle();
       Object.keys(_files).forEach(function (k) { if (k.indexOf('new:') === 0) delete _files[k]; });
@@ -952,7 +988,7 @@ window.CourseworkPetitionUI = (() => {          // window.X — NEVER const
       actions.push({ itemId: it.itemId, myUcscAction: a });
     });
     if (bad) { _alert(bad); return; }
-    _busy('Completing petition…');
+    _busy('Completing petition…', 'Recording actions, generating the archived PDF, and notifying the student.');
     App.call(MODULE, 'processSubmit', { petitionId: petitionId, actions: actions }, function (res) {
       _idle(); delete _cache[petitionId]; closeModal(); loadProcessing();
       _alert('Petition complete. The student has been notified.'
@@ -974,7 +1010,11 @@ window.CourseworkPetitionUI = (() => {          // window.X — NEVER const
       if (rec.division === 'LOWER') v.targetCourse = it.targetCourse;
       return v;
     });
-    _busy('Resubmitting…');
+    const pending = _pendingBytes('rev:');
+    _busy('Resubmitting…', pending.count
+      ? 'Uploading ' + pending.count + ' replacement document' + (pending.count === 1 ? '' : 's')
+        + ' (' + _fmtBytes(pending.bytes) + ') — this can take a moment.'
+      : '');
     App.call(MODULE, 'resubmit', { petitionId: petitionId, items: items }, function () {
       _idle(); delete _cache[petitionId]; closeModal();
       _alert('Petition resubmitted. The undergraduate advisor has been notified.');
@@ -1116,24 +1156,30 @@ window.CourseworkPetitionUI = (() => {          // window.X — NEVER const
   function syncDocumentAccess() {
     const btn = document.getElementById('cwp-sync-btn');
     if (btn) btn.disabled = true;
-    _syncStatus('Updating document sharing…');
+    _busy('Updating document sharing…', 'Counting documents…');
+    _syncStatus('');
 
     const step = function (startAt) {
       App.call(MODULE, 'syncDocumentAccess', { startAt: startAt }, function (r) {
         r = r || {};
         if (!r.total) {
           if (btn) btn.disabled = false;
+          _idle();
           _syncStatus('No documents to share yet.');
           return;
         }
-        _syncStatus('Updating document sharing… ' + r.processed + ' of ' + r.total + ' files.');
+        // The server reports real counts per batch — a true progress bar.
+        _busyProgress('Updating document sharing…', r.processed, r.total,
+          r.processed + ' of ' + r.total + ' files');
         if (!r.done) { step(r.nextStartAt); return; }
         if (btn) btn.disabled = false;
+        _idle();
         _syncStatus('Done — ' + r.total + ' file' + (r.total === 1 ? '' : 's') + ' shared with '
           + r.reviewerCount + ' advisor/director account'
           + (r.reviewerCount === 1 ? '' : 's') + ' and each petition\'s student.');
       }, function (err) {
         if (btn) btn.disabled = false;
+        _idle();
         _syncStatus('');
         _alert(err);
       });
@@ -1202,12 +1248,57 @@ window.CourseworkPetitionUI = (() => {          // window.X — NEVER const
       .replace(/>/g, '&gt;');
   }
 
-  function _busy(msg) {
+  /** Indeterminate busy: animated bar + message. Optional detail line. */
+  function _busy(msg, detail) {
     const m = document.getElementById('cwp-busy-msg');
     if (m) m.textContent = msg || 'Working…';
+    const bar = document.getElementById('cwp-busy-bar');
+    if (bar) { bar.classList.add('cwp-indet'); bar.style.width = '40%'; }
+    _busyDetail(detail || '');
     const el = document.getElementById('cwp-busy');
     if (el) el.style.display = 'flex';
   }
+
+  /** Determinate busy: real progress (done of total fills the bar). */
+  function _busyProgress(msg, done, total, detail) {
+    const m = document.getElementById('cwp-busy-msg');
+    if (m) m.textContent = msg || 'Working…';
+    const bar = document.getElementById('cwp-busy-bar');
+    if (bar) {
+      bar.classList.remove('cwp-indet');
+      bar.style.marginLeft = '0';
+      const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+      bar.style.width = Math.min(100, Math.max(2, pct)) + '%';
+    }
+    _busyDetail(detail !== undefined ? detail : (done + ' of ' + total));
+    const el = document.getElementById('cwp-busy');
+    if (el) el.style.display = 'flex';
+  }
+
+  function _busyDetail(txt) {
+    const el = document.getElementById('cwp-busy-detail');
+    if (!el) return;
+    el.textContent = txt || '';
+    el.style.display = txt ? 'block' : 'none';
+  }
+
+  function _fmtBytes(n) {
+    if (!n || n <= 0) return '';
+    if (n < 1024 * 1024) return Math.max(1, Math.round(n / 1024)) + ' KB';
+    return (n / (1024 * 1024)).toFixed(1) + ' MB';
+  }
+
+  /** Total decoded size of the pending files under a key prefix. */
+  function _pendingBytes(prefix) {
+    let total = 0, count = 0;
+    Object.keys(_files).forEach(function (k) {
+      if (k.indexOf(prefix) !== 0) return;
+      count++;
+      total += Math.floor(String(_files[k].dataBase64 || '').length * 0.75);
+    });
+    return { count: count, bytes: total };
+  }
+
   function _idle() {
     const el = document.getElementById('cwp-busy');
     if (el) el.style.display = 'none';
