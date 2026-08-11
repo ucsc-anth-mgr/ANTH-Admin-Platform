@@ -169,11 +169,11 @@ const CourseworkPetitionModule = (() => {
     { key: 'processing',   label: 'Processing',     icon: 'ti-checklist',   roles: [ADVISOR_ROLE],
       actions: ['processingQueue', 'processSubmit'] },
     { key: 'all',          label: 'All Petitions',  icon: 'ti-archive',     roles: [ADVISOR_ROLE, DUS_ROLE],
-      actions: ['allPetitions', 'get'] },
+      actions: ['allPetitions', 'get', 'precedents', 'deletePetition'] },
     { key: 'institutions', label: 'Institutions',   icon: 'ti-building',    roles: [ADVISOR_ROLE],
       actions: ['listInstitutionsAll', 'saveInstitution'] },
     { key: 'settings',     label: 'Settings',       icon: 'ti-settings',    roles: [ADVISOR_ROLE],
-      actions: ['getSettings', 'saveSettings'] },
+      actions: ['getSettings', 'saveSettings', 'syncDocumentAccess'] },
   ];
 
 
@@ -338,6 +338,70 @@ const CourseworkPetitionModule = (() => {
     _writeSettingsKey('NOTIFY_COMPLETE',
       _storableTemplate(p.notifyComplete, NOTIFY_DEFAULTS.NOTIFY_COMPLETE));
     return getSettings({}, user, roles);
+  }
+
+  /**
+   * Re-grants viewer access on EVERY file this module owns — all uploaded
+   * transcripts and syllabi, and every generated petition PDF — to the
+   * student who filed it plus all current staff_undergrad and
+   * undergrad_director holders.
+   *
+   * Grants at upload/completion capture the role holders of that moment,
+   * so this is what makes "both roles can view everything" true for
+   * someone added to a role afterward. Run it after any role change
+   * (Settings → Document access).
+   *
+   * BATCHED: Drive permission calls are slow and Apps Script caps
+   * execution at ~6 minutes, so each call processes a slice and reports
+   * progress; the caller loops with the returned nextStartAt until done.
+   * Idempotent — re-granting an existing viewer is a no-op, so a repeated
+   * or overlapping run is harmless.
+   *
+   * @param {Object} payload - { startAt?, batchSize? }
+   */
+  function syncDocumentAccess(payload, user, roles) {
+    _assertAdvisor(roles);
+    const p = payload || {};
+    const start = Math.max(0, Number(p.startAt || 0));
+    const batchSize = Math.min(40, Math.max(1, Number(p.batchSize || 15)));
+
+    const reviewers = _reviewerEmails();
+    const files = _allModuleFiles();
+    const slice = files.slice(start, start + batchSize);
+    slice.forEach(f => _grantViewers(f.fileId, [f.studentEmail].concat(reviewers)));
+
+    const processed = start + slice.length;
+    return {
+      processed: processed,
+      total: files.length,
+      done: processed >= files.length,
+      nextStartAt: processed,
+      reviewerCount: reviewers.length,
+    };
+  }
+
+  /**
+   * Every file the module owns, as { fileId, studentEmail, kind }.
+   * Trashed/blank ids are skipped. Order is stable (petitions in sheet
+   * order, then each petition's item files) so batched paging is safe.
+   */
+  function _allModuleFiles() {
+    const out = [];
+    const studentByPetition = {};
+    DataService.getAll(SHEET(), TAB()).forEach(r => {
+      const pid = String(r.PetitionID);
+      studentByPetition[pid] = String(r.StudentEmail || '');
+      const pdfId = String(r.DriveFileID || '').trim();
+      if (pdfId) out.push({ fileId: pdfId, studentEmail: studentByPetition[pid], kind: 'PDF' });
+    });
+    DataService.getAll(SHEET(), ITEMS_TAB()).forEach(it => {
+      const student = studentByPetition[String(it.PetitionID)] || '';
+      const t = String(it.TranscriptFileID || '').trim();
+      const s = String(it.SyllabusFileID || '').trim();
+      if (t) out.push({ fileId: t, studentEmail: student, kind: 'TRANSCRIPT' });
+      if (s) out.push({ fileId: s, studentEmail: student, kind: 'SYLLABUS' });
+    });
+    return out;
   }
 
 
@@ -820,7 +884,7 @@ const CourseworkPetitionModule = (() => {
         DocumentLink: pdf.url || '',
         FileName: pdf.fileName || '',
       });
-      if (pdf.fileId) _grantStudentViewer(pdf.fileId, rec.StudentEmail);
+      if (pdf.fileId) _grantViewers(pdf.fileId, _fileAudience(rec.StudentEmail));
     } catch (e) {
       // The workflow outcome stands even if the PDF pipeline hiccups; the
       // failure is logged and the record can be regenerated later.
@@ -1434,16 +1498,73 @@ const CourseworkPetitionModule = (() => {
         ? { TranscriptFileID: fileId, TranscriptLink: link, TranscriptName: name }
         : { SyllabusFileID: fileId, SyllabusLink: link, SyllabusName: name };
       DataService.update(SHEET(), ITEMS_TAB(), 'ItemID', itemId, patch);
-      _grantStudentViewer(fileId, studentEmail);
+      // Student + both reviewer pools (see the access-model note above).
+      _grantViewers(fileId, _fileAudience(studentEmail));
     } catch (e) {
       Logger.log('CourseworkPetitionModule._saveItemFile(' + kind + ') failed for ' + itemId + ': ' + e);
     }
   }
 
   /**
-   * Grants the student read access without a notification email. Uses the
+   * ACCESS MODEL — per-file, never folder-level.
+   *
+   * Every file this module creates (uploaded transcripts and syllabi, and
+   * the generated petition PDF) is readable by exactly three parties: the
+   * student who filed it, every active staff_undergrad, and every active
+   * undergrad_director. Reviewers legitimately see ALL petitions, but the
+   * grant is still made file by file — students must never receive folder
+   * access (they would see every other student's documents), and the
+   * generated PDFs live in ReportService's shared archive folder, whose
+   * siblings hold other modules' reports.
+   *
+   * Grants capture whoever holds the roles AT THAT MOMENT, so a person
+   * added to a role later has no access to earlier files. That gap is
+   * closed by syncDocumentAccess() (Settings → Document access), which
+   * re-grants every file in the module to the current role holders.
+   *
+   * Returns the reviewer audience: active holders of either role.
+   */
+  function _reviewerEmails() {
+    const out = [];
+    const seen = {};
+    [ADVISOR_ROLE, DUS_ROLE].forEach(role => {
+      _roleEmails(role).forEach(e => {
+        const key = String(e || '').trim().toLowerCase();
+        if (!key || seen[key]) return;
+        seen[key] = true;
+        out.push(e);
+      });
+    });
+    return out;
+  }
+
+  /** The full audience for one petition's files: student + both pools. */
+  function _fileAudience(studentEmail) {
+    return [studentEmail].concat(_reviewerEmails());
+  }
+
+  /**
+   * Grants read access on a file to several people (deduped
+   * case-insensitively, blanks dropped). Each grant is best-effort and
+   * silent; one failure never blocks the others.
+   */
+  function _grantViewers(fileId, emails) {
+    const seen = {};
+    (emails || []).forEach(e => {
+      const email = String(e || '').trim();
+      if (!email) return;
+      const key = email.toLowerCase();
+      if (seen[key]) return;
+      seen[key] = true;
+      _grantStudentViewer(fileId, email);
+    });
+  }
+
+  /**
+   * Grants one person read access without a notification email. Uses the
    * Advanced Drive Service when available (v3 then v2 shapes); falls back
    * to DriveApp.addViewer (which does notify). Best-effort, never throws.
+   * Idempotent — re-granting an existing viewer is a no-op.
    */
   function _grantStudentViewer(fileId, studentEmail) {
     const id = String(fileId || '').trim();
@@ -1708,6 +1829,7 @@ const CourseworkPetitionModule = (() => {
     // settings
     getSettings: getSettings,
     saveSettings: saveSettings,
+    syncDocumentAccess: syncDocumentAccess,
     // student
     submit: submit,
     resubmit: resubmit,

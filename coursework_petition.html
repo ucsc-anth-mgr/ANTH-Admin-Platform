@@ -218,6 +218,24 @@
       </div>
       <p class="text-sm text-muted" id="cwp-set-hint" style="margin-top:8px;display:none;"></p>
     </div>
+
+    <div class="card" style="margin-top:16px;max-width:720px;">
+      <div class="card-title"><i class="ti ti-lock-open" aria-hidden="true"></i> Document access</div>
+      <p class="text-sm text-muted" style="margin-bottom:12px;">
+        Uploaded transcripts and syllabi, and every generated petition PDF, are shared
+        file by file with the student who filed it and with everyone holding the
+        undergraduate advisor or Director of Undergraduate Studies role. Sharing happens
+        automatically at upload and at completion, using whoever holds those roles at that
+        moment — so <strong>after adding someone to either role, run this once</strong> to
+        give them access to documents from earlier petitions.
+      </p>
+      <div class="form-actions">
+        <button class="btn btn-secondary" id="cwp-sync-btn" onclick="CourseworkPetitionUI.syncDocumentAccess()">
+          <i class="ti ti-refresh" aria-hidden="true"></i> Update document sharing
+        </button>
+      </div>
+      <p class="text-sm text-muted" id="cwp-sync-status" style="margin-top:8px;display:none;"></p>
+    </div>
     <!-- Shell-standard deep-link card (App.deepLinkCard), rendered on tab open. -->
     <div id="cwp-deeplink-card"></div>
   </div>
@@ -1089,6 +1107,47 @@ window.CourseworkPetitionUI = (() => {          // window.X — NEVER const
     el.style.display = msg ? 'block' : 'none';
   }
 
+  /**
+   * Re-shares every document in the module with the student who filed it
+   * and the current advisor / director role holders. The server works in
+   * batches (Drive calls are slow and Apps Script caps execution time),
+   * so loop until it reports done, showing progress as we go.
+   */
+  function syncDocumentAccess() {
+    const btn = document.getElementById('cwp-sync-btn');
+    if (btn) btn.disabled = true;
+    _syncStatus('Updating document sharing…');
+
+    const step = function (startAt) {
+      App.call(MODULE, 'syncDocumentAccess', { startAt: startAt }, function (r) {
+        r = r || {};
+        if (!r.total) {
+          if (btn) btn.disabled = false;
+          _syncStatus('No documents to share yet.');
+          return;
+        }
+        _syncStatus('Updating document sharing… ' + r.processed + ' of ' + r.total + ' files.');
+        if (!r.done) { step(r.nextStartAt); return; }
+        if (btn) btn.disabled = false;
+        _syncStatus('Done — ' + r.total + ' file' + (r.total === 1 ? '' : 's') + ' shared with '
+          + r.reviewerCount + ' advisor/director account'
+          + (r.reviewerCount === 1 ? '' : 's') + ' and each petition\'s student.');
+      }, function (err) {
+        if (btn) btn.disabled = false;
+        _syncStatus('');
+        _alert(err);
+      });
+    };
+    step(0);
+  }
+
+  function _syncStatus(msg) {
+    const el = document.getElementById('cwp-sync-status');
+    if (!el) return;
+    el.textContent = msg || '';
+    el.style.display = msg ? 'block' : 'none';
+  }
+
   /** Shell-standard deep-link card: the student form link (?focus=form —
    *  init() routes that token to the New Petition tab), with copy button. */
   function _renderDeepLinkCard() {
@@ -1170,6 +1229,7 @@ window.CourseworkPetitionUI = (() => {          // window.X — NEVER const
     openRevise, resubmit, deletePetition,
     loadInstitutions, editInstitution, resetInstitutionForm, saveInstitution,
     loadNotifySettings, saveNotifySettings, resetNotifySettings,
+    syncDocumentAccess,
   };
 })();
 CourseworkPetitionUI.init();

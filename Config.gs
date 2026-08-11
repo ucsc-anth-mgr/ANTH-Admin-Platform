@@ -69,7 +69,7 @@ const CONFIG = {
     // storage tier). Tabs: Petitions, PetitionItems, Institutions,
     // CourseworkSettings. Blank until setUp() creates it and logs the
     // id to paste back here.
-    COURSEWORK:    '',
+    COURSEWORK:    '1QN7MHAW4NXOfQC3d3UXvMio4PLdWn9mR2rMtl3hfyAk',
   },
 
   // Optional: Drive folder where setUp() creates new spreadsheets.
@@ -289,7 +289,7 @@ const CONFIG = {
   // student-viewer grant silent; without it the DriveApp fallback sends a
   // share-notification email, which is harmless.
   COURSEWORK: {
-    DRIVE_FOLDER_ID: '',   // create a Drive folder, paste its id
+    DRIVE_FOLDER_ID: '16R0gJj6p8Y5Z4RwqbaMMfu0vq8hIm5In',
   },
 
   // ── Academic Personnel module ──────────────────────────────
