@@ -723,7 +723,20 @@ function _resolveSpreadsheet(configuredId, newName, configKey) {
       Logger.log('• ' + configKey + ': using existing sheet "' + ss.getName() + '"');
       return ss;
     } catch (e) {
-      Logger.log('• ' + configKey + ': ID "' + configuredId + '" could not be opened — creating a new sheet instead.');
+      // FAIL LOUDLY. A configured ID that can't be opened means something is
+      // wrong — most often setUp() is running as an account without access
+      // to the spreadsheet, or the ID has a typo. The old behavior here
+      // (create a replacement sheet and carry on) minted duplicate "Portal
+      // …" spreadsheets on every such run, and its log line inviting you to
+      // point CONFIG at the new empty sheet was a data-orphaning trap.
+      // Creating a fresh sheet is ONLY for a genuinely blank/placeholder ID.
+      throw new Error(
+        'setUp(): CONFIG.SHEETS.' + configKey + ' is set to "' + configuredId +
+        '" but that spreadsheet could not be opened. Nothing was created. ' +
+        'Likely causes: (1) setUp() is running as an account that does not have ' +
+        'access to it — check which account the Apps Script editor is using; ' +
+        '(2) the ID has a typo. If you truly want a brand-new spreadsheet, ' +
+        'clear the ID in Config.gs and run setUp() again. (' + e + ')');
     }
   }
 
