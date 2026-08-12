@@ -41,96 +41,122 @@
        target, not an interactive control — but never suppress it globally. */
     #module-container:focus { outline: none; }
     #module-container:focus-visible { outline: 2px solid var(--ucsc-navy, #003C6C); outline-offset: 2px; }
+
+    /* ── Shell busy overlay ──────────────────────────────────
+       Indeterminate sweep for the progress bar; App.busyProgress()
+       removes the class and drives the width with real numbers. */
+    @keyframes app-busy-sweep {
+      0%   { margin-left: -40%; }
+      100% { margin-left: 100%; }
+    }
+    #app-busy-bar.app-busy-indet { animation: app-busy-sweep 1.2s linear infinite; }
   </style>
 </head>
 <body>
 
-<a class="skip-link" href="#module-container">Skip to main content</a>
+  <a class="skip-link" href="#module-container">Skip to main content</a>
 
-<!-- ── Top header bar ──────────────────────────────────────── -->
-<header id="topbar">
-  <div class="topbar-left">
-    <button id="nav-toggle" onclick="App.toggleSidebar()" aria-label="Toggle menu"
-            aria-controls="sidebar" aria-expanded="true">
-      <i class="ti ti-menu-2" aria-hidden="true"></i>
-    </button>
-    <span class="topbar-title"><?= appTitle ?></span>
-  </div>
-  <div class="topbar-right">
-    <i class="ti ti-user-circle" aria-hidden="true"></i>
-    <span class="topbar-user">Logged in as <?= userEmail ?></span>
-  </div>
-</header>
+  <!-- ── Top header bar ──────────────────────────────────────── -->
+  <header id="topbar">
+    <div class="topbar-left">
+      <button id="nav-toggle" onclick="App.toggleSidebar()" aria-label="Toggle menu"
+              aria-controls="sidebar" aria-expanded="true">
+        <i class="ti ti-menu-2" aria-hidden="true"></i>
+      </button>
+      <span class="topbar-title"><?= appTitle ?></span>
+    </div>
+    <div class="topbar-right">
+      <i class="ti ti-user-circle" aria-hidden="true"></i>
+      <span class="topbar-user">Logged in as <?= userEmail ?></span>
+    </div>
+  </header>
 
-<!-- ── Body: sidebar + content ─────────────────────────────── -->
-<div id="layout">
+  <!-- ── Body: sidebar + content ─────────────────────────────── -->
+  <div id="layout">
 
-  <nav id="sidebar" aria-label="Main">
-    <ul class="nav-list">
-      <li>
-        <a class="nav-item active" href="#" data-module="dashboard" aria-current="page"
-           onclick="App.goDashboard(); return false;">
-          <i class="ti ti-home" aria-hidden="true"></i><span>Dashboard</span>
-        </a>
-      </li>
-      <? modules.forEach(function(mod) { ?>
+    <nav id="sidebar" aria-label="Main">
+      <ul class="nav-list">
         <li>
-          <a class="nav-item" href="#" data-module="<?= mod.key ?>"
-             onclick="App.loadModule('<?= mod.key ?>'); return false;">
-            <i class="ti <?= mod.icon ?>" aria-hidden="true"></i><span><?= mod.label ?></span>
+          <a class="nav-item active" href="#" data-module="dashboard" aria-current="page"
+             onclick="App.goDashboard(); return false;">
+            <i class="ti ti-home" aria-hidden="true"></i><span>Dashboard</span>
           </a>
         </li>
-      <? }); ?>
-    </ul>
-  </nav>
+        <? modules.forEach(function(mod) { ?>
+          <li>
+            <a class="nav-item" href="#" data-module="<?= mod.key ?>"
+               onclick="App.loadModule('<?= mod.key ?>'); return false;">
+              <i class="ti <?= mod.icon ?>" aria-hidden="true"></i><span><?= mod.label ?></span>
+            </a>
+          </li>
+        <? }); ?>
+      </ul>
+    </nav>
 
-  <main id="content">
-    <!-- tabindex="-1" makes this a programmatic focus target: after every
-         navigation the shell moves focus here (A11y.focusMain), so keyboard
-         and screen-reader users land in the new content instead of being
-         left on the nav link they just activated. -->
-    <div id="module-container" tabindex="-1">
-      <!-- Dashboard / welcome -->
-      <div class="card welcome-card">
-        <h1 class="welcome-title">Welcome!</h1>
-        <p class="text-muted" style="margin-bottom:20px;">Select an option from the menu to get started.</p>
-        <div id="quick-actions" class="quick-actions"></div>
+    <main id="content">
+      <!-- tabindex="-1" makes this a programmatic focus target: after every
+           navigation the shell moves focus here (A11y.focusMain), so keyboard
+           and screen-reader users land in the new content instead of being
+           left on the nav link they just activated. -->
+      <div id="module-container" tabindex="-1">
+        <!-- Dashboard / welcome -->
+        <div class="card welcome-card">
+          <h1 class="welcome-title">Welcome!</h1>
+          <p class="text-muted" style="margin-bottom:20px;">Select an option from the menu to get started.</p>
+          <div id="quick-actions" class="quick-actions"></div>
+        </div>
       </div>
+    </main>
+
+  </div>
+
+  <!-- ── Shell busy overlay ────────────────────────────────────
+       One click-blocking overlay for the whole app, driven by
+       App.busy / App.busyProgress / App.idle and armed automatically
+       by App.call and the module loader (see _Scripts.html). z-index
+       1200 sits above module-local modals (1000) and any remaining
+       per-module busy overlays (1100); toasts (9999) stay visible
+       above it, so an error toast is never hidden by the blocker. -->
+  <div id="app-busy" style="display:none;position:fixed;inset:0;background:rgba(255,255,255,0.6);z-index:1200;align-items:center;justify-content:center;">
+    <div class="card" style="padding:18px 26px;min-width:300px;max-width:380px;margin:0;" role="status" aria-live="polite">
+      <div id="app-busy-msg" style="margin-bottom:10px;">Working…</div>
+      <div style="height:6px;background:var(--color-border, #e3e6ea);border-radius:3px;overflow:hidden;">
+        <div id="app-busy-bar" class="app-busy-indet" style="height:100%;width:40%;background:var(--ucsc-navy, #003C6C);border-radius:3px;transition:width 0.2s;"></div>
+      </div>
+      <div id="app-busy-detail" class="text-sm text-muted" style="margin-top:8px;display:none;"></div>
     </div>
-  </main>
+  </div>
 
-</div>
+  <div id="toast-container" aria-live="polite"></div>
 
-<div id="toast-container" aria-live="polite"></div>
+  <!-- Live regions for A11y.announce(). Two, because politeness is fixed per
+       region: status waits for a pause, alert interrupts. Both are always
+       present and empty; announce() writes text into them. -->
+  <div id="a11y-status" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></div>
+  <div id="a11y-alert" class="visually-hidden" role="alert" aria-live="assertive" aria-atomic="true"></div>
 
-<!-- Live regions for A11y.announce(). Two, because politeness is fixed per
-     region: status waits for a pause, alert interrupts. Both are always
-     present and empty; announce() writes text into them. -->
-<div id="a11y-status" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></div>
-<div id="a11y-alert"  class="visually-hidden" role="alert"  aria-live="assertive" aria-atomic="true"></div>
+  <?!= include('_Scripts') ?>
 
-<?!= include('_Scripts') ?>
-
-<script>
-  // jsonForScript() (Code.gs) escapes '<' so a value containing a closing
-  // script tag ("<\/script>") cannot close this block early — the HTML
-  // parser ends a script at the FIRST closing tag it sees, even inside a
-  // JS comment or string, which is why this comment spells it "<\/script>".
-  // (A literal one here previously killed this whole block: App.init never
-  // ran, so the dashboard's task list and deep links silently died.)
-  // userRoles / initialFocus / tasks were already encoded server-side;
-  // the rest are encoded here.
-  App.init({
-    userEmail: <?!= jsonForScript(userEmail) ?>,
-    userName: <?!= jsonForScript(userName) ?>,
-    userRoles: <?!= userRoles ?>,
-    activePage: <?!= jsonForScript(activePage) ?>,
-    initialFocus: <?!= initialFocus ?>,
-    modules: <?!= jsonForScript(modules) ?>,
-    tasks: <?!= tasks ?>,
-    publicBaseUrl: <?!= jsonForScript(publicBaseUrl) ?>,
-  });
-</script>
+  <script>
+    // jsonForScript() (Code.gs) escapes '<' so a value containing a closing
+    // script tag ("<\/script>") cannot close this block early — the HTML
+    // parser ends a script at the FIRST closing tag it sees, even inside a
+    // JS comment or string, which is why this comment spells it "<\/script>".
+    // (A literal one here previously killed this whole block: App.init never
+    // ran, so the dashboard's task list and deep links silently died.)
+    // userRoles / initialFocus / tasks were already encoded server-side;
+    // the rest are encoded here.
+    App.init({
+      userEmail:     <?!= jsonForScript(userEmail) ?>,
+      userName:      <?!= jsonForScript(userName) ?>,
+      userRoles:     <?!= userRoles ?>,
+      activePage:    <?!= jsonForScript(activePage) ?>,
+      initialFocus:  <?!= initialFocus ?>,
+      modules:       <?!= jsonForScript(modules) ?>,
+      tasks:         <?!= tasks ?>,
+      publicBaseUrl: <?!= jsonForScript(publicBaseUrl) ?>,
+    });
+  </script>
 
 </body>
 </html>

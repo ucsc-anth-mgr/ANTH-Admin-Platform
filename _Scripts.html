@@ -1,6 +1,6 @@
 <script>
 // ============================================================
-// _Scripts.html — Client-side App framework (v2.2)
+// _Scripts.html — Client-side App framework (v2.3)
 //
 // v2.1: Navigation state now lives in the PARENT (address-bar) URL via
 // google.script.history / google.script.url. Apps Script web apps run in
@@ -13,14 +13,32 @@
 // refresh.
 //
 // v2.2: Accessibility + output-encoding pass.
-//   - New A11y service: live-region announcements, a reusable modal focus
-//     trap, and main-content focus management on navigation.
-//   - Toast now ESCAPES its message (it receives server error text, which
-//     is built from user data — it was an XSS sink).
-//   - FormHelper wires aria-invalid / aria-describedby, focuses the first
-//     bad field, and announces failures.
-//   - _esc() now escapes single quotes (its output lands inside
-//     onclick="...('…')" attributes).
+//  - New A11y service: live-region announcements, a reusable modal focus
+//    trap, and main-content focus management on navigation.
+//  - Toast now ESCAPES its message (it receives server error text, which
+//    is built from user data — it was an XSS sink).
+//  - FormHelper wires aria-invalid / aria-describedby, focuses the first
+//    bad field, and announces failures.
+//  - _esc() now escapes single quotes (its output lands inside
+//    onclick="...('…')" attributes).
+//
+// v2.3: Shell-level busy overlay (App.busy / App.busyProgress / App.idle,
+// plus #app-busy in Index.html).
+//  - App.call() and loadModule() arm the overlay AUTOMATICALLY on every
+//    server round-trip, so a lagging call blocks stray clicks in every
+//    module with no module code required. A 300 ms flicker guard keeps
+//    instantaneous calls from flashing it, and a pending-call counter
+//    keeps overlapping calls from hiding it early. Both the success and
+//    the failure paths release it, so a module can never strand the user
+//    behind the blocker.
+//  - App.call() gained an optional 6th argument, busyMsg, to customize
+//    the overlay text for that call ("Submitting petition…"); omitted,
+//    it reads "Working…". Fully backward compatible.
+//  - Modules' local busy overlays (#th-busy, #tr-busy, #is-busy,
+//    #cwp-busy) are now redundant: their _busy/_idle helpers should
+//    become one-line wrappers over App.busy/App.idle (which also
+//    preserves their custom messages), and the local overlay markup
+//    can be deleted.
 // ============================================================
 
 
@@ -66,9 +84,9 @@ const A11y = (() => {
   /**
    * Traps Tab within `container` and moves focus into it.
    *
-   * opts.initialFocus   — element to focus first (default: first focusable)
-   * opts.returnFocusTo  — element to restore on release (default: whatever
-   *                       had focus when trap() was called)
+   * opts.initialFocus  — element to focus first (default: first focusable)
+   * opts.returnFocusTo — element to restore on release (default: whatever
+   *                      had focus when trap() was called)
    *
    * NOTE for module authors: if your module already keeps its own
    * `_lastFocus` and restores it in closeModal(), REMOVE that when you
@@ -136,12 +154,10 @@ const A11y = (() => {
 
   return { announce: announce, trap: trap, release: release, trapped: trapped,
            focusMain: focusMain, focusables: focusables, FOCUSABLE: FOCUSABLE };
-
 })();
 
 
 const App = (() => {
-
   let _state = { userEmail: '', userName: '', userRoles: [], activePage: '', modules: [], tasks: [], publicBaseUrl: '' };
 
   // Whether the parent URL carried a ?page= deep-link parameter this
@@ -157,7 +173,6 @@ const App = (() => {
 
   function init(state) {
     Object.assign(_state, state);
-
     // All routing decisions need the PARENT (address-bar) URL — the
     // iframe's own window.location never survives a reload. getLocation is
     // async; until it answers the shell just shows the empty container for
@@ -191,7 +206,6 @@ const App = (() => {
       loadModule(_state.activePage, _state.initialFocus || null);
       return;
     }
-
     goDashboard();   // also clears a stale/forbidden hash via _setHash
   }
 
@@ -250,9 +264,9 @@ const App = (() => {
     // Space activates as well as Enter, per the button role's contract;
     // keydown (not the deprecated keypress) so Space is actually delivered.
     return `<li class="task-item urgency-${_esc(t.urgency || 'normal')}"
-                onclick="App.openTask('${_esc(t.taskId)}')" role="button" tabindex="0"
-                aria-label="${u.label}: ${label}"
-                onkeydown="App.taskKey(event, '${_esc(t.taskId)}')">
+        onclick="App.openTask('${_esc(t.taskId)}')" role="button" tabindex="0"
+        aria-label="${u.label}: ${label}"
+        onkeydown="App.taskKey(event, '${_esc(t.taskId)}')">
       <span class="task-badge badge-${u.cls}">
         <i class="ti ${u.icon}" aria-hidden="true"></i> ${u.label}
       </span>
@@ -309,16 +323,23 @@ const App = (() => {
   }
 
   // Refresh tasks in place (no full reload), via the shell-level endpoint.
+  // Busy-armed like every other round-trip: a laggy refresh blocks clicks
+  // too (the overlay only appears if it lags past the flicker guard).
   function refreshTasks() {
+    _busyBegin('Refreshing tasks…');
     google.script.run
       .withSuccessHandler(tasks => {
+        _busyEnd();
         _state.tasks = tasks || [];
         _renderTasks();
         A11y.announce(_state.tasks.length
           ? _state.tasks.length + ' task' + (_state.tasks.length === 1 ? '' : 's') + ' needing attention.'
           : 'No tasks right now.');
       })
-      .withFailureHandler(() => Toast.show('Could not refresh tasks.', 'error'))
+      .withFailureHandler(() => {
+        _busyEnd();
+        Toast.show('Could not refresh tasks.', 'error');
+      })
       .getMyTasks();
   }
 
@@ -329,6 +350,13 @@ const App = (() => {
   // init and open/highlight that record. Modules that don't support focus
   // simply ignore window.__focus and open normally. The shell never needs
   // to know what any module does with it — that's the loose-coupling seam.
+  //
+  // The busy overlay is armed for the fetch: the inline .module-loading
+  // spinner remains as the content placeholder, but the overlay is what
+  // blocks stray clicks (nav, header) while the module HTML is in flight.
+  // _busyEnd() runs FIRST in the success handler, before the module's own
+  // scripts execute — so if the module's init() makes its own App.call,
+  // that call re-arms the overlay cleanly with its own flicker guard.
   function loadModule(moduleKey, focus) {
     _setActiveNav(moduleKey);
     A11y.release();   // drop any modal trap left by the outgoing module
@@ -336,8 +364,10 @@ const App = (() => {
     container.innerHTML = '<div class="module-loading" role="status" aria-live="polite">' +
       '<div class="spinner" aria-hidden="true"></div><span>Loading…</span></div>';
 
+    _busyBegin('Loading ' + _moduleLabel(moduleKey) + '…');
     google.script.run
       .withSuccessHandler(html => {
+        _busyEnd();
         container.innerHTML = html;
         _state.activePage = moduleKey;
         _setHash(moduleKey);   // persist the view in the parent URL (and
@@ -356,6 +386,7 @@ const App = (() => {
         A11y.announce(label + ' loaded.');
       })
       .withFailureHandler(err => {
+        _busyEnd();
         container.innerHTML = `
           <div class="card">
             <div style="color:var(--color-danger);display:flex;align-items:center;gap:8px;">
@@ -369,11 +400,132 @@ const App = (() => {
       .getModuleHTML(moduleKey);
   }
 
+  // ── Busy overlay ──────────────────────────────────────────
+  // One full-screen click blocker for every slow round-trip, so a
+  // lagging call can't be double-submitted by an impatient click.
+  // It turns on two ways, and stays up while EITHER wants it:
+  //   AUTO   — call() and loadModule() arm it on every server call.
+  //            Flicker guard: it becomes visible only if the call is
+  //            still pending after BUSY_DELAY ms, so instantaneous
+  //            calls never flash it. A counter handles overlapping
+  //            calls — the overlay hides when the LAST one finishes,
+  //            and both the success and failure paths release it, so
+  //            a module can never strand the user behind it.
+  //   MANUAL — App.busy(msg[, detail]) / App.busyProgress(msg, done,
+  //            total[, detail]) show it immediately with a custom
+  //            message and hold it until App.idle(). For multi-step
+  //            client work (reading files, chained calls). Modules'
+  //            old local _busy/_idle helpers become one-line wrappers
+  //            over these.
+  // The two are independent by design: the migrated-module pattern
+  // (_busy('Submitting…') → App.call(...) → _idle() in the callback)
+  // works because the manual hold carries the custom message while the
+  // auto counter tracks the call underneath it.
+
+  const BUSY_DELAY = 300;   // ms a call must lag before the overlay shows
+  let _busyAuto    = 0;     // pending auto-armed calls
+  let _busyTimer   = null;  // flicker-guard timer
+  let _busyShown   = false; // the auto path has revealed the overlay
+  let _busyManual  = false; // App.busy() hold
+  let _busyAutoMsg = '';    // message for the next auto reveal
+
+  function _busyRender() {
+    const el = document.getElementById('app-busy');
+    if (!el) return;
+    el.style.display = (_busyManual || _busyShown) ? 'flex' : 'none';
+  }
+
+  function _busySetMsg(msg, detail) {
+    const m = document.getElementById('app-busy-msg');
+    if (m) m.textContent = msg || 'Working…';
+    const d = document.getElementById('app-busy-detail');
+    if (d) {
+      d.textContent = detail || '';
+      d.style.display = detail ? 'block' : 'none';
+    }
+  }
+
+  /** Indeterminate mode: animated sweep (atomic server calls). */
+  function _busyIndet() {
+    const bar = document.getElementById('app-busy-bar');
+    if (!bar) return;
+    bar.classList.add('app-busy-indet');
+    bar.style.marginLeft = '';
+    bar.style.width = '40%';
+  }
+
+  /** AUTO arm: one server call went out. */
+  function _busyBegin(msg) {
+    _busyAuto++;
+    if (msg) _busyAutoMsg = msg;
+    if (_busyAuto === 1 && !_busyTimer && !_busyShown) {
+      _busyTimer = setTimeout(function () {
+        _busyTimer = null;
+        if (_busyAuto > 0) {
+          _busyShown = true;
+          // Don't clobber a custom message a manual hold already set.
+          if (!_busyManual) { _busySetMsg(_busyAutoMsg); _busyIndet(); }
+          _busyRender();
+        }
+      }, BUSY_DELAY);
+    }
+  }
+
+  /** AUTO release: that call finished (success OR failure). */
+  function _busyEnd() {
+    _busyAuto = Math.max(0, _busyAuto - 1);
+    if (_busyAuto === 0) {
+      if (_busyTimer) { clearTimeout(_busyTimer); _busyTimer = null; }
+      _busyShown = false;
+      _busyAutoMsg = '';
+      _busyRender();
+    }
+  }
+
+  /** MANUAL: show now with a custom message, hold until idle(). */
+  function busy(msg, detail) {
+    _busyManual = true;
+    _busySetMsg(msg, detail);
+    _busyIndet();
+    _busyRender();
+  }
+
+  /** MANUAL, determinate: real progress (done of total fills the bar). */
+  function busyProgress(msg, done, total, detail) {
+    _busyManual = true;
+    _busySetMsg(msg, detail);
+    const bar = document.getElementById('app-busy-bar');
+    if (bar) {
+      bar.classList.remove('app-busy-indet');
+      bar.style.marginLeft = '0';
+      const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+      bar.style.width = Math.min(100, Math.max(2, pct)) + '%';
+    }
+    _busyRender();
+  }
+
+  /** Releases a manual hold (still-pending auto calls keep it visible). */
+  function idle() {
+    _busyManual = false;
+    if (_busyShown) { _busySetMsg(_busyAutoMsg); _busyIndet(); }
+    _busyRender();
+  }
+
   // ── Server call helper ────────────────────────────────────
-  function call(module, action, payload, onSuccess, onError) {
+  // busyMsg (optional): custom overlay text if this call lags past the
+  // flicker guard; defaults to "Working…". The overlay is armed on
+  // EVERY call and released on both success and failure — _busyEnd()
+  // runs BEFORE the callbacks, so a callback that fires another call
+  // (or shows its own App.busy) starts clean.
+  function call(module, action, payload, onSuccess, onError, busyMsg) {
+    _busyBegin(busyMsg);
     google.script.run
-      .withSuccessHandler(onSuccess)
-      .withFailureHandler(err => {
+      .withSuccessHandler(function (res) {
+        _busyEnd();
+        if (onSuccess) onSuccess(res);
+      })
+      .withFailureHandler(function (err) {
+        _busyEnd();
         const msg = (err && err.message) || 'An error occurred.';
         Toast.show(msg, 'error');
         if (onError) onError(err);
@@ -461,19 +613,19 @@ const App = (() => {
       ? '<p class="text-sm text-muted" style="margin:8px 0 0;">Works for: ' + _esc(opts.roles.join(', ')) + '</p>'
       : '';
     const title = _esc(opts.title || 'Direct link to this form');
-    const note = _esc(opts.note || 'Share this link to send people straight to the form. They will sign in first if needed.');
+    const note  = _esc(opts.note || 'Share this link to send people straight to the form. They will sign in first if needed.');
     const fieldId = 'dl-' + _esc(moduleKey);
     return ''
       + '<div class="card" style="margin-top:20px;">'
-      + '<div class="card-title"><i class="ti ti-link" aria-hidden="true"></i> ' + title + '</div>'
-      + '<p class="text-sm text-muted" style="margin-bottom:10px;">' + note + '</p>'
-      + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">'
-      + '<label class="visually-hidden" for="' + fieldId + '">' + title + '</label>'
-      + '<input class="form-input" id="' + fieldId + '" readonly value="' + _esc(url) + '" '
-      + 'style="flex:1 1 280px;font-family:monospace;font-size:12.5px;" onclick="this.select();">'
-      + '<button class="btn btn-secondary btn-sm" onclick="App.copyDeepLink(\'' + _esc(moduleKey) + '\')">'
-      + '<i class="ti ti-copy" aria-hidden="true"></i> Copy</button>'
-      + '</div>' + roleLine
+      +   '<div class="card-title"><i class="ti ti-link" aria-hidden="true"></i> ' + title + '</div>'
+      +   '<p class="text-sm text-muted" style="margin-bottom:10px;">' + note + '</p>'
+      +   '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">'
+      +     '<label class="visually-hidden" for="' + fieldId + '">' + title + '</label>'
+      +     '<input class="form-input" id="' + fieldId + '" readonly value="' + _esc(url) + '" '
+      +       'style="flex:1 1 280px;font-family:monospace;font-size:12.5px;" onclick="this.select();">'
+      +     '<button class="btn btn-secondary btn-sm" onclick="App.copyDeepLink(\'' + _esc(moduleKey) + '\')">'
+      +       '<i class="ti ti-copy" aria-hidden="true"></i> Copy</button>'
+      +   '</div>' + roleLine
       + '</div>';
   }
 
@@ -503,8 +655,8 @@ const App = (() => {
   }
 
   return { init, goDashboard, loadModule, call, toggleSidebar, openTask, taskKey,
-           refreshTasks, currentPage, deepLinkCard, copyDeepLink, esc: _esc };
-
+           refreshTasks, currentPage, deepLinkCard, copyDeepLink, esc: _esc,
+           busy, busyProgress, idle };
 })();
 
 
@@ -531,16 +683,13 @@ const Toast = (() => {
     const icon = type === 'success' ? 'ti-circle-check' : type === 'error' ? 'ti-alert-circle' : 'ti-info-circle';
     el.className = `toast toast-${type || 'info'}`;
     if (type === 'error') el.setAttribute('role', 'alert');
-
     const i = document.createElement('i');
     i.className = 'ti ' + icon;
     i.setAttribute('aria-hidden', 'true');
     i.style.fontSize = '16px';
     i.style.flexShrink = '0';
-
     const span = document.createElement('span');
     span.textContent = String(message == null ? '' : message);   // never innerHTML
-
     el.appendChild(i);
     el.appendChild(span);
     container.appendChild(el);
@@ -591,6 +740,7 @@ const FormHelper = (() => {
         try { firstBad.focus(); } catch (e) {}
       }
     }
+
     return { data, isValid };
   }
 
