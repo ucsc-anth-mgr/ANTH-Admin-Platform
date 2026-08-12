@@ -1135,10 +1135,14 @@ window.AdminUI = (() => {
     });
   }
 
-  // ── Notification reply-to (per-module) ────────────────
-  // One row per enabled module, read from the registry server-side. Each row
-  // has its own input + Save button; a blank value clears the override so the
-  // module falls back to the department default (shown as the placeholder).
+  // ── Notification reply-to (per-module, per-channel) ────
+  // One row per enabled module — or per CHANNEL of a module that declares a
+  // CHANNELS manifest (e.g. Individual Studies: undergraduate vs graduate
+  // petitions). Each row has its own inputs + Save button; a blank reply-to
+  // clears the override so the channel falls back (named channel → the
+  // module's default-channel address → the department default, shown as the
+  // placeholder). A named channel's CC deliberately does NOT fall back to
+  // the module's default CC list — blank means no CC on that channel's mail.
   function loadModuleReplyTos() {
     const el = document.getElementById('replyto-table');
     if (!el) return;
@@ -1152,22 +1156,40 @@ window.AdminUI = (() => {
       const mods = data.modules || [];
       if (!mods.length) { el.innerHTML = '<div class="empty-state text-sm">No enabled modules.</div>'; return; }
       const rows = mods.map(m => {
-        const id = 'rt-' + _slugId(m.key);
-        return `
+        const channels = (m.channels && m.channels.length)
+          ? m.channels : [{ channel: 'default', channelLabel: '', replyTo: '', cc: '' }];
+        const multi = channels.length > 1;
+        // A named channel's reply-to falls back to the module's default-
+        // channel value before the department default — mirror that chain
+        // in the placeholder so the effective address is always visible.
+        const defCh = channels.find(c => c.channel === 'default');
+        const modDefault = (defCh && defCh.replyTo) || '';
+        return channels.map(ch => {
+          const named = ch.channel !== 'default';
+          const id = 'rt-' + _slugId(m.key + '__' + ch.channel);
+          const rtPlaceholder = named
+            ? ((modDefault || def) + ' (default)')
+            : (def + ' (default)');
+          const ccPlaceholder = named ? 'No CC (no fallback)' : 'No CC';
+          const sub = multi
+            ? (ch.channelLabel || (named ? ch.channel : 'Default'))
+            : m.key;
+          return `
         <tr>
-          <td><strong>${_escAttr(m.label)}</strong><div class="text-sm text-muted">${_escAttr(m.key)}</div></td>
+          <td><strong>${_escAttr(m.label)}</strong><div class="text-sm text-muted">${_escAttr(sub)}</div></td>
           <td style="min-width:220px;">
-            <input class="form-input" id="${id}" type="email" value="${_escAttr(m.replyTo || '')}"
-                   placeholder="${_escAttr(def)} (default)" style="margin:0;">
+            <input class="form-input" id="${id}" type="email" value="${_escAttr(ch.replyTo || '')}"
+                   placeholder="${_escAttr(rtPlaceholder)}" style="margin:0;">
           </td>
           <td style="min-width:220px;">
-            <input class="form-input" id="${id}-cc" type="text" value="${_escAttr(m.cc || '')}"
-                   placeholder="No CC" style="margin:0;">
+            <input class="form-input" id="${id}-cc" type="text" value="${_escAttr(ch.cc || '')}"
+                   placeholder="${_escAttr(ccPlaceholder)}" style="margin:0;">
           </td>
           <td style="white-space:nowrap;">
-            <button class="btn btn-primary btn-sm" id="${id}-btn" onclick="AdminUI.saveModuleAddresses('${_escAttr(m.key)}')"><i class="ti ti-device-floppy"></i> Save</button>
+            <button class="btn btn-primary btn-sm" id="${id}-btn" onclick="AdminUI.saveModuleAddresses('${_escAttr(m.key)}','${_escAttr(ch.channel)}')"><i class="ti ti-device-floppy"></i> Save</button>
           </td>
         </tr>`;
+        }).join('');
       }).join('');
       el.innerHTML = `<div class="table-wrap"><table class="data-table">
         <thead><tr><th>Module</th><th>Reply-to address</th><th>CC (mirror) address(es)</th><th></th></tr></thead>
@@ -1178,23 +1200,25 @@ window.AdminUI = (() => {
   // Saves BOTH fields for the row (reply-to, then CC) behind the single
   // Save button. Sequential so a validation error on either field surfaces
   // via the standard App.call error path; one toast on full success.
-  function saveModuleAddresses(key) {
-    const id = 'rt-' + _slugId(key);
+  function saveModuleAddresses(key, channel) {
+    channel = channel || 'default';
+    const id = 'rt-' + _slugId(key + '__' + channel);
     const rtInput = document.getElementById(id);
     const ccInput = document.getElementById(id + '-cc');
     if (!rtInput || !ccInput) return;
     const replyTo = rtInput.value.trim();
     const cc = ccInput.value.trim();
+    const rowName = key + (channel !== 'default' ? ' (' + channel + ')' : '');
     FormHelper.setLoading(id + '-btn', true, 'Saving…');
-    App.call('admin', 'saveModuleReplyTo', { key, replyTo }, res => {
+    App.call('admin', 'saveModuleReplyTo', { key, channel, replyTo }, res => {
       const eff = (res && res.effective) ? res.effective : '';
-      App.call('admin', 'saveModuleCc', { key, cc }, ccRes => {
+      App.call('admin', 'saveModuleCc', { key, channel, cc }, ccRes => {
         FormHelper.setLoading(id + '-btn', false);
         const savedCc = (ccRes && ccRes.cc) ? ccRes.cc : '';
         if (savedCc) ccInput.value = savedCc;   // reflect normalized list
         const rtMsg = replyTo ? ('reply-to ' + replyTo) : ('reply-to default (' + eff + ')');
         const ccMsg = savedCc ? ('CC ' + savedCc) : 'no CC';
-        Toast.show('Saved ' + key + ': ' + rtMsg + ', ' + ccMsg, 'success');
+        Toast.show('Saved ' + rowName + ': ' + rtMsg + ', ' + ccMsg, 'success');
       }, () => FormHelper.setLoading(id + '-btn', false));
     }, () => FormHelper.setLoading(id + '-btn', false));
   }

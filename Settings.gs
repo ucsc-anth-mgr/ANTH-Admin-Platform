@@ -123,15 +123,30 @@ const Settings = (() => {
    * (CONFIG.DEFAULT_REPLY_TO). Always returns a non-empty address as long
    * as the platform default is configured.
    *
-   * This is the single helper notification code should call; it keeps the
-   * key name ('replyTo') and the fallback in one place.
+   * CHANNELS: a module whose audiences need different addresses (e.g.
+   * Individual Studies' undergraduate vs graduate petitions) declares a
+   * CHANNELS manifest on its handler ([{ key, label }]) and passes the
+   * channel key here. A named channel reads the 'replyTo:<channel>' key
+   * and CASCADES when unset: channel value → module 'replyTo' → platform
+   * default — reply-to must always resolve to something. Omitted, blank,
+   * or 'default' behaves exactly as before (the bare 'replyTo' key), so
+   * every existing caller and every already-configured value is
+   * untouched.
    *
-   * @param {string} module - module key
+   * This is the single helper notification code should call; it keeps the
+   * key names and the fallback chain in one place.
+   *
+   * @param {string} module    - module key
+   * @param {string} [channel] - channel key from the module's CHANNELS
+   *                             manifest; omit/'default' for the module's
+   *                             main address
    * @returns {string} a reply-to address
    */
-  function replyTo(module) {
+  function replyTo(module, channel) {
     const fallback = (CONFIG && CONFIG.DEFAULT_REPLY_TO) || '';
-    return get(module, 'replyTo', fallback);
+    const ch = String(channel == null ? '' : channel).trim();
+    if (!ch || ch === 'default') return get(module, 'replyTo', fallback);
+    return get(module, 'replyTo:' + ch, get(module, 'replyTo', fallback));
   }
 
 
@@ -146,11 +161,23 @@ const Settings = (() => {
    * validates, dedupes, and drops any CC address already in To — so a
    * message sent TO the mirrored address never doubles up.
    *
-   * @param {string} module - module key
+   * CHANNELS: a named channel reads the 'cc:<channel>' key and — unlike
+   * replyTo — DOES NOT cascade to the module's 'cc' value. Cascading
+   * would silently mirror one audience's mail to the other's CC list
+   * (the exact misrouting channels exist to prevent), so a blank channel
+   * CC simply means no CC on that channel's mail. Omitted, blank, or
+   * 'default' reads the bare 'cc' key as before.
+   *
+   * @param {string} module    - module key
+   * @param {string} [channel] - channel key from the module's CHANNELS
+   *                             manifest; omit/'default' for the module's
+   *                             main CC list
    * @returns {string} comma-separated address list, or ''
    */
-  function cc(module) {
-    return get(module, 'cc', '');
+  function cc(module, channel) {
+    const ch = String(channel == null ? '' : channel).trim();
+    if (!ch || ch === 'default') return get(module, 'cc', '');
+    return get(module, 'cc:' + ch, '');
   }
 
 

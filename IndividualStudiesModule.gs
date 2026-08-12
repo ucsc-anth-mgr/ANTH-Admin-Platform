@@ -140,6 +140,25 @@ const IndividualStudiesModule = (() => {
       actions: ['gradAllPetitions', 'gradDeadlines', 'remindResponsible', 'getSettings', 'saveSettings', 'deletePetition'] },
   ];
 
+  // ============================================================
+  // Notification channels — consumed by AdminModule (Admin → addresses)
+  // ============================================================
+  // This module serves two audiences whose mail must not share addresses:
+  // replies to (and CC mirrors of) graduate-petition mail belong with the
+  // graduate program, not the undergraduate advisor. Each channel gets its
+  // own reply-to + CC row in the Admin notification-addresses panel,
+  // stored in the platform Settings tab as 'replyTo:<channel>' /
+  // 'cc:<channel>' ('default' keeps the bare keys, so existing config is
+  // untouched). Declared in code like TABS; a module with no CHANNELS
+  // manifest implicitly has just 'default'. Resolution (Settings.gs):
+  // reply-to cascades channel → module default → CONFIG.DEFAULT_REPLY_TO;
+  // CC deliberately does NOT cascade — a blank grad CC means no CC on
+  // grad mail, never a fallback to the undergrad mirror list.
+  const CHANNELS = [
+    { key: 'default', label: 'Undergraduate petitions' },
+    { key: 'grad',    label: 'Graduate petitions' },
+  ];
+
   // Student-notification message templates (UI-managed in the Settings tab,
   // stored key/value in PetitionSettings — mirrors TranscriptSettings).
   // The template is the MESSAGE ONLY; the structural, load-bearing lines
@@ -807,8 +826,9 @@ const IndividualStudiesModule = (() => {
       body: 'A reminder from ' + who + ': the ' + rec.Course + ' ' + aud + ' individual-studies petition for ' +
         _studentLabel(rec.StudentEmail) + ' is waiting for you to ' + ask + '.\n\n' +
         'Open it in the portal: ' + _deepLink(rec.PetitionID),
-      replyTo: Settings.replyTo('individual_studies'),   // module reply-to (Admin → settings); falls back to CONFIG.DEFAULT_REPLY_TO
-      cc: Settings.cc('individual_studies'),   // full mirror to the module CC list (Admin → settings); blank = no CC
+      // Audience-aware channel: grad reminders carry the grad addresses.
+      replyTo: Settings.replyTo('individual_studies', grad ? 'grad' : ''),
+      cc: Settings.cc('individual_studies', grad ? 'grad' : ''),
     });
     EventBus.emit(MODULE + '.reminded', { recordId: rec.PetitionID, remindedTo: to }, { user: user });
     return { petitionId: rec.PetitionID, remindedTo: to };
@@ -1537,8 +1557,8 @@ const IndividualStudiesModule = (() => {
       to: sponsorEmail,
       subject: 'Graduate individual study awaiting your review',
       body: lines.join('\n'),
-      replyTo: Settings.replyTo('individual_studies'),
-      cc: Settings.cc('individual_studies'),   // full mirror to the module CC list (Admin → settings); blank = no CC
+      replyTo: Settings.replyTo('individual_studies', 'grad'),
+      cc: Settings.cc('individual_studies', 'grad'),   // grad-channel CC mirror (Admin → settings); blank = no CC, never the undergrad list
     });
   }
 
@@ -1560,8 +1580,8 @@ const IndividualStudiesModule = (() => {
                 + (String(rec.DeadlineDate || '').trim() ? ' (' + _plainStr(rec.DeadlineDate) + ')' : '') + '.'
               : '')
           + '\n\nProcess it in the portal: ' + _deepLink(petitionId),
-        replyTo: Settings.replyTo('individual_studies'),
-        cc: Settings.cc('individual_studies'),   // full mirror to the module CC list (Admin → settings); blank = no CC
+        replyTo: Settings.replyTo('individual_studies', 'grad'),
+        cc: Settings.cc('individual_studies', 'grad'),   // grad-channel CC mirror (Admin → settings); blank = no CC, never the undergrad list
       });
     }
   }
@@ -1578,8 +1598,8 @@ const IndividualStudiesModule = (() => {
       body: _fillNotifyTokens(_notifyTemplate('GRAD_NOTIFY_RETURNED'), rec) + '\n\n' +
             'What to revise: ' + note + '\n\n' +
             'Revise and resubmit in the portal: ' + _deepLink(petitionId),
-      replyTo: Settings.replyTo('individual_studies'),
-      cc: Settings.cc('individual_studies'),   // full mirror to the module CC list (Admin → settings); blank = no CC
+      replyTo: Settings.replyTo('individual_studies', 'grad'),
+      cc: Settings.cc('individual_studies', 'grad'),   // grad-channel CC mirror (Admin → settings); blank = no CC, never the undergrad list
     });
   }
 
@@ -1602,8 +1622,8 @@ const IndividualStudiesModule = (() => {
       subject: 'Your graduate individual-studies petition is complete',
       body: lines.join('\n'),
       attachments: blob ? [blob] : [],
-      replyTo: Settings.replyTo('individual_studies'),
-      cc: Settings.cc('individual_studies'),   // full mirror to the module CC list (Admin → settings); blank = no CC
+      replyTo: Settings.replyTo('individual_studies', 'grad'),
+      cc: Settings.cc('individual_studies', 'grad'),   // grad-channel CC mirror (Admin → settings); blank = no CC, never the undergrad list
     });
   }
 
@@ -1952,7 +1972,9 @@ const IndividualStudiesModule = (() => {
         if (rec.ClassNumber) lines.push('Class number: ' + rec.ClassNumber);
         lines.push('Requested by: ' + (_facultyLabel(user) || user));
         lines.push('', 'Petition: ' + _deepLink(rec.PetitionID));
-        Notify.send({ to: to, subject: 'Room access requested — ' + rec.Course, body: lines.join('\n'), replyTo: Settings.replyTo('individual_studies'), cc: Settings.cc('individual_studies') });
+        // Audience-aware channel: grad-petition room requests carry the grad addresses.
+        const raChannel = _isGradId(rec.PetitionID) ? 'grad' : '';
+        Notify.send({ to: to, subject: 'Room access requested — ' + rec.Course, body: lines.join('\n'), replyTo: Settings.replyTo('individual_studies', raChannel), cc: Settings.cc('individual_studies', raChannel) });
       }
     } catch (e) {
       Logger.log('IndividualStudiesModule._fireRoomAccessRequest failed for ' + rec.PetitionID + ': ' + e);
@@ -2840,6 +2862,9 @@ const IndividualStudiesModule = (() => {
   return {
     // TABS is the tab manifest consumed by TabRegistry (not a dispatchable action).
     TABS: TABS,
+    // CHANNELS is the notification-address manifest consumed by AdminModule
+    // (not a dispatchable action): per-audience reply-to/CC rows in Admin.
+    CHANNELS: CHANNELS,
     // student
     formData, mine, get, submit, withdraw, deletePetition,
     // sponsor
