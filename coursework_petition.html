@@ -252,27 +252,6 @@
     </div>
   </div>
 
-  <!-- Busy overlay: message + progress bar. The bar runs in two modes —
-       determinate (real numbers: file reading, the access sync) and an
-       animated indeterminate sweep (atomic server calls, which report
-       nothing until they return). -->
-  <style>
-    @keyframes cwp-busy-sweep {
-      0%   { margin-left: -40%; }
-      100% { margin-left: 100%; }
-    }
-    #cwp-busy-bar.cwp-indet { animation: cwp-busy-sweep 1.2s linear infinite; }
-  </style>
-  <div id="cwp-busy" style="display:none;position:fixed;inset:0;background:rgba(255,255,255,0.6);z-index:1100;align-items:center;justify-content:center;">
-    <div class="card" style="padding:18px 26px;min-width:300px;max-width:380px;">
-      <div id="cwp-busy-msg" style="margin-bottom:10px;">Working…</div>
-      <div style="height:6px;background:var(--color-border, #e3e6ea);border-radius:3px;overflow:hidden;">
-        <div id="cwp-busy-bar" style="height:100%;width:40%;background:var(--ucsc-navy, #003C6C);border-radius:3px;transition:width 0.2s;"></div>
-      </div>
-      <div id="cwp-busy-detail" class="text-sm text-muted" style="margin-top:8px;display:none;"></div>
-    </div>
-  </div>
-
 </div>
 
 <script>
@@ -1305,38 +1284,18 @@ window.CourseworkPetitionUI = (() => {          // window.X — NEVER const
       .replace(/>/g, '&gt;');
   }
 
-  /** Indeterminate busy: animated bar + message. Optional detail line. */
-  function _busy(msg, detail) {
-    const m = document.getElementById('cwp-busy-msg');
-    if (m) m.textContent = msg || 'Working…';
-    const bar = document.getElementById('cwp-busy-bar');
-    if (bar) { bar.classList.add('cwp-indet'); bar.style.width = '40%'; }
-    _busyDetail(detail || '');
-    const el = document.getElementById('cwp-busy');
-    if (el) el.style.display = 'flex';
-  }
+  // ── Busy overlay: shell-provided (_Scripts.html v2.3) ──
+  // The local #cwp-busy overlay was retired when the shell gained its own
+  // (#app-busy): App.busy / App.busyProgress / App.idle carry the same
+  // message + indeterminate/determinate progress-bar behavior, and every
+  // App.call also arms the overlay automatically as a safety net. These
+  // wrappers keep the module's call sites unchanged.
+  function _busy(msg, detail) { App.busy(msg, detail); }
 
   /** Determinate busy: real progress (done of total fills the bar). */
   function _busyProgress(msg, done, total, detail) {
-    const m = document.getElementById('cwp-busy-msg');
-    if (m) m.textContent = msg || 'Working…';
-    const bar = document.getElementById('cwp-busy-bar');
-    if (bar) {
-      bar.classList.remove('cwp-indet');
-      bar.style.marginLeft = '0';
-      const pct = total > 0 ? Math.round((done / total) * 100) : 0;
-      bar.style.width = Math.min(100, Math.max(2, pct)) + '%';
-    }
-    _busyDetail(detail !== undefined ? detail : (done + ' of ' + total));
-    const el = document.getElementById('cwp-busy');
-    if (el) el.style.display = 'flex';
-  }
-
-  function _busyDetail(txt) {
-    const el = document.getElementById('cwp-busy-detail');
-    if (!el) return;
-    el.textContent = txt || '';
-    el.style.display = txt ? 'block' : 'none';
+    App.busyProgress(msg, done, total,
+      detail !== undefined ? detail : (done + ' of ' + total));
   }
 
   function _fmtBytes(n) {
@@ -1356,10 +1315,7 @@ window.CourseworkPetitionUI = (() => {          // window.X — NEVER const
     return { count: count, bytes: total };
   }
 
-  function _idle() {
-    const el = document.getElementById('cwp-busy');
-    if (el) el.style.display = 'none';
-  }
+  function _idle() { App.idle(); }
   function _alert(msg) {
     _idle();
     alert(typeof msg === 'string' ? msg : (msg && msg.message) || 'Something went wrong.');
