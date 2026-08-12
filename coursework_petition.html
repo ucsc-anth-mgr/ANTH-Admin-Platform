@@ -197,7 +197,7 @@
         completed. You are editing the <strong>introduction</strong> of each message — the
         essentials are always appended below it and cannot be edited away: the return note
         and resubmission link (returned); the per-course outcomes, the PDF link, and the
-        Degree Progress Report line (completed). Tokens <code>{FirstName}</code>,
+        Academic Advisement Report line (completed). Tokens <code>{FirstName}</code>,
         <code>{Name}</code>, and <code>{Division}</code> are filled in automatically.
       </p>
       <div class="form-group">
@@ -331,7 +331,11 @@ window.CourseworkPetitionUI = (() => {          // window.X — NEVER const
   }
 
   // ── Tabs (WAI-ARIA pattern, roving tabindex) ─────────
+
+  let _activeTab = '';
+
   function switchTab(tab) {
+    _activeTab = tab;
     document.querySelectorAll('#cwp-module .tab-panel').forEach(function (p) { p.style.display = 'none'; });
     document.querySelectorAll('#cwp-module .module-tab').forEach(function (b) {
       const on = b.dataset.tab === tab;
@@ -350,6 +354,58 @@ window.CourseworkPetitionUI = (() => {          // window.X — NEVER const
     if (tab === 'institutions') loadInstitutions();
     if (tab === 'settings')     { loadNotifySettings(); _renderDeepLinkCard(); }
   }
+
+  /**
+   * Re-fetches the ACTIVE tab's list. The refresh backbone: called on
+   * modal close and by the focus/visibility auto-refresh, so the list a
+   * person is looking at reflects the server whenever attention returns
+   * to it. Queue loaders replace content only when the response arrives
+   * (no overlay, no flicker). Deliberately inert on 'new' and 'settings'
+   * — both hold in-progress form input that a refresh would clobber.
+   */
+  function _reloadActive() {
+    if (!_activeTab || !document.getElementById('cwp-module')) return;
+    if (_activeTab === 'mine')         loadMine();
+    if (_activeTab === 'intake')       loadIntake();
+    if (_activeTab === 'dus')          loadDus();
+    if (_activeTab === 'processing')   loadProcessing();
+    if (_activeTab === 'all')          loadAll();
+    if (_activeTab === 'institutions') loadInstitutions();
+  }
+
+  /**
+   * AUTO-REFRESH (browser-return): re-fetch the visible queue when the
+   * browser tab regains focus or visibility — the moment a person's
+   * attention comes back is the moment staleness would bite. No polling:
+   * an idle background tab makes zero requests and writes zero audit
+   * rows. Skipped while the detail modal is open (mid-task; the close
+   * refresh covers it) and throttled so a focus+visibility pair, or
+   * rapid alt-tabbing, costs one request.
+   *
+   * Module scripts re-execute on every module load, so the previous
+   * load's listeners are removed first — otherwise each visit would
+   * stack another copy.
+   */
+  let _lastAutoRefresh = 0;
+  function _autoRefresh() {
+    if (!document.getElementById('cwp-module')) return;   // module not on screen
+    const modal = document.getElementById('cwp-modal');
+    if (modal && modal.style.display === 'block') return; // mid-task in the detail view
+    const now = Date.now();
+    if (now - _lastAutoRefresh < 5000) return;
+    _lastAutoRefresh = now;
+    _reloadActive();
+  }
+  if (window.__cwpAutoRefresh) {
+    document.removeEventListener('visibilitychange', window.__cwpAutoRefresh.vis);
+    window.removeEventListener('focus', window.__cwpAutoRefresh.focus);
+  }
+  window.__cwpAutoRefresh = {
+    vis: function () { if (!document.hidden) _autoRefresh(); },
+    focus: function () { _autoRefresh(); },
+  };
+  document.addEventListener('visibilitychange', window.__cwpAutoRefresh.vis);
+  window.addEventListener('focus', window.__cwpAutoRefresh.focus);
 
   function tabKey(ev) {
     if (['ArrowRight', 'ArrowLeft', 'Home', 'End'].indexOf(ev.key) === -1) return;
@@ -609,7 +665,7 @@ window.CourseworkPetitionUI = (() => {          // window.X — NEVER const
     if (!confirm('Withdraw this petition? You can file a new one later.')) return;
     _busy('Withdrawing…');
     App.call(MODULE, 'withdraw', { petitionId: petitionId }, function () {
-      _idle(); closeModal(); loadMine();
+      _idle(); closeModal();
     }, function (err) { _idle(); _alert(err); });
   }
 
@@ -694,6 +750,9 @@ window.CourseworkPetitionUI = (() => {          // window.X — NEVER const
   function closeModal() {
     document.getElementById('cwp-modal').style.display = 'none';
     document.getElementById('cwp-modal-body').innerHTML = '';
+    // The list behind the modal re-fetches on every close — a petition is
+    // usually opened precisely because something may have changed.
+    _reloadActive();
   }
 
   function _detailHtml(rec, mode) {
@@ -917,7 +976,7 @@ window.CourseworkPetitionUI = (() => {          // window.X — NEVER const
     if (bad) { _alert(bad); return; }
     _busy('Recording intake decisions…');
     App.call(MODULE, 'intakeSubmit', { petitionId: petitionId, items: items }, function (res) {
-      _idle(); delete _cache[petitionId]; closeModal(); loadIntake();
+      _idle(); delete _cache[petitionId]; closeModal();
       _alert('Intake complete — petition moved to ' + _stageLabel(res.stage) + '.');
     }, function (err) { _idle(); _alert(err); });
   }
@@ -927,7 +986,7 @@ window.CourseworkPetitionUI = (() => {          // window.X — NEVER const
     if (!note) { _alert('Add a note telling the student what to fix.'); return; }
     _busy('Returning to student…');
     App.call(MODULE, 'returnToStudent', { petitionId: petitionId, note: note }, function () {
-      _idle(); delete _cache[petitionId]; closeModal(); loadIntake();
+      _idle(); delete _cache[petitionId]; closeModal();
     }, function (err) { _idle(); _alert(err); });
   }
 
@@ -968,7 +1027,7 @@ window.CourseworkPetitionUI = (() => {          // window.X — NEVER const
     if (bad) { _alert(bad); return; }
     _busy('Recording decisions…');
     App.call(MODULE, 'dusSubmit', { petitionId: petitionId, decisions: decisions }, function (res) {
-      _idle(); delete _cache[petitionId]; closeModal(); loadDus();
+      _idle(); delete _cache[petitionId]; closeModal();
       _alert('Decisions recorded — petition moved to ' + _stageLabel(res.stage) + '.');
     }, function (err) { _idle(); _alert(err); });
   }
@@ -990,7 +1049,7 @@ window.CourseworkPetitionUI = (() => {          // window.X — NEVER const
     if (bad) { _alert(bad); return; }
     _busy('Completing petition…', 'Recording actions, generating the archived PDF, and notifying the student.');
     App.call(MODULE, 'processSubmit', { petitionId: petitionId, actions: actions }, function (res) {
-      _idle(); delete _cache[petitionId]; closeModal(); loadProcessing();
+      _idle(); delete _cache[petitionId]; closeModal();
       _alert('Petition complete. The student has been notified.'
         + (res && res.pdfUrl ? '\n\nPDF: ' + res.pdfUrl : ''));
     }, function (err) { _idle(); _alert(err); });
@@ -1018,7 +1077,6 @@ window.CourseworkPetitionUI = (() => {          // window.X — NEVER const
     App.call(MODULE, 'resubmit', { petitionId: petitionId, items: items }, function () {
       _idle(); delete _cache[petitionId]; closeModal();
       _alert('Petition resubmitted. The undergraduate advisor has been notified.');
-      loadMine();
     }, function (err) { _idle(); _alert(err); });
   }
 
@@ -1027,7 +1085,6 @@ window.CourseworkPetitionUI = (() => {          // window.X — NEVER const
     _busy('Deleting…');
     App.call(MODULE, 'deletePetition', { petitionId: petitionId }, function () {
       _idle(); delete _cache[petitionId]; closeModal();
-      loadAll();
     }, function (err) { _idle(); _alert(err); });
   }
 
