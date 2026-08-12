@@ -444,14 +444,6 @@
     </div>
   </div>
 
-  <!-- Busy overlay: shown during slow round-trips (upload, record loads) -->
-  <div id="th-busy" class="th-busy" style="display:none;">
-    <div class="th-busy-box" role="status" aria-live="polite">
-      <div class="spinner" aria-hidden="true"></div>
-      <span id="th-busy-msg">Working…</span>
-    </div>
-  </div>
-
 </div>
 
 <style>
@@ -504,16 +496,6 @@
   padding: 12px 16px; margin: 0 0 14px; font-size: 13.5px;
 }
 .en-notice-title { font-weight: 700; font-size: 14px; }
-.th-busy {
-  position: fixed; inset: 0; background: rgba(255,255,255,0.75);
-  display: flex; align-items: center; justify-content: center; z-index: 1100;
-}
-.th-busy-box {
-  display: flex; align-items: center; gap: 12px;
-  background: var(--color-surface); border: 1px solid var(--color-border);
-  border-radius: var(--radius); box-shadow: var(--shadow-pop);
-  padding: 16px 22px; font-size: 14px;
-}
 </style>
 
 <script>
@@ -2285,12 +2267,13 @@ window.ThesisUI = (() => {
     });
   }
 
-  // ── Busy overlay (slow round-trips: upload, record loads) ──
-  function _busy(msg) {
-    document.getElementById('th-busy-msg').textContent = msg || 'Working…';
-    document.getElementById('th-busy').style.display = 'flex';
-  }
-  function _idle() { document.getElementById('th-busy').style.display = 'none'; }
+  // ── Busy overlay: shell-provided (_Scripts.html v2.3) ──
+  // The local overlay was retired when the shell gained its own
+  // (#app-busy): App.busy / App.idle carry the same behavior, and every
+  // App.call also arms the overlay automatically as a safety net. These
+  // wrappers keep the module's call sites unchanged.
+  function _busy(msg) { App.busy(msg); }
+  function _idle()    { App.idle(); }
 
   // ── helpers ──────────────────────────────────────────
   function _row(dt, dd) { return '<dt>' + dt + '</dt><dd>' + dd + '</dd>'; }

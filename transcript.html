@@ -238,27 +238,12 @@
   </div>
 </div>
 
-<!-- Busy overlay (slow round-trips: page load, upload) — mirrors Thesis -->
-<div id="tr-busy" class="tr-busy" style="display:none;">
-  <div class="tr-busy-box"><div class="spinner"></div><span id="tr-busy-msg">Working…</span></div>
-</div>
-
 <style>
   #ts-review-details summary::-webkit-details-marker { display: none; }
   #ts-review-details .ts-chevron { transition: transform 0.15s ease; }
   #ts-review-details[open] .ts-chevron { transform: rotate(90deg); }
   .tr-prereq-row { display:flex; align-items:center; gap:8px; padding:6px 0; }
   .tr-prereq-locked { color: var(--color-text-muted); }
-  .tr-busy {
-    position: fixed; inset: 0; background: rgba(255,255,255,0.75);
-    display: flex; align-items: center; justify-content: center; z-index: 1100;
-  }
-  .tr-busy-box {
-    display: flex; align-items: center; gap: 12px;
-    background: var(--color-surface); border: 1px solid var(--color-border);
-    border-radius: var(--radius); box-shadow: var(--shadow-pop);
-    padding: 16px 22px; font-size: 14px;
-  }
 </style>
 
 <script>
@@ -287,17 +272,13 @@ window.TranscriptUI = (() => {
       .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
-  // ── Busy overlay (slow round-trips) — mirrors Thesis ──
-  function _busy(msg) {
-    var m = document.getElementById('tr-busy-msg');
-    if (m) m.textContent = msg || 'Working…';
-    var el = document.getElementById('tr-busy');
-    if (el) el.style.display = 'flex';
-  }
-  function _idle() {
-    var el = document.getElementById('tr-busy');
-    if (el) el.style.display = 'none';
-  }
+  // ── Busy overlay: shell-provided (_Scripts.html v2.3) ──
+  // The local overlay was retired when the shell gained its own
+  // (#app-busy): App.busy / App.idle carry the same behavior, and every
+  // App.call also arms the overlay automatically as a safety net. These
+  // wrappers keep the module's call sites unchanged.
+  function _busy(msg) { App.busy(msg); }
+  function _idle()    { App.idle(); }
 
   // ── Init: role-preferred landing among visible tabs, wire deep-link ──
   function init() {

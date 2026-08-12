@@ -668,14 +668,6 @@
     </div>
   </div>
 
-  <!-- Busy overlay -->
-  <div id="is-busy" class="is-busy" style="display:none;">
-    <div class="is-busy-box" role="status" aria-live="polite">
-      <div class="spinner"></div>
-      <span id="is-busy-msg">Working…</span>
-    </div>
-  </div>
-
 </div>
 
 <style>
@@ -688,16 +680,6 @@
   .is-detail-grid { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; font-size: 13.5px; margin: 4px 0 16px; }
   .is-detail-grid dt { color: var(--color-muted); }
   .is-detail-grid dd { margin: 0; }
-  .is-busy {
-    position: fixed; inset: 0; background: rgba(255,255,255,0.75);
-    display: flex; align-items: center; justify-content: center; z-index: 1100;
-  }
-  .is-busy-box {
-    display: flex; align-items: center; gap: 12px;
-    background: var(--color-surface); border: 1px solid var(--color-border);
-    border-radius: var(--radius); box-shadow: var(--shadow-pop);
-    padding: 16px 22px; font-size: 14px;
-  }
   .is-credit-warn {
     background: #fff7e6; border: 1px solid #f0c36d; border-radius: var(--radius);
     padding: 10px 12px; font-size: 13px; margin: 8px 0;
@@ -755,16 +737,13 @@ window.IndividualStudiesUI = (() => {
       .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
-  function _busy(msg) {
-    const m = document.getElementById('is-busy-msg');
-    if (m) m.textContent = msg || 'Working…';
-    const el = document.getElementById('is-busy');
-    if (el) el.style.display = 'flex';
-  }
-  function _idle() {
-    const el = document.getElementById('is-busy');
-    if (el) el.style.display = 'none';
-  }
+  // ── Busy overlay: shell-provided (_Scripts.html v2.3) ──
+  // The local overlay was retired when the shell gained its own
+  // (#app-busy): App.busy / App.idle carry the same behavior, and every
+  // App.call also arms the overlay automatically as a safety net. These
+  // wrappers keep the module's call sites unchanged.
+  function _busy(msg) { App.busy(msg); }
+  function _idle()    { App.idle(); }
 
   // ── Init: pick default tab by role, wire deep-link ──
   function init() {
