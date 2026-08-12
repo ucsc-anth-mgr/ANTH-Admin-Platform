@@ -808,6 +808,7 @@ const IndividualStudiesModule = (() => {
         _studentLabel(rec.StudentEmail) + ' is waiting for you to ' + ask + '.\n\n' +
         'Open it in the portal: ' + _deepLink(rec.PetitionID),
       replyTo: Settings.replyTo('individual_studies'),   // module reply-to (Admin → settings); falls back to CONFIG.DEFAULT_REPLY_TO
+      cc: Settings.cc('individual_studies'),   // full mirror to the module CC list (Admin → settings); blank = no CC
     });
     EventBus.emit(MODULE + '.reminded', { recordId: rec.PetitionID, remindedTo: to }, { user: user });
     return { petitionId: rec.PetitionID, remindedTo: to };
@@ -1537,6 +1538,7 @@ const IndividualStudiesModule = (() => {
       subject: 'Graduate individual study awaiting your review',
       body: lines.join('\n'),
       replyTo: Settings.replyTo('individual_studies'),
+      cc: Settings.cc('individual_studies'),   // full mirror to the module CC list (Admin → settings); blank = no CC
     });
   }
 
@@ -1559,6 +1561,7 @@ const IndividualStudiesModule = (() => {
               : '')
           + '\n\nProcess it in the portal: ' + _deepLink(petitionId),
         replyTo: Settings.replyTo('individual_studies'),
+        cc: Settings.cc('individual_studies'),   // full mirror to the module CC list (Admin → settings); blank = no CC
       });
     }
   }
@@ -1576,6 +1579,7 @@ const IndividualStudiesModule = (() => {
             'What to revise: ' + note + '\n\n' +
             'Revise and resubmit in the portal: ' + _deepLink(petitionId),
       replyTo: Settings.replyTo('individual_studies'),
+      cc: Settings.cc('individual_studies'),   // full mirror to the module CC list (Admin → settings); blank = no CC
     });
   }
 
@@ -1599,6 +1603,7 @@ const IndividualStudiesModule = (() => {
       body: lines.join('\n'),
       attachments: blob ? [blob] : [],
       replyTo: Settings.replyTo('individual_studies'),
+      cc: Settings.cc('individual_studies'),   // full mirror to the module CC list (Admin → settings); blank = no CC
     });
   }
 
@@ -1879,6 +1884,7 @@ const IndividualStudiesModule = (() => {
       subject: 'Undergraduate individual study awaiting your review',
       body: lines.join('\n'),
       replyTo: Settings.replyTo('individual_studies'),   // module reply-to (Admin → settings); falls back to CONFIG.DEFAULT_REPLY_TO
+      cc: Settings.cc('individual_studies'),   // full mirror to the module CC list (Admin → settings); blank = no CC
     });
   }
 
@@ -1898,6 +1904,7 @@ const IndividualStudiesModule = (() => {
         body: 'A ' + rec.Course + ' undergraduate individual-studies petition has been approved by its sponsor and is ready for a class number.\n\n' +
               'Process it in the portal: ' + _deepLink(petitionId),
         replyTo: Settings.replyTo('individual_studies'),   // module reply-to (Admin → settings); falls back to CONFIG.DEFAULT_REPLY_TO
+        cc: Settings.cc('individual_studies'),   // full mirror to the module CC list (Admin → settings); blank = no CC
       });
     }
   }
@@ -1945,7 +1952,7 @@ const IndividualStudiesModule = (() => {
         if (rec.ClassNumber) lines.push('Class number: ' + rec.ClassNumber);
         lines.push('Requested by: ' + (_facultyLabel(user) || user));
         lines.push('', 'Petition: ' + _deepLink(rec.PetitionID));
-        Notify.send({ to: to, subject: 'Room access requested — ' + rec.Course, body: lines.join('\n'), replyTo: Settings.replyTo('individual_studies') });
+        Notify.send({ to: to, subject: 'Room access requested — ' + rec.Course, body: lines.join('\n'), replyTo: Settings.replyTo('individual_studies'), cc: Settings.cc('individual_studies') });
       }
     } catch (e) {
       Logger.log('IndividualStudiesModule._fireRoomAccessRequest failed for ' + rec.PetitionID + ': ' + e);
@@ -1973,6 +1980,7 @@ const IndividualStudiesModule = (() => {
             'What to revise: ' + note + '\n\n' +
             'Revise and resubmit in the portal: ' + _deepLink(petitionId),
       replyTo: Settings.replyTo('individual_studies'),   // module reply-to (Admin → settings); falls back to CONFIG.DEFAULT_REPLY_TO
+      cc: Settings.cc('individual_studies'),   // full mirror to the module CC list (Admin → settings); blank = no CC
     });
   }
 
@@ -1996,6 +2004,7 @@ const IndividualStudiesModule = (() => {
       body: lines.join('\n'),
       attachments: blob ? [blob] : [],
       replyTo: Settings.replyTo('individual_studies'),   // module reply-to (Admin → settings); falls back to CONFIG.DEFAULT_REPLY_TO
+      cc: Settings.cc('individual_studies'),   // full mirror to the module CC list (Admin → settings); blank = no CC
     });
   }
 
@@ -2075,6 +2084,7 @@ const IndividualStudiesModule = (() => {
           'Corrected by: ' + (_facultyLabel(user) || user) + '\n' +
           'Petition: ' + _deepLink(rec.PetitionID),
         replyTo: Settings.replyTo('individual_studies'),
+        cc: Settings.cc('individual_studies'),   // full mirror to the module CC list (Admin → settings); blank = no CC
       });
     } catch (e) {
       Logger.log('IndividualStudiesModule._notifySponsorCourseChanged failed for ' + rec.PetitionID + ': ' + e);

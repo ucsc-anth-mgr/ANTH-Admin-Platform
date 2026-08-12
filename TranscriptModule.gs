@@ -1208,6 +1208,7 @@ const TranscriptModule = (() => {
       subject: 'Transcripts awaiting review (' + pending.length + ')',
       body: body,
       replyTo: Settings.replyTo('transcript'),   // module reply-to (Admin → settings); falls back to CONFIG.DEFAULT_REPLY_TO
+      cc: Settings.cc('transcript'),   // full mirror to the module CC list (Admin → settings); blank = no CC
     });
     return { sent: true, count: pending.length, recipients: recipients.length };
   }
@@ -1245,6 +1246,7 @@ const TranscriptModule = (() => {
       body: bodyText,
       htmlBody: htmlBody,
       replyTo: Settings.replyTo('transcript'),   // module reply-to (Admin → settings); falls back to CONFIG.DEFAULT_REPLY_TO
+      cc: Settings.cc('transcript'),   // full mirror to the module CC list (Admin → settings); blank = no CC
     });
   }
 
@@ -1283,6 +1285,7 @@ const TranscriptModule = (() => {
       body: textWithLink,
       htmlBody: Notify.htmlWrap(bodyText) + _queueButtonHtml(),
       replyTo: Settings.replyTo('transcript'),   // module reply-to (Admin → settings); falls back to CONFIG.DEFAULT_REPLY_TO
+      cc: Settings.cc('transcript'),   // full mirror to the module CC list (Admin → settings); blank = no CC
     });
   }
 
@@ -1350,6 +1353,7 @@ const TranscriptModule = (() => {
       body: textWithLink,
       htmlBody: Notify.htmlWrap(bodyText) + _mineButtonHtml(),
       replyTo: Settings.replyTo('transcript'),   // module reply-to (Admin → settings); falls back to CONFIG.DEFAULT_REPLY_TO
+      cc: Settings.cc('transcript'),   // full mirror to the module CC list (Admin → settings); blank = no CC
     });
   }
 

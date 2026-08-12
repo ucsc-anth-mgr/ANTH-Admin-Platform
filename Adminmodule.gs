@@ -82,18 +82,20 @@ const AdminModule = (() => {
   // Admin → Users (thesis_sponsor, thesis_reader, individual_studies_sponsor),
   // read directly by the consuming modules via Auth.usersWithRole().
 
-  // ── Notification reply-to (per-module, platform Settings store) ────────
-  // The reply-to address applied to a module's notification emails. One
-  // field per ENABLED module, read from the registry so any future module
-  // gets a reply-to setting with no extra wiring. An unset module falls back
-  // to CONFIG.DEFAULT_REPLY_TO at send time (surfaced here as `defaultReplyTo`
-  // so the panel can show the effective fallback). Backed by Settings.gs.
+  // ── Notification addresses (per-module, platform Settings store) ───────
+  // The reply-to and CC addresses applied to a module's notification
+  // emails. One row per ENABLED module, read from the registry so any
+  // future module gets both settings with no extra wiring. Reply-to falls
+  // back to CONFIG.DEFAULT_REPLY_TO at send time (surfaced here as
+  // `defaultReplyTo` so the panel can show the effective fallback); CC has
+  // NO fallback — unset means no CC. Backed by Settings.gs.
 
   /**
-   * Returns the per-module reply-to configuration for the panel:
-   *   { defaultReplyTo, modules: [{ key, label, replyTo }] }
-   * `replyTo` is the module's configured value ('' when unset). `modules`
-   * lists every ENABLED module from the registry, ordered by its menu order.
+   * Returns the per-module notification-address configuration for the panel:
+   *   { defaultReplyTo, modules: [{ key, label, replyTo, cc }] }
+   * `replyTo` and `cc` are the module's configured values ('' when unset).
+   * `modules` lists every ENABLED module from the registry, ordered by its
+   * menu order.
    */
   function getModuleReplyTos() {
     const registry = getModuleRegistry();
@@ -104,9 +106,10 @@ const AdminModule = (() => {
         label: (registry[key].label || key),
         order: (registry[key].order != null ? registry[key].order : 99),
         replyTo: Settings.get(key, 'replyTo', ''),
+        cc: Settings.get(key, 'cc', ''),
       }))
       .sort((a, b) => (a.order - b.order) || String(a.label).localeCompare(String(b.label)))
-      .map(m => ({ key: m.key, label: m.label, replyTo: m.replyTo }));
+      .map(m => ({ key: m.key, label: m.label, replyTo: m.replyTo, cc: m.cc }));
 
     return {
       defaultReplyTo: (CONFIG && CONFIG.DEFAULT_REPLY_TO) || '',
@@ -141,6 +144,38 @@ const AdminModule = (() => {
     return { key: key, replyTo: value, effective: effective };
   }
 
+  /**
+   * Sets (or clears) a module's notification CC address list. A blank value
+   * clears the setting — no CC (there is deliberately no platform fallback,
+   * unlike reply-to). A non-blank value may hold MULTIPLE comma- or
+   * semicolon-separated addresses; each is validated individually (rejected
+   * on any invalid entry, so a typo can't silently drop the mirror), then
+   * stored normalized as a comma-joined list. The module key must be a
+   * real, enabled module in the registry.
+   * @param {Object} p - { key, cc }
+   * @returns {{ key, cc }}
+   */
+  function saveModuleCc(p) {
+    p = p || {};
+    const key = String(p.key || '').trim();
+    if (!key) throw new Error('Module key is required.');
+
+    const registry = getModuleRegistry();
+    if (!registry[key]) throw new Error('Unknown module: ' + key);
+
+    const raw = String(p.cc == null ? '' : p.cc).trim();
+    const addresses = raw.split(/[,;]/).map(s => s.trim()).filter(Boolean);
+    addresses.forEach(a => {
+      if (!Utils.isValidEmail(a)) {
+        throw new Error('"' + a + '" is not a valid email address.');
+      }
+    });
+
+    const value = addresses.join(', ');
+    Settings.set(key, 'cc', value);
+    return { key: key, cc: value };
+  }
+
   // Icons offered in the picker (Tabler outline names)
   function iconChoices() {
     return [
@@ -160,7 +195,7 @@ const AdminModule = (() => {
     listImportPolicy, upsertImportPolicy, removeImportPolicy,
     listNotifyRules, upsertNotifyRule, removeNotifyRule,
     getNotifySettings, saveNotifySettings,
-    getModuleReplyTos, saveModuleReplyTo,
+    getModuleReplyTos, saveModuleReplyTo, saveModuleCc,
   };
 
 })();

@@ -136,6 +136,25 @@ const Settings = (() => {
 
 
   /**
+   * The CC address(es) mirrored onto a module's notification emails: the
+   * module's configured 'cc' setting, else '' — DELIBERATELY no platform
+   * fallback, unlike replyTo(). Every email needs somewhere for replies
+   * to land, so replyTo always resolves; CC unset simply means no CC, so
+   * modules that don't want mirroring stay silent by default.
+   *
+   * May hold multiple addresses (comma-separated); Notify.send splits,
+   * validates, dedupes, and drops any CC address already in To — so a
+   * message sent TO the mirrored address never doubles up.
+   *
+   * @param {string} module - module key
+   * @returns {string} comma-separated address list, or ''
+   */
+  function cc(module) {
+    return get(module, 'cc', '');
+  }
+
+
+  /**
    * All settings for a module as a plain { key: value } map (non-blank
    * rows only). Convenience for an Admin settings panel. Never throws.
    *
@@ -206,6 +225,6 @@ const Settings = (() => {
   }
 
 
-  return { get, set, replyTo, getAll };
+  return { get, set, replyTo, cc, getAll };
 
 })();

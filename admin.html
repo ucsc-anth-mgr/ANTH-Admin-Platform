@@ -274,14 +274,15 @@
     </div>
 
     <div class="card">
-      <div class="card-title between"><span><i class="ti ti-mail-forward"></i> Notification reply-to</span>
+      <div class="card-title between"><span><i class="ti ti-mail-forward"></i> Notification addresses</span>
         <button class="btn btn-secondary btn-sm" onclick="AdminUI.loadModuleReplyTos()"><i class="ti ti-refresh"></i> Refresh</button>
       </div>
       <p class="text-muted text-sm" style="margin:-8px 0 16px;">
-        The reply-to address on each module's notification emails — where replies go when someone responds.
-        Use a shared functional address (e.g. <strong>anthugra@ucsc.edu</strong>), not a personal one.
-        Leave a field blank to fall back to the department default
-        (<strong id="replyto-default">—</strong>). Only modules that send email use this.
+        <strong>Reply-to</strong> is where replies go when someone responds to a module's notification emails;
+        blank falls back to the department default (<strong id="replyto-default">—</strong>).
+        <strong>CC</strong> mirrors every email the module sends to the listed address(es) — separate multiple
+        with commas; blank means no CC. Use shared functional addresses (e.g. <strong>anthugra@ucsc.edu</strong>),
+        not personal ones. Only modules that send email use these.
       </p>
       <div id="replyto-table"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
     </div>
@@ -1155,33 +1156,46 @@ window.AdminUI = (() => {
         return `
         <tr>
           <td><strong>${_escAttr(m.label)}</strong><div class="text-sm text-muted">${_escAttr(m.key)}</div></td>
-          <td style="min-width:240px;">
+          <td style="min-width:220px;">
             <input class="form-input" id="${id}" type="email" value="${_escAttr(m.replyTo || '')}"
                    placeholder="${_escAttr(def)} (default)" style="margin:0;">
           </td>
+          <td style="min-width:220px;">
+            <input class="form-input" id="${id}-cc" type="text" value="${_escAttr(m.cc || '')}"
+                   placeholder="No CC" style="margin:0;">
+          </td>
           <td style="white-space:nowrap;">
-            <button class="btn btn-primary btn-sm" id="${id}-btn" onclick="AdminUI.saveModuleReplyTo('${_escAttr(m.key)}')"><i class="ti ti-device-floppy"></i> Save</button>
+            <button class="btn btn-primary btn-sm" id="${id}-btn" onclick="AdminUI.saveModuleAddresses('${_escAttr(m.key)}')"><i class="ti ti-device-floppy"></i> Save</button>
           </td>
         </tr>`;
       }).join('');
       el.innerHTML = `<div class="table-wrap"><table class="data-table">
-        <thead><tr><th>Module</th><th>Reply-to address</th><th></th></tr></thead>
+        <thead><tr><th>Module</th><th>Reply-to address</th><th>CC (mirror) address(es)</th><th></th></tr></thead>
         <tbody>${rows}</tbody></table></div>`;
     });
   }
 
-  function saveModuleReplyTo(key) {
+  // Saves BOTH fields for the row (reply-to, then CC) behind the single
+  // Save button. Sequential so a validation error on either field surfaces
+  // via the standard App.call error path; one toast on full success.
+  function saveModuleAddresses(key) {
     const id = 'rt-' + _slugId(key);
-    const input = document.getElementById(id);
-    if (!input) return;
-    const replyTo = input.value.trim();
+    const rtInput = document.getElementById(id);
+    const ccInput = document.getElementById(id + '-cc');
+    if (!rtInput || !ccInput) return;
+    const replyTo = rtInput.value.trim();
+    const cc = ccInput.value.trim();
     FormHelper.setLoading(id + '-btn', true, 'Saving…');
     App.call('admin', 'saveModuleReplyTo', { key, replyTo }, res => {
-      FormHelper.setLoading(id + '-btn', false);
       const eff = (res && res.effective) ? res.effective : '';
-      Toast.show(replyTo
-        ? ('Reply-to saved for ' + key + ': ' + replyTo)
-        : ('Reply-to cleared for ' + key + ' — falling back to ' + eff), 'success');
+      App.call('admin', 'saveModuleCc', { key, cc }, ccRes => {
+        FormHelper.setLoading(id + '-btn', false);
+        const savedCc = (ccRes && ccRes.cc) ? ccRes.cc : '';
+        if (savedCc) ccInput.value = savedCc;   // reflect normalized list
+        const rtMsg = replyTo ? ('reply-to ' + replyTo) : ('reply-to default (' + eff + ')');
+        const ccMsg = savedCc ? ('CC ' + savedCc) : 'no CC';
+        Toast.show('Saved ' + key + ': ' + rtMsg + ', ' + ccMsg, 'success');
+      }, () => FormHelper.setLoading(id + '-btn', false));
     }, () => FormHelper.setLoading(id + '-btn', false));
   }
 
@@ -1204,7 +1218,7 @@ window.AdminUI = (() => {
     });
   }
 
-  return { init, switchTab, loadModules, toggleModule, deleteModule, openModuleForm, editModule, closeModuleForm, checkHandler, pickIcon, onModuleChip, saveModule, toggleTabsRow, onTabChip, saveModuleTabs, loadUsers, onUserFilterChange, clearUserFilters, sortUsersBy, onChip, editUser, saveUser, clearUserForm, loadAudit, loadRoles, editRole, saveRole, clearRoleForm, deleteRole, explainBlocked, loadRequests, approveRequest, rejectRequest, loadImportPolicy, editPolicy, savePolicy, deletePolicy, loadNotifyRules, editNotifyRule, saveNotifyRule, deleteNotifyRule, loadModuleReplyTos, saveModuleReplyTo };
+  return { init, switchTab, loadModules, toggleModule, deleteModule, openModuleForm, editModule, closeModuleForm, checkHandler, pickIcon, onModuleChip, saveModule, toggleTabsRow, onTabChip, saveModuleTabs, loadUsers, onUserFilterChange, clearUserFilters, sortUsersBy, onChip, editUser, saveUser, clearUserForm, loadAudit, loadRoles, editRole, saveRole, clearRoleForm, deleteRole, explainBlocked, loadRequests, approveRequest, rejectRequest, loadImportPolicy, editPolicy, savePolicy, deletePolicy, loadNotifyRules, editNotifyRule, saveNotifyRule, deleteNotifyRule, loadModuleReplyTos, saveModuleAddresses };
 
 })();
 
