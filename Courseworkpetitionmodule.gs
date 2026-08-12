@@ -609,7 +609,7 @@ const CourseworkPetitionModule = (() => {
    *   else any APPROVED                   → PENDING_PROCESSING
    *   else (everything denied at intake)  → COMPLETE (PDF documents it)
    */
-  function intakeSubmit(payload, user, roles) {
+  async function intakeSubmit(payload, user, roles) {
     _assertAdvisor(roles);
     const p = payload || {};
     const rec = _byId(String(p.petitionId || '').trim());
@@ -656,7 +656,7 @@ const CourseworkPetitionModule = (() => {
     });
     Tasks.resolveForSource(MODULE, rec.PetitionID, { resolvedBy: user });
 
-    const stage = _routeAfterDecisions(rec.PetitionID, user);
+    const stage = await _routeAfterDecisions(rec.PetitionID, user);
     EventBus.emit(MODULE + '.intake_complete', { recordId: rec.PetitionID, stage: stage }, { user: user });
     return { petitionId: rec.PetitionID, stage: stage };
   }
@@ -705,7 +705,7 @@ const CourseworkPetitionModule = (() => {
    * reviewers by the precedent matcher).
    * payload = { petitionId, decisions: [{ itemId, decision, denialReason? }] }
    */
-  function dusSubmit(payload, user, roles) {
+  async function dusSubmit(payload, user, roles) {
     _assertDus(roles);
     const p = payload || {};
     const rec = _byId(String(p.petitionId || '').trim());
@@ -736,7 +736,7 @@ const CourseworkPetitionModule = (() => {
     });
 
     Tasks.resolveForSource(MODULE, rec.PetitionID, { resolvedBy: user });
-    const stage = _routeAfterDecisions(rec.PetitionID, user);
+    const stage = await _routeAfterDecisions(rec.PetitionID, user);
     EventBus.emit(MODULE + '.dus_decided', { recordId: rec.PetitionID, stage: stage }, { user: user });
     return { petitionId: rec.PetitionID, stage: stage };
   }
@@ -761,7 +761,7 @@ const CourseworkPetitionModule = (() => {
    * resolved, student notified and granted viewer on the PDF.
    * payload = { petitionId, actions: [{ itemId, myUcscAction }] }
    */
-  function processSubmit(payload, user, roles) {
+  async function processSubmit(payload, user, roles) {
     _assertAdvisor(roles);
     const p = payload || {};
     const rec = _byId(String(p.petitionId || '').trim());
@@ -789,7 +789,7 @@ const CourseworkPetitionModule = (() => {
       ProcessedBy: user, ProcessedAt: now,
     });
     Tasks.resolveForSource(MODULE, rec.PetitionID, { resolvedBy: user });
-    return _complete(rec.PetitionID, user);
+    return await _complete(rec.PetitionID, user);
   }
 
   /**
@@ -851,7 +851,7 @@ const CourseworkPetitionModule = (() => {
    *   else any APPROVED item                   → PENDING_PROCESSING
    *   else (all denied)                        → COMPLETE (PDF documents it)
    */
-  function _routeAfterDecisions(petitionId, user) {
+  async function _routeAfterDecisions(petitionId, user) {
     const items = _itemsFor(petitionId);
     const anyOpen = items.some(it =>
       String(it.ReviewPath) === REVIEW_PATH.FACULTY_REVIEW && !String(it.Decision || '').trim());
@@ -867,12 +867,16 @@ const CourseworkPetitionModule = (() => {
       return STAGE.PENDING_PROCESSING;
     }
     // Everything denied — nothing to process in MyUCSC; close it out.
-    const out = _complete(petitionId, user);
+    const out = await _complete(petitionId, user);
     return out.stage;
   }
 
-  /** Terminal completion: PDF once, archive, notify + share with student. */
-  function _complete(petitionId, user) {
+  /**
+   * Terminal completion: PDF once, archive, appendix, notify + share.
+   * ASYNC (pdf-lib appendix merge); dispatch awaits handler results, so
+   * the promise chain resolves before the execution finalizes.
+   */
+  async function _complete(petitionId, user) {
     DataService.update(SHEET(), TAB(), 'PetitionID', petitionId, { Stage: STAGE.COMPLETE });
     const rec = _byId(petitionId);   // re-read: ProcessedBy/At now populated
 
@@ -884,6 +888,17 @@ const CourseworkPetitionModule = (() => {
         DocumentLink: pdf.url || '',
         FileName: pdf.fileName || '',
       });
+      // Append the uploaded supporting documents to the archived PDF
+      // (in place — same file id, so the Reports index, the emailed
+      // link, and the sharing grants all stay valid). Best-effort: a
+      // merge failure keeps the summary-only PDF and never blocks
+      // completion.
+      try {
+        await _appendSupportingDocs(rec, pdf);
+      } catch (e) {
+        Logger.log('CourseworkPetitionModule._complete: appendix merge failed for '
+          + petitionId + ' (summary-only PDF kept): ' + e);
+      }
       if (pdf.fileId) _grantViewers(pdf.fileId, _fileAudience(rec.StudentEmail));
     } catch (e) {
       // The workflow outcome stands even if the PDF pipeline hiccups; the
@@ -939,11 +954,139 @@ const CourseworkPetitionModule = (() => {
   }
 
   /**
+   * Appends the petition's uploaded supporting documents (each course's
+   * transcript, then syllabus) to the archived summary PDF, with a navy
+   * divider page introducing each document. The merged bytes REPLACE the
+   * archived file in place — same file id — so the Reports index row,
+   * the emailed link, and every sharing grant stay valid.
+   *
+   * Requires PdfLib.gs (the PDFLib global, already in the project for
+   * ReportService.fillTemplate) and the Advanced Drive Service for the
+   * in-place byte update. Fully best-effort at every level:
+   *   - PDFLib or Advanced Drive missing → summary-only PDF, logged;
+   *   - one document corrupt/oversized  → its divider notes it could
+   *     not be embedded (the Drive copy stays linked on the petition
+   *     record) and the rest still merge;
+   *   - no documents at all             → file left untouched.
+   * Size caps keep the merge inside Apps Script limits.
+   */
+  async function _appendSupportingDocs(rec, pdf) {
+    const fileId = String((pdf && pdf.fileId) || '').trim();
+    if (!fileId) return;
+    if (typeof PDFLib === 'undefined') {
+      Logger.log('CourseworkPetitionModule._appendSupportingDocs: PDFLib global missing '
+        + '(is PdfLib.gs in the project?) — summary-only PDF kept.');
+      return;
+    }
+
+    const PER_DOC_CAP = 15 * 1024 * 1024;   // one supporting document
+    const TOTAL_CAP   = 40 * 1024 * 1024;   // whole merged output
+
+    const { PDFDocument, ParseSpeeds, StandardFonts, rgb } = PDFLib;
+    const baseBytes = DriveApp.getFileById(fileId).getBlob().getBytes();
+    const merged = await PDFDocument.load(new Uint8Array(baseBytes), {
+      parseSpeed: ParseSpeeds.Fastest,
+    });
+    const font = await merged.embedFont(StandardFonts.Helvetica);
+    const bold = await merged.embedFont(StandardFonts.HelveticaBold);
+    const navy = rgb(0, 60 / 255, 108 / 255);
+    const grey = rgb(0.35, 0.35, 0.35);
+    const red  = rgb(0.6, 0.15, 0.15);
+
+    // US-Letter divider introducing the document that follows.
+    const divider = function (kicker, title, subtitle, note) {
+      const page = merged.addPage([612, 792]);
+      page.drawText(kicker, { x: 72, y: 704, size: 10, font: font, color: grey });
+      page.drawText(title, { x: 72, y: 678, size: 16, font: bold, color: navy });
+      if (subtitle) page.drawText(subtitle, { x: 72, y: 656, size: 11, font: font, color: grey });
+      if (note) page.drawText(note, { x: 72, y: 624, size: 10, font: font, color: red });
+    };
+
+    let totalBytes = baseBytes.length;
+    let touched = false;
+    let seq = 0;
+    const items = _itemsFor(rec.PetitionID);
+
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      const label = _itemLabel(it);
+      const subtitle = _institutionLabelFor(it)
+        + (String(it.CourseID || '').trim() ? ' · ' + it.CourseID : '');
+      const docs = [
+        ['Transcript', String(it.TranscriptFileID || '').trim()],
+        ['Syllabus',   String(it.SyllabusFileID || '').trim()],
+      ];
+      for (let d = 0; d < docs.length; d++) {
+        const kindLabel = docs[d][0];
+        const docId = docs[d][1];
+        if (!docId) continue;
+        seq++;
+        const kicker = 'Appendix ' + seq + ' — Supporting document';
+        const title = kindLabel + ' — ' + label;
+        try {
+          const bytes = DriveApp.getFileById(docId).getBlob().getBytes();
+          if (bytes.length > PER_DOC_CAP || totalBytes + bytes.length > TOTAL_CAP) {
+            divider(kicker, title, subtitle,
+              'Not embedded (file too large) — view it in Drive from the petition record.');
+            touched = true;
+            continue;
+          }
+          const src = await PDFDocument.load(new Uint8Array(bytes), {
+            parseSpeed: ParseSpeeds.Fastest,
+            ignoreEncryption: true,
+          });
+          divider(kicker, title, subtitle, '');
+          const pages = await merged.copyPages(src, src.getPageIndices());
+          pages.forEach(function (pg) { merged.addPage(pg); });
+          totalBytes += bytes.length;
+          touched = true;
+        } catch (e) {
+          Logger.log('CourseworkPetitionModule._appendSupportingDocs: could not embed '
+            + kindLabel + ' ' + docId + ' for ' + it.ItemID + ': ' + e);
+          divider(kicker, title, subtitle,
+            'Could not be embedded — view it in Drive from the petition record.');
+          touched = true;
+        }
+      }
+    }
+
+    if (!touched) return;   // no supporting documents — file left as generated
+
+    const outBytes = await merged.save();
+    _replaceFileBytes(fileId, outBytes, pdf.fileName);
+  }
+
+  /**
+   * Overwrites a Drive file's bytes IN PLACE (same file id) via the
+   * Advanced Drive Service (v3/v2 share the update(resource, id, media)
+   * shape). DriveApp cannot replace binary content, so without the
+   * Advanced service this logs and leaves the original file — the
+   * summary-only PDF remains valid.
+   */
+  function _replaceFileBytes(fileId, bytes, name) {
+    const blob = Utilities.newBlob(bytes, 'application/pdf', name || 'document.pdf');
+    try {
+      if (typeof Drive !== 'undefined' && Drive && Drive.Files
+          && typeof Drive.Files.update === 'function') {
+        Drive.Files.update({}, fileId, blob);
+        return true;
+      }
+    } catch (e) {
+      Logger.log('CourseworkPetitionModule._replaceFileBytes: update failed for '
+        + fileId + ': ' + e);
+      return false;
+    }
+    Logger.log('CourseworkPetitionModule._replaceFileBytes: Advanced Drive Service '
+      + 'unavailable — summary-only PDF kept for ' + fileId + '.');
+    return false;
+  }
+
+  /**
    * Campus-form layout mirroring the DocuSign originals: student block,
    * one block per course line (type, institution, course, documents,
    * decision), the Director-of-Undergraduate-Studies signature block
    * (name/email/timestamp in lieu of signature — omitted when every item
-   * resolved at intake), and the "Entered into Academic Advisement
+   * resolved at intake), and the "Entered into Degree Progress Report
    * Report" block. Table-based markup for the HTML→Doc→PDF pipeline.
    */
   function _petitionHtml(rec, student) {
@@ -1031,7 +1174,7 @@ const CourseworkPetitionModule = (() => {
       + '</div>'
 
       + '<div style="border:1px solid #ccc;border-left:3px solid ' + navy + ';padding:8px 10px;">'
-      + '<div style="font-size:9pt;font-weight:bold;color:' + navy + ';text-transform:uppercase;letter-spacing:0.4px;margin-bottom:4px;">Entered into Academic Advisement Report</div>'
+      + '<div style="font-size:9pt;font-weight:bold;color:' + navy + ';text-transform:uppercase;letter-spacing:0.4px;margin-bottom:4px;">Entered into Degree Progress Report</div>'
       + '<table style="width:100%;border-collapse:collapse;">'
       +   row('Entered by', rec.ProcessedBy
             ? sig('', rec.ProcessedBy, rec.ProcessedAt, 'Entered')
@@ -1140,7 +1283,7 @@ const CourseworkPetitionModule = (() => {
       lines.push('');
       if (pdf && pdf.url) lines.push('Your completed petition (save for your records): ' + pdf.url);
       if (anyApproved) {
-        lines.push('Approved courses have been recorded in your Academic Advisement Report.');
+        lines.push('Approved courses have been recorded in your Degree Progress Report.');
       }
       Notify.send({
         to: rec.StudentEmail,
