@@ -70,7 +70,8 @@ const PersonnelModule = (() => {
     { key: 'letters', label: 'Letter writers', icon: 'ti-mailbox',
       roles: ['department_chair'], floor: 'super_admin',
       actions: ['listLetterCases', 'listWriters', 'upsertWriter', 'setWriterStage',
-                'addWriterNote', 'uploadWriterEvidence', 'removeWriterEvidence', 'removeWriter'] },
+                'addWriterNote', 'uploadWriterEvidence', 'removeWriterEvidence', 'removeWriter',
+                'exportWritersToSheet'] },
     { key: 'anticipated', label: 'Anticipated Call', icon: 'ti-crystal-ball',
       roles: [], floor: 'super_admin',
       actions: ['listAnticipatedCandidates', 'exportAnticipatedToSheet',
@@ -4308,6 +4309,95 @@ const PersonnelModule = (() => {
   }
 
 
+  /**
+   * Export the letter-writer pipeline to a Google Sheet — every tracked
+   * case as a section, writers in pipeline order, with the summary line,
+   * suggested-by, evidence filenames, and the latest note. The shareable
+   * answer to "where do we stand on letters". Lands in EXPORT_FOLDER_ID.
+   */
+  function exportWritersToSheet(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const cases = listLetterCases({}, user, roles).cases || [];
+    if (!cases.length) throw new Error('Nothing to export — no promotion or tracked cases.');
+
+    const stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+    const name = 'Letter writers — exported ' + stamp;
+    const ss = SpreadsheetApp.create(name);
+    const sheet = ss.getSheets()[0];
+    sheet.setName('Letter writers');
+
+    sheet.getRange(1, 1).setValue('External letter writers — solicitation pipeline')
+      .setFontWeight('bold').setFontSize(13);
+    sheet.getRange(2, 1).setValue(
+      'Stages: Suggested → Proposed → Solicited → Declined / Accepted → File sent → Acknowledged → Letter submitted. ' +
+      'Letters themselves arrive through the campus system.')
+      .setFontColor('#666666').setFontStyle('italic');
+
+    const header = ['Writer', 'Title', 'Discipline', 'Affiliation', 'Email', 'Homepage',
+                    'Suggested by', 'Stage', 'Evidence on file', 'Latest note'];
+    let row = 4;
+    cases.forEach(c => {
+      const rep = listWriters({ caseId: c.caseId }, user, roles);
+      const s = rep.summary || {};
+      sheet.getRange(row, 1).setValue(
+        rep.candidate + ' — ' + rep.reviewType + ' ' + rep.academicYear +
+        (rep.lettersDue ? '   (letters due ' + rep.lettersDue + ')' : ''))
+        .setFontWeight('bold').setFontSize(11.5).setFontColor('#003C6C');
+      row++;
+      sheet.getRange(row, 1).setValue(
+        s.submitted + ' of ' + s.accepted + ' accepted letters submitted · ' + s.total + ' writer(s) on the roster')
+        .setFontColor('#666666').setFontStyle('italic');
+      row++;
+
+      if (!(rep.writers || []).length) {
+        sheet.getRange(row, 1).setValue('(no writers yet)').setFontColor('#999999').setFontStyle('italic');
+        row += 2;
+        return;
+      }
+      sheet.getRange(row, 1, 1, header.length).setValues([header])
+        .setFontWeight('bold').setBackground('#003C6C').setFontColor('#FFFFFF');
+      row++;
+
+      const data = rep.writers.map(w => {
+        const noteLines = String(w.notesLog || '').split('\n').filter(Boolean);
+        return [
+          w.name, w.rank || '', w.discipline || '', w.affiliation || '',
+          w.email || '', w.homepage || '',
+          w.suggestedBy === 'candidate' ? 'Candidate' : 'Committee',
+          w.stageLabel || w.stage,
+          (w.evidence || []).map(e => e.name).join(', '),
+          noteLines.length ? noteLines[noteLines.length - 1] : '',
+        ];
+      });
+      sheet.getRange(row, 1, data.length, header.length).setValues(data);
+      rep.writers.forEach((w, i) => {
+        const stageCell = sheet.getRange(row + i, 8);
+        if (w.stage === 'letter_submitted') stageCell.setFontWeight('bold').setFontColor('#2e7d32');
+        else if (w.stage === 'declined') stageCell.setFontColor('#B3261E');
+        if (w.suggestedBy === 'candidate') sheet.getRange(row + i, 7).setBackground('#FFF4CC');
+      });
+      row += data.length;
+      // Shaded separator between candidates — the format the assignments
+      // export established.
+      sheet.getRange(row, 1, 1, header.length).setBackground('#EFEFEF');
+      row++;
+    });
+
+    for (let col = 1; col <= header.length; col++) sheet.autoResizeColumn(col);
+    sheet.setColumnWidth(10, 320);   // latest-note column: readable, not endless
+
+    const folderId = (CONFIG.PERSONNEL && CONFIG.PERSONNEL.EXPORT_FOLDER_ID) || '';
+    if (folderId) {
+      try {
+        const file = DriveApp.getFileById(ss.getId());
+        DriveApp.getFolderById(folderId).addFile(file);
+        DriveApp.getRootFolder().removeFile(file);
+      } catch (err) { Logger.log('Letter writers export folder move failed: ' + err); }
+    }
+    return { url: ss.getUrl(), name: name };
+  }
+
+
   // ── Cycle deadline auto-matching ───────────────────────────
   // APO's calendar titles are structured and carry the cycle year, so the
   // division deadlines can simply be found rather than hunted for by hand.
@@ -4785,6 +4875,7 @@ const PersonnelModule = (() => {
     uploadWriterEvidence,
     removeWriterEvidence,
     removeWriter,
+    exportWritersToSheet,
     ping,
     getAttributes,
     getPersonSummary,

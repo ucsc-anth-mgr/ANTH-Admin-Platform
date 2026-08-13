@@ -367,7 +367,10 @@ Assistant Professor	Hernandez Garavito	Carla	5	o	6	2	17	Reappt with salary incre
     <div class="card">
       <div class="card-title between">
         <span><i class="ti ti-mailbox"></i> External letter writers</span>
-        <button class="btn btn-secondary btn-sm" onclick="PersonnelUI.loadLetterCases()"><i class="ti ti-refresh"></i> Refresh</button>
+        <div style="display:flex;gap:8px;">
+          <button class="btn btn-secondary btn-sm" id="lw-export-btn" onclick="PersonnelUI.exportWriters()"><i class="ti ti-table"></i> Export to Sheets</button>
+          <button class="btn btn-secondary btn-sm" onclick="PersonnelUI.loadLetterCases()"><i class="ti ti-refresh"></i> Refresh</button>
+        </div>
       </div>
       <p class="text-muted text-sm" style="margin:-8px 0 12px;">
         The solicitation pipeline for promotion and above-scale files: Suggested → Proposed →
@@ -720,7 +723,7 @@ window.PersonnelUI = (() => {
     if (which === 'letters') loadLetterCases();
     // View-only roles: mutation entry points are not offered.
     if (!_canEdit) {
-      ['cases-add-btn', 'wl-export-btn', 'cyc-export-btn'].forEach(id => {
+      ['cases-add-btn', 'wl-export-btn', 'cyc-export-btn', 'lw-export-btn'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.style.display = 'none';
       });
@@ -1024,6 +1027,15 @@ window.PersonnelUI = (() => {
       if (sel.value) loadWriters();
       else document.getElementById('lw-roster').innerHTML = '<p class="text-muted text-sm">No cases carry external letters yet.</p>';
     });
+  }
+
+  function exportWriters() {
+    FormHelper.setLoading('lw-export-btn', true);
+    App.call('personnel', 'exportWritersToSheet', {}, res => {
+      FormHelper.setLoading('lw-export-btn', false);
+      Toast.show('Exported — opening “' + res.name + '”…', 'success');
+      window.open(res.url, '_blank');
+    }, () => FormHelper.setLoading('lw-export-btn', false));
   }
 
   function trackOtherCase() {
@@ -3143,7 +3155,7 @@ window.PersonnelUI = (() => {
     loadSettings, loadGaps, saveGaps, loadCycle, pickDeadline, cancelPick,
     searchDeadlines, chooseDeadline, previewCycleSchedule, setLettersDate,
     proposeCycleDate, toggleCycleCalendar, exportCycleSchedule,
-    loadLetterCases, loadWriters, trackOtherCase, saveWriter, clearWriterForm,
+    loadLetterCases, loadWriters, trackOtherCase, exportWriters, saveWriter, clearWriterForm,
     editWriter, deleteWriter, changeWriterStage, addNote, uploadEvidence, deleteEvidence,
     loadMyAssignments, myMarkDrafted,
     loadComms, loadTemplateEditor, saveTemplate, newTemplate, deleteTemplate, generateDrafts,
