@@ -1,0 +1,820 @@
+<!-- grad_status.html — Graduate Registration Status module UI -->
+<!-- Server-rendered: currentUser and userRoles are available as template vars -->
+
+<div id="gs-module">
+
+  <!-- Tab bar — tabs shown/hidden by role (super_admin sees all) -->
+  <div class="module-tabs">
+    <? var gsRoles = JSON.parse(userRoles); ?>
+    <? if (gsRoles.includes('graduate_student') || gsRoles.includes('super_admin')) { ?>
+    <button class="module-tab" data-tab="myforms" onclick="GradStatusUI.switchTab('myforms')">
+      <i class="ti ti-file-text"></i> My Forms
+    </button>
+    <? } ?>
+    <? if (gsRoles.includes('senate_faculty') || gsRoles.includes('super_admin')) { ?>
+    <button class="module-tab" data-tab="advisor" onclick="GradStatusUI.switchTab('advisor')">
+      <i class="ti ti-gavel"></i> Advisor Review
+    </button>
+    <? } ?>
+    <? if (gsRoles.includes('staff_grad') || gsRoles.includes('department_chair') || gsRoles.includes('super_admin')) { ?>
+    <button class="module-tab" data-tab="department" onclick="GradStatusUI.switchTab('department')">
+      <i class="ti ti-clipboard-check"></i> Department Review
+    </button>
+    <? } ?>
+    <? if (gsRoles.includes('staff_grad') || gsRoles.includes('super_admin')) { ?>
+    <button class="module-tab" data-tab="progress" onclick="GradStatusUI.switchTab('progress')">
+      <i class="ti ti-timeline"></i> Progress Records
+    </button>
+    <? } ?>
+    <? if (gsRoles.includes('super_admin')) { ?>
+    <button class="module-tab" data-tab="settings" onclick="GradStatusUI.switchTab('settings')">
+      <i class="ti ti-settings"></i> Settings
+    </button>
+    <? } ?>
+  </div>
+
+  <!-- ── Tab: My Forms (student) ─────────────────────── -->
+  <div id="gs-tab-myforms" class="tab-panel" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title" style="justify-content:space-between;">
+        <span><i class="ti ti-list"></i> My Requests</span>
+        <button class="btn btn-secondary btn-sm" onclick="GradStatusUI.loadMine()" aria-label="Refresh"><i class="ti ti-refresh"></i></button>
+      </div>
+      <div id="gs-mine-list"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
+    </div>
+
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title"><i class="ti ti-file-plus"></i> <span id="gs-form-title">New Leave of Absence Request</span></div>
+      <div id="gs-resubmit-note" class="text-muted" style="display:none;font-size:13px;margin-bottom:10px;"></div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label" for="gs-advisor">Faculty advisor <span class="required">*</span></label>
+          <select class="form-select" id="gs-advisor">
+            <option value="">— Select your advisor —</option>
+          </select>
+          <div class="form-hint">Your advisor reviews this request first.</div>
+        </div>
+        <div class="form-group">
+          <div id="gs-visa-note" style="display:none;" class="form-hint">
+            <i class="ti ti-world"></i> University records indicate you hold a visa. After department
+            approval, this form will also be routed to International Student Services and Programs
+            (ISSP) for their review. If this is not correct, contact the graduate program coordinator.
+          </div>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label" for="gs-date-entered">Date entered (quarter/year)</label>
+          <input class="form-input" id="gs-date-entered" placeholder="e.g. Fall 2024">
+          <div class="form-hint" id="gs-date-entered-hint"></div>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="gs-expected-grad">Expected graduation</label>
+          <input class="form-input" id="gs-expected-grad" placeholder="e.g. Spring 2028">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="gs-candidacy">Advanced to candidacy</label>
+          <input class="form-input" id="gs-candidacy" placeholder="Date, or blank if not yet">
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label" for="gs-begin">Leave will begin <span class="required">*</span></label>
+          <select class="form-select" id="gs-begin"><option value="">— Quarter —</option></select>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="gs-return">Return from leave <span class="required">*</span></label>
+          <select class="form-select" id="gs-return"><option value="">— Quarter —</option></select>
+          <div class="form-hint">A leave is valid for up to one year (three quarters) at a time.</div>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="gs-reason">Reason for requesting a Leave of Absence <span class="required">*</span></label>
+        <textarea class="form-textarea" id="gs-reason" rows="3"></textarea>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Are you on a medical or other type of leave from University employment? <span class="required">*</span></label>
+        <div class="form-hint">For example, you hold a GSR/GSI/TA appointment and are on baby bonding
+          leave, or requested emergency medical leave through the APO Leaves office.</div>
+        <div id="gs-employment"></div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">I understand that: <span class="required">*</span></label>
+        <div id="gs-acks"></div>
+      </div>
+
+      <div style="display:flex;gap:8px;align-items:center;">
+        <button class="btn btn-primary" onclick="GradStatusUI.submitLoa()">
+          <i class="ti ti-send"></i> <span id="gs-submit-label">Sign and submit</span>
+        </button>
+        <button class="btn btn-secondary" id="gs-cancel-resubmit" style="display:none;" onclick="GradStatusUI.cancelResubmit()">Cancel resubmission</button>
+        <span class="form-hint">Submitting constitutes your electronic signature.</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Tab: Advisor Review ─────────────────────────── -->
+  <div id="gs-tab-advisor" class="tab-panel" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title" style="justify-content:space-between;">
+        <span><i class="ti ti-gavel"></i> Requests Awaiting Your Review</span>
+        <button class="btn btn-secondary btn-sm" onclick="GradStatusUI.loadAdvisor()" aria-label="Refresh"><i class="ti ti-refresh"></i></button>
+      </div>
+      <div id="gs-advisor-list"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
+    </div>
+  </div>
+
+  <!-- ── Tab: Department Review ──────────────────────── -->
+  <div id="gs-tab-department" class="tab-panel" style="display:none;">
+    <div class="card" style="margin-top:20px;" id="gs-chair-card">
+      <div class="card-title"><i class="ti ti-writing-sign"></i> Awaiting Chair Approval</div>
+      <div id="gs-chair-list" class="text-muted">Loading…</div>
+    </div>
+    <div class="card" style="margin-top:20px;" id="gs-staff-card">
+      <div class="card-title"><i class="ti ti-clipboard-check"></i> Awaiting Staff Review</div>
+      <div id="gs-staff-list" class="text-muted">Loading…</div>
+    </div>
+    <div class="card" style="margin-top:20px;" id="gs-issp-card">
+      <div class="card-title"><i class="ti ti-world"></i> Awaiting ISSP Return</div>
+      <div id="gs-issp-list" class="text-muted">Loading…</div>
+    </div>
+    <div class="card" style="margin-top:20px;" id="gs-ready-card">
+      <div class="card-title"><i class="ti ti-upload"></i> Ready to Submit to Grad Division</div>
+      <div id="gs-ready-list" class="text-muted">Loading…</div>
+    </div>
+    <div class="card" style="margin-top:20px;" id="gs-all-card">
+      <div class="card-title" style="justify-content:space-between;">
+        <span><i class="ti ti-database"></i> All Records</span>
+        <button class="btn btn-secondary btn-sm" onclick="GradStatusUI.loadDepartment()" aria-label="Refresh"><i class="ti ti-refresh"></i></button>
+      </div>
+      <div id="gs-all-list" class="text-muted">Loading…</div>
+    </div>
+  </div>
+
+  <!-- ── Tab: Progress Records (staff) ───────────────── -->
+  <div id="gs-tab-progress" class="tab-panel" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title" style="justify-content:space-between;">
+        <span><i class="ti ti-timeline"></i> Graduate Progress Records</span>
+        <button class="btn btn-secondary btn-sm" onclick="GradStatusUI.loadProgress()" aria-label="Refresh"><i class="ti ti-refresh"></i></button>
+      </div>
+      <p class="text-muted" style="font-size:13px;">One row per student: advisor, program dates,
+        candidacy, and milestone facts. Rows are created automatically by form submissions and
+        updated here. Rosters (QE / reading committees) are written by the milestone modules.</p>
+      <div id="gs-progress-list" class="text-muted">Loading…</div>
+    </div>
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title"><i class="ti ti-edit"></i> <span id="gs-prog-form-title">Add / Edit a Progress Record</span></div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label" for="gs-prog-email">Student email <span class="required">*</span></label>
+          <input class="form-input" id="gs-prog-email" placeholder="student@ucsc.edu">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="gs-prog-advisor">Advisor email</label>
+          <input class="form-input" id="gs-prog-advisor" placeholder="advisor@ucsc.edu">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="gs-prog-objective">Degree objective</label>
+          <select class="form-select" id="gs-prog-objective">
+            <option value="">—</option><option value="PhD">PhD</option>
+            <option value="MA">MA</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label" for="gs-prog-entered">Date entered</label>
+          <input class="form-input" id="gs-prog-entered" placeholder="Fall 2024">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="gs-prog-expgrad">Expected graduation</label>
+          <input class="form-input" id="gs-prog-expgrad" placeholder="Spring 2028">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="gs-prog-cand">Advanced to candidacy</label>
+          <input class="form-input" id="gs-prog-cand" placeholder="Date or blank">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label" for="gs-prog-qe">QE passed date</label>
+          <input class="form-input" id="gs-prog-qe">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="gs-prog-lang">Language fulfilled date</label>
+          <input class="form-input" id="gs-prog-lang">
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="gs-prog-notes">Notes</label>
+        <textarea class="form-textarea" id="gs-prog-notes" rows="2"></textarea>
+        <div class="form-hint">Leave untouched fields as they are — only the values you change are written.</div>
+      </div>
+      <button class="btn btn-primary" onclick="GradStatusUI.saveProgress()"><i class="ti ti-device-floppy"></i> Save record</button>
+    </div>
+  </div>
+
+  <!-- ── Tab: Settings (super admin) ─────────────────── -->
+  <div id="gs-tab-settings" class="tab-panel" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title"><i class="ti ti-settings"></i> Registration Status Settings</div>
+      <div id="gs-settings-form" class="text-muted">Loading…</div>
+    </div>
+  </div>
+
+  <!-- ── Detail modal ────────────────────────────────── -->
+  <div id="gs-modal" class="modal-overlay" style="display:none;" onclick="if(event.target===this)GradStatusUI.closeModal()">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="gs-modal-title" style="max-width:760px;">
+      <div class="modal-header">
+        <span id="gs-modal-title">Request</span>
+        <button class="btn btn-secondary btn-sm" onclick="GradStatusUI.closeModal()" aria-label="Close"><i class="ti ti-x"></i></button>
+      </div>
+      <div class="modal-body" id="gs-modal-body"></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+window.GradStatusUI = (() => {
+
+  const _roles = <?!= userRoles ?>;
+  const _me    = <?!= JSON.stringify(currentUser) ?>;
+  const _isStudent = _roles.indexOf('graduate_student') !== -1;
+  const _isFaculty = _roles.indexOf('senate_faculty') !== -1;
+  const _isStaff   = _roles.indexOf('staff_grad') !== -1;
+  const _isChair   = _roles.indexOf('department_chair') !== -1;
+  const _isSuper   = _roles.indexOf('super_admin') !== -1;
+
+  const STAGE_META = {
+    SUBMITTED:            { cls: 'badge-navy',    label: 'Awaiting advisor' },
+    PENDING_CHAIR:        { cls: 'badge-navy',    label: 'Awaiting chair' },
+    PENDING_STAFF:        { cls: 'badge-warning', label: 'Awaiting staff review' },
+    PENDING_ISSP:         { cls: 'badge-warning', label: 'Awaiting ISSP' },
+    READY_TO_SUBMIT:      { cls: 'badge-warning', label: 'Ready to submit' },
+    SUBMITTED_TO_GRADDIV: { cls: 'badge-success', label: 'Submitted to Grad Div' },
+    RETURNED:             { cls: 'badge-danger',  label: 'Returned for revision' },
+    WITHDRAWN:            { cls: 'badge-muted',   label: 'Withdrawn' },
+  };
+
+  let _formData   = null;   // formData bootstrap
+  let _resubmitId = null;   // record being resubmitted (same-record contract)
+  let _isspUpload = null;   // { pdfBase64, pdfName } staged for recordIsspReturn
+  let _settings   = null;
+
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+  function _badge(stage) {
+    const m = STAGE_META[stage] || { cls: 'badge-muted', label: stage };
+    return '<span class="badge ' + m.cls + '">' + esc(m.label) + '</span>';
+  }
+  function _val(id) { const el = document.getElementById(id); return el ? el.value.trim() : ''; }
+  function _set(id, v) { const el = document.getElementById(id); if (el) el.value = v == null ? '' : v; }
+
+  // ── Init ──────────────────────────────────────────────────
+  function init() {
+    const f = window.__focus;
+    const target = f && f.sourceId ? String(f.sourceId) : '';
+
+    if (_isStudent)      { switchTab('myforms'); }
+    else if (_isFaculty && !_isStaff && !_isChair && !_isSuper) { switchTab('advisor'); }
+    else if (_isStaff || _isChair) { switchTab('department'); }
+    else if (_isFaculty) { switchTab('advisor'); }
+    else if (_isSuper)   { switchTab('department'); }
+
+    if (target && target !== 'form') open(target);
+    else if (target === 'form' && _isStudent) switchTab('myforms');
+  }
+
+  function switchTab(tab) {
+    document.querySelectorAll('#gs-module .tab-panel').forEach(function (p) { p.style.display = 'none'; });
+    document.querySelectorAll('#gs-module .module-tab').forEach(function (b) {
+      const on = b.dataset.tab === tab;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    const panel = document.getElementById('gs-tab-' + tab);
+    if (panel) panel.style.display = 'block';
+
+    if (tab === 'myforms')    { loadMine(); _ensureFormData(); }
+    if (tab === 'advisor')    loadAdvisor();
+    if (tab === 'department') loadDepartment();
+    if (tab === 'progress')   loadProgress();
+    if (tab === 'settings')   loadSettings();
+  }
+
+  // ── Student: form bootstrap + submit ──────────────────────
+  function _ensureFormData(cb) {
+    if (_formData) { if (cb) cb(); return; }
+    App.call('grad_status', 'formData', {}, function (data) {
+      _formData = data;
+      _renderForm(data);
+      if (cb) cb();
+    });
+  }
+
+  function _renderForm(data) {
+    const adv = document.getElementById('gs-advisor');
+    adv.innerHTML = '<option value="">— Select your advisor —</option>' +
+      data.advisors.map(function (a) {
+        return '<option value="' + esc(a.email) + '">' + esc(a.name) + '</option>';
+      }).join('');
+    if (data.progress && data.progress.advisorEmail) adv.value = data.progress.advisorEmail;
+
+    _prefill('gs-date-entered', data.progress && data.progress.dateEntered);
+    _prefill('gs-expected-grad', data.progress && data.progress.expectedGraduation);
+    _prefill('gs-candidacy', data.progress && data.progress.advancedToCandidacy);
+    document.getElementById('gs-date-entered-hint').textContent =
+      'From your progress record — editable only while blank there.';
+
+    const bq = document.getElementById('gs-begin');
+    bq.innerHTML = '<option value="">— Quarter —</option>' + data.beginQuarters.map(function (q) {
+      return '<option value="' + esc(q.quarter + '|' + q.year) + '">' + esc(q.quarter + ' ' + q.year) + '</option>';
+    }).join('');
+    const rq = document.getElementById('gs-return');
+    rq.innerHTML = '<option value="">— Quarter —</option>' + data.returnQuarters.map(function (q) {
+      return '<option value="' + esc(q.quarter + '|' + q.year) + '">' + esc(q.quarter + ' ' + q.year) + '</option>';
+    }).join('');
+
+    document.getElementById('gs-employment').innerHTML = data.employmentOptions.map(function (o, i) {
+      return '<label style="display:inline-flex;align-items:center;gap:6px;margin-right:18px;">' +
+        '<input type="radio" name="gs-emp" value="' + esc(o) + '"> ' + esc(o) + '</label>';
+    }).join('');
+
+    document.getElementById('gs-acks').innerHTML = data.ackItems.map(function (t, i) {
+      return '<label style="display:flex;align-items:flex-start;gap:8px;margin:6px 0;font-size:13px;">' +
+        '<input type="checkbox" class="gs-ack" data-i="' + i + '" style="margin-top:3px;"> ' +
+        '<span>' + (i + 1) + '. ' + esc(t) + '</span></label>';
+    }).join('');
+
+    document.getElementById('gs-visa-note').style.display = data.isVisaHolder ? 'block' : 'none';
+  }
+
+  /** Editable-if-blank: a stored value renders read-only (self-healing
+   *  prefill contract — the record is corrected in Progress, not here). */
+  function _prefill(id, stored) {
+    const el = document.getElementById(id);
+    el.value = stored || '';
+    el.readOnly = !!(stored && String(stored).trim());
+    el.style.background = el.readOnly ? 'var(--color-bg, #f5f6f8)' : '';
+  }
+
+  function submitLoa() {
+    const begin = _val('gs-begin').split('|'), ret = _val('gs-return').split('|');
+    const acks = Array.prototype.map.call(document.querySelectorAll('.gs-ack'),
+      function (c) { return c.checked; });
+    const emp = document.querySelector('input[name="gs-emp"]:checked');
+    const payload = {
+      recordId: _resubmitId || '',
+      advisorEmail: _val('gs-advisor'),
+      beginQuarter: begin[0] || '', beginYear: begin[1] || '',
+      returnQuarter: ret[0] || '', returnYear: ret[1] || '',
+      reason: _val('gs-reason'),
+      employmentLeave: emp ? emp.value : '',
+      acknowledged: acks,
+      dateEntered: _val('gs-date-entered'),
+      expectedGraduation: _val('gs-expected-grad'),
+      advancedToCandidacy: _val('gs-candidacy'),
+    };
+    App.call('grad_status', 'submit', payload, function (res) {
+      Toast.show(res.resubmitted ? 'Request resubmitted.' : 'Request submitted.', 'success');
+      if (res.warning) Toast.show(res.warning, 'warning');
+      cancelResubmit();
+      _set('gs-reason', ''); _set('gs-begin', ''); _set('gs-return', '');
+      document.querySelectorAll('.gs-ack').forEach(function (c) { c.checked = false; });
+      const e = document.querySelector('input[name="gs-emp"]:checked'); if (e) e.checked = false;
+      loadMine();
+    }, null, 'Submitting…');
+  }
+
+  function startResubmit(rec) {
+    _resubmitId = rec.recordId;
+    closeModal();
+    switchTab('myforms');
+    _ensureFormData(function () {
+      document.getElementById('gs-form-title').textContent = 'Resubmit Leave of Absence Request';
+      document.getElementById('gs-submit-label').textContent = 'Sign and resubmit';
+      document.getElementById('gs-cancel-resubmit').style.display = '';
+      const note = document.getElementById('gs-resubmit-note');
+      note.style.display = 'block';
+      note.textContent = 'Resubmitting ' + rec.recordId +
+        (rec.returnedNote ? ' — reviewer note: ' + rec.returnedNote : '');
+      _set('gs-advisor', rec.advisorEmail);
+      _set('gs-reason', rec.reason || '');
+      const b = String(rec.beginQuarter || '').split(' '), r = String(rec.returnQuarter || '').split(' ');
+      _set('gs-begin', (b[0] || '') + '|' + (b[1] || ''));
+      _set('gs-return', (r[0] || '') + '|' + (r[1] || ''));
+      const emp = document.querySelector('input[name="gs-emp"][value="' + (rec.employmentLeave || '') + '"]');
+      if (emp) emp.checked = true;
+    });
+  }
+
+  function cancelResubmit() {
+    _resubmitId = null;
+    document.getElementById('gs-form-title').textContent = 'New Leave of Absence Request';
+    document.getElementById('gs-submit-label').textContent = 'Sign and submit';
+    document.getElementById('gs-cancel-resubmit').style.display = 'none';
+    document.getElementById('gs-resubmit-note').style.display = 'none';
+  }
+
+  // ── Lists ─────────────────────────────────────────────────
+  function _rowsTable(rows, cols, empty) {
+    if (!rows || !rows.length) return '<p class="text-muted" style="font-size:13px;">' + esc(empty) + '</p>';
+    return '<div style="overflow-x:auto;"><table class="data-table"><thead><tr>' +
+      cols.map(function (c) { return '<th>' + esc(c.h) + '</th>'; }).join('') +
+      '<th></th></tr></thead><tbody>' +
+      rows.map(function (r) {
+        return '<tr>' + cols.map(function (c) { return '<td>' + c.f(r) + '</td>'; }).join('') +
+          '<td><button class="btn btn-secondary btn-sm" onclick="GradStatusUI.open(\'' +
+          esc(r.recordId) + '\')">Open</button></td></tr>';
+      }).join('') + '</tbody></table></div>';
+  }
+  const COL = {
+    student: { h: 'Student',   f: function (r) { return esc(r.studentName || r.studentEmail); } },
+    leave:   { h: 'Leave',     f: function (r) { return esc(r.beginQuarter + ' → ' + r.returnQuarter); } },
+    stage:   { h: 'Status',    f: function (r) { return _badge(r.stage); } },
+    sub:     { h: 'Submitted', f: function (r) { return esc(r.submittedAt || ''); } },
+    visa:    { h: 'Visa',      f: function (r) { return r.visaHolder ? '<i class="ti ti-world" title="Visa holder — ISSP routing"></i>' : ''; } },
+  };
+
+  function loadMine() {
+    App.call('grad_status', 'mine', {}, function (rows) {
+      document.getElementById('gs-mine-list').innerHTML =
+        _rowsTable(rows, [ { h: 'Form', f: function (r) { return esc(r.formType); } },
+          COL.leave, COL.stage, COL.sub ],
+          'No requests yet — the form below starts one.');
+    });
+  }
+
+  function loadAdvisor() {
+    App.call('grad_status', 'advisorQueue', {}, function (rows) {
+      document.getElementById('gs-advisor-list').innerHTML =
+        _rowsTable(rows, [COL.student, COL.leave, COL.sub, COL.visa], 'Nothing awaiting your review.');
+    });
+  }
+
+  function loadDepartment() {
+    App.call('grad_status', 'departmentQueue', {}, function (q) {
+      document.getElementById('gs-chair-card').style.display = (_isChair || _isSuper) ? '' : 'none';
+      document.getElementById('gs-chair-list').innerHTML =
+        _rowsTable(q.chair, [COL.student, COL.leave, COL.sub, COL.visa], 'Nothing awaiting chair approval.');
+      const staffish = _isStaff || _isSuper;
+      ['gs-staff-card', 'gs-issp-card', 'gs-ready-card', 'gs-all-card'].forEach(function (id) {
+        document.getElementById(id).style.display = staffish ? '' : 'none';
+      });
+      if (staffish) {
+        document.getElementById('gs-staff-list').innerHTML =
+          _rowsTable(q.staff, [COL.student, COL.leave, COL.sub, COL.visa], 'Nothing awaiting staff review.');
+        document.getElementById('gs-issp-list').innerHTML =
+          _rowsTable(q.issp, [COL.student, COL.leave, COL.visa], 'Nothing is out with ISSP.');
+        document.getElementById('gs-ready-list').innerHTML =
+          _rowsTable(q.ready, [COL.student, COL.leave], 'Nothing is waiting to be submitted.');
+        App.call('grad_status', 'allRecords', {}, function (rows) {
+          document.getElementById('gs-all-list').innerHTML =
+            _rowsTable(rows, [ { h: 'Form', f: function (r) { return esc(r.formType); } },
+              COL.student, COL.leave, COL.stage ], 'No records yet.');
+        });
+      }
+    });
+  }
+
+  // ── Detail modal ──────────────────────────────────────────
+  function open(recordId) {
+    App.call('grad_status', 'get', { recordId: recordId }, function (rec) {
+      _isspUpload = null;
+      document.getElementById('gs-modal-title').textContent =
+        rec.formType + ' — ' + (rec.studentName || rec.studentEmail);
+      document.getElementById('gs-modal-body').innerHTML = _detailHtml(rec) + _actionsHtml(rec);
+      document.getElementById('gs-modal').style.display = 'flex';
+      if (rec.stage === 'READY_TO_SUBMIT' && (_isStaff || _isSuper)) _loadHelper(rec.recordId);
+    }, null, 'Loading…');
+  }
+  function closeModal() { document.getElementById('gs-modal').style.display = 'none'; }
+
+  function _kv(k, v) {
+    if (!v) return '';
+    return '<div style="display:flex;gap:8px;font-size:13px;margin:2px 0;">' +
+      '<span style="min-width:180px;color:var(--color-muted);">' + esc(k) + '</span>' +
+      '<span>' + v + '</span></div>';
+  }
+
+  function _detailHtml(r) {
+    return '<div style="margin-bottom:12px;">' +
+      _kv('Status', _badge(r.stage)) +
+      _kv('Record', esc(r.recordId)) +
+      _kv('Student', esc(r.studentName) + ' &lt;' + esc(r.studentEmail) + '&gt;') +
+      _kv('Advisor', esc(r.advisorEmail)) +
+      _kv('Leave', esc(r.beginQuarter + ' through ' + r.returnQuarter +
+        (r.spanQuarters ? ' (' + r.spanQuarters + ' quarters)' : ''))) +
+      _kv('Reason', esc(r.reason)) +
+      _kv('Employment leave', esc(r.employmentLeave)) +
+      _kv('Date entered', esc(r.dateEntered)) +
+      _kv('Expected graduation', esc(r.expectedGraduation)) +
+      _kv('Advanced to candidacy', esc(r.advancedToCandidacy)) +
+      _kv('Visa holder at submit', r.visaHolder ? 'Yes — ISSP routing applies' : '') +
+      _kv('Advisor approved', r.advisorDecidedAt ? esc(r.advisorDecidedBy + ' · ' + r.advisorDecidedAt) : '') +
+      _kv('Chair approved', r.chairDecidedAt ? esc(r.chairDecidedBy + ' · ' + r.chairDecidedAt) : '') +
+      _kv('Conditions for readmission', esc(r.conditions)) +
+      _kv('Staff completed', r.staffDecidedAt ? esc(r.staffDecidedBy + ' · ' + r.staffDecidedAt) : '') +
+      _kv('Sent to ISSP', esc(r.isspSentAt)) +
+      _kv('ISSP return recorded', r.isspClearedAt ? esc(r.isspClearedAt + (r.isspNote ? ' — ' + r.isspNote : '')) : '') +
+      _kv('Returned note', esc(r.returnedNote)) +
+      _kv('Submitted to Grad Div', r.submittedToGradDivAt ?
+        esc(r.submittedToGradDivAt + (r.submissionNote ? ' — ' + r.submissionNote : '')) : '') +
+      _kv('Portal PDF', r.pdfUrl ? '<a href="' + esc(r.pdfUrl) + '" target="_blank" rel="noopener">Open</a>' : '') +
+      _kv('ISSP-signed PDF', r.finalPdfUrl ? '<a href="' + esc(r.finalPdfUrl) + '" target="_blank" rel="noopener">Open</a>' : '') +
+      '</div>';
+  }
+
+  function _noteBox(id, label) {
+    return '<div class="form-group"><label class="form-label" for="' + id + '">' + esc(label) +
+      '</label><textarea class="form-textarea" id="' + id + '" rows="2"></textarea></div>';
+  }
+
+  function _actionsHtml(r) {
+    const mine = String(r.studentEmail).toLowerCase() === String(_me).toLowerCase();
+    const advisorMe = String(r.advisorEmail).toLowerCase() === String(_me).toLowerCase();
+    let h = '<hr><div>';
+
+    if (mine && r.stage === 'RETURNED') {
+      h += '<button class="btn btn-primary" onclick=\'GradStatusUI.startResubmit(' +
+        JSON.stringify(r).replace(/</g, '\\u003c').replace(/'/g, '&#39;') + ')\'>' +
+        '<i class="ti ti-refresh"></i> Revise and resubmit</button> ';
+    }
+    if (mine && ['SUBMITTED', 'PENDING_CHAIR', 'PENDING_STAFF', 'RETURNED'].indexOf(r.stage) !== -1) {
+      h += '<button class="btn btn-secondary" onclick="GradStatusUI.withdraw(\'' + esc(r.recordId) +
+        '\')"><i class="ti ti-trash"></i> Withdraw request</button>';
+    }
+
+    if (r.stage === 'SUBMITTED' && (advisorMe || _isSuper)) {
+      h += _noteBox('gs-act-note', 'Note (required for a return; optional on approval)') +
+        '<button class="btn btn-primary" onclick="GradStatusUI.advisorApprove(\'' + esc(r.recordId) +
+        '\')"><i class="ti ti-check"></i> Approve</button> ' +
+        '<button class="btn btn-secondary" onclick="GradStatusUI.advisorReturn(\'' + esc(r.recordId) +
+        '\')"><i class="ti ti-arrow-back-up"></i> Return to student</button>';
+    }
+
+    if (r.stage === 'PENDING_CHAIR' && (_isChair || _isSuper)) {
+      h += _noteBox('gs-act-conditions', 'Conditions for readmission (optional — printed on the form)') +
+        _noteBox('gs-act-note', 'Note (required for a return; optional on approval)') +
+        '<button class="btn btn-primary" onclick="GradStatusUI.chairApprove(\'' + esc(r.recordId) +
+        '\')"><i class="ti ti-check"></i> Approve</button> ' +
+        '<button class="btn btn-secondary" onclick="GradStatusUI.chairReturn(\'' + esc(r.recordId) +
+        '\')"><i class="ti ti-arrow-back-up"></i> Return to student</button>';
+    }
+
+    if (r.stage === 'PENDING_STAFF' && (_isStaff || _isSuper)) {
+      h += _noteBox('gs-act-conditions', 'Conditions for readmission (final text for the form; blank keeps the chair\u2019s)') +
+        '<div class="form-group"><label class="form-label" for="gs-act-emp">Employment leave answer ' +
+        '(correct if needed)</label><select class="form-select" id="gs-act-emp">' +
+        '<option value="">Keep: ' + esc(r.employmentLeave || '—') + '</option>' +
+        ['Yes', 'No', "I don't know"].map(function (o) {
+          return '<option value="' + esc(o) + '">' + esc(o) + '</option>';
+        }).join('') + '</select></div>' +
+        _noteBox('gs-act-note', 'Note (required for a return; optional on completion)') +
+        '<button class="btn btn-primary" onclick="GradStatusUI.staffComplete(\'' + esc(r.recordId) +
+        '\')"><i class="ti ti-file-check"></i> Complete review (generates PDF' +
+        (r.visaHolder ? ', routes to ISSP' : '') + ')</button> ' +
+        '<button class="btn btn-secondary" onclick="GradStatusUI.staffReturn(\'' + esc(r.recordId) +
+        '\')"><i class="ti ti-arrow-back-up"></i> Return to student</button>';
+    }
+
+    if (r.stage === 'PENDING_ISSP' && (_isStaff || _isSuper)) {
+      h += '<p class="form-hint">When ISSP returns the signed form to the department, attach it here ' +
+        'and record the return. The attached copy becomes the version submitted to Grad Division.</p>' +
+        '<div class="form-group"><label class="form-label" for="gs-issp-file">ISSP-signed PDF (optional)</label>' +
+        '<input type="file" id="gs-issp-file" accept="application/pdf" onchange="GradStatusUI.onIsspFile(this)"></div>' +
+        _noteBox('gs-act-note', 'Return note / evidence (e.g. "signed copy received by email 9/2")') +
+        '<button class="btn btn-primary" onclick="GradStatusUI.recordIsspReturn(\'' + esc(r.recordId) +
+        '\')"><i class="ti ti-world-check"></i> Record ISSP return</button> ' +
+        '<button class="btn btn-secondary" onclick="GradStatusUI.regeneratePdf(\'' + esc(r.recordId) +
+        '\')"><i class="ti ti-refresh"></i> Regenerate PDF</button>';
+    }
+
+    if (r.stage === 'READY_TO_SUBMIT' && (_isStaff || _isSuper)) {
+      h += '<div id="gs-helper"><div class="module-loading"><div class="spinner"></div>' +
+        '<span>Loading submission helper…</span></div></div>' +
+        _noteBox('gs-act-note', 'Submission note (optional — e.g. a confirmation number)') +
+        '<button class="btn btn-primary" onclick="GradStatusUI.markSubmitted(\'' + esc(r.recordId) +
+        '\')"><i class="ti ti-checkbox"></i> Mark submitted to Grad Division</button> ' +
+        '<button class="btn btn-secondary" onclick="GradStatusUI.regeneratePdf(\'' + esc(r.recordId) +
+        '\')"><i class="ti ti-refresh"></i> Regenerate PDF</button>';
+    }
+
+    return h + '</div>';
+  }
+
+  // ── Submission helper (copy panel + prefilled link) ───────
+  function _loadHelper(recordId) {
+    App.call('grad_status', 'submissionHelper', { recordId: recordId }, function (h) {
+      const el = document.getElementById('gs-helper');
+      if (!el) return;
+      if (h.note) { el.innerHTML = '<p class="form-hint">' + esc(h.note) + '</p>'; return; }
+      let html = '<div class="card" style="background:var(--color-bg,#f8f9fb);padding:12px;">' +
+        '<div class="card-title" style="font-size:14px;"><i class="ti ti-upload"></i> Submit via the Grad Division form</div>' +
+        '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">' +
+        (h.pdfUrl ? '<a class="btn btn-secondary btn-sm" href="' + esc(h.pdfUrl) +
+          '" target="_blank" rel="noopener"><i class="ti ti-file-download"></i> 1. Download the ' +
+          (h.pdfIsIsspSigned ? 'ISSP-signed' : 'certified') + ' PDF</a>' : '') +
+        '<a class="btn btn-primary btn-sm" href="' + esc(h.prefillUrl || h.formUrl) +
+          '" target="_blank" rel="noopener"><i class="ti ti-external-link"></i> 2. Open Grad Div form (prefilled)</a>' +
+        '</div>' +
+        '<p class="form-hint" style="margin-top:0;">Text and choice fields arrive filled; attach the PDF, submit, ' +
+        'then mark the record submitted below. If a dropdown shows "Choose", its value fell outside the ' +
+        'form\u2019s current options — copy it from the list instead:</p>';
+      html += h.fields.map(function (f, i) {
+        return '<div style="display:flex;align-items:center;gap:8px;font-size:13px;margin:3px 0;">' +
+          '<span style="min-width:230px;color:var(--color-muted);">' + esc(f.label) + '</span>' +
+          '<span id="gs-copy-' + i + '" style="flex:1;">' + esc(f.value || '—') + '</span>' +
+          (f.value ? '<button class="btn btn-secondary btn-sm" onclick="GradStatusUI.copyField(' + i +
+            ')" aria-label="Copy ' + esc(f.label) + '"><i class="ti ti-copy"></i></button>' : '') +
+          '</div>';
+      }).join('');
+      el.innerHTML = html + '</div>';
+    });
+  }
+
+  function copyField(i) {
+    const span = document.getElementById('gs-copy-' + i);
+    if (!span) return;
+    const ta = document.createElement('textarea');
+    ta.value = span.textContent;
+    ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); Toast.show('Copied.', 'success'); }
+    catch (e) { Toast.show('Copy failed — select and copy manually.', 'error'); }
+    document.body.removeChild(ta);
+  }
+
+  // ── Modal actions ─────────────────────────────────────────
+  function _act(action, recordId, extra, busy) {
+    const payload = Object.assign({ recordId: recordId, note: _val('gs-act-note') }, extra || {});
+    App.call('grad_status', action, payload, function (res) {
+      Toast.show('Done.', 'success');
+      closeModal();
+      if (_isStudent) loadMine();
+      if (_isFaculty) loadAdvisor();
+      if (_isStaff || _isChair || _isSuper) loadDepartment();
+    }, null, busy || 'Working…');
+  }
+
+  function advisorApprove(id) { _act('advisorApprove', id); }
+  function advisorReturn(id)  { _act('advisorReturn', id); }
+  function chairApprove(id)   { _act('chairApprove', id, { conditions: _val('gs-act-conditions') }); }
+  function chairReturn(id)    { _act('chairReturn', id); }
+  function staffComplete(id)  {
+    _act('staffComplete', id,
+      { conditions: _val('gs-act-conditions'), employmentLeave: _val('gs-act-emp') },
+      'Generating PDF…');
+  }
+  function staffReturn(id)    { _act('staffReturn', id); }
+  function markSubmitted(id)  { _act('markSubmitted', id); }
+  function recordIsspReturn(id) { _act('recordIsspReturn', id, _isspUpload || {}); }
+  function regeneratePdf(id) {
+    App.call('grad_status', 'regeneratePdf', { recordId: id }, function (res) {
+      Toast.show('PDF regenerated.', 'success');
+      open(id);
+    }, null, 'Generating PDF…');
+  }
+  function withdraw(id) {
+    if (!confirm('Withdraw this request? This cannot be undone.')) return;
+    App.call('grad_status', 'withdraw', { recordId: id }, function () {
+      Toast.show('Request withdrawn.', 'success');
+      closeModal(); loadMine();
+    });
+  }
+
+  function onIsspFile(input) {
+    const f = input.files && input.files[0];
+    if (!f) { _isspUpload = null; return; }
+    const reader = new FileReader();
+    reader.onload = function () {
+      _isspUpload = { pdfBase64: String(reader.result).split(',')[1] || '', pdfName: f.name };
+    };
+    reader.readAsDataURL(f);
+  }
+
+  // ── Progress tab ──────────────────────────────────────────
+  function loadProgress() {
+    App.call('grad_status', 'progressList', {}, function (rows) {
+      const el = document.getElementById('gs-progress-list');
+      if (!rows || !rows.length) {
+        el.innerHTML = '<p class="text-muted" style="font-size:13px;">No progress records yet — ' +
+          'the first form submission (or a save below) creates one.</p>';
+        return;
+      }
+      el.innerHTML = '<div style="overflow-x:auto;"><table class="data-table"><thead><tr>' +
+        '<th>Student</th><th>Advisor</th><th>Objective</th><th>Entered</th><th>Candidacy</th><th></th>' +
+        '</tr></thead><tbody>' +
+        rows.map(function (r) {
+          return '<tr><td>' + esc(r.StudentEmail) + '</td><td>' + esc(r.AdvisorEmail || '') +
+            '</td><td>' + esc(r.DegreeObjective || '') + '</td><td>' + esc(r.DateEntered || '') +
+            '</td><td>' + esc(r.AdvancedToCandidacy || '') +
+            '</td><td><button class="btn btn-secondary btn-sm" onclick=\'GradStatusUI.editProgress(' +
+            JSON.stringify({ e: r.StudentEmail, a: r.AdvisorEmail, o: r.DegreeObjective,
+              d: r.DateEntered, x: r.ExpectedGraduation, c: r.AdvancedToCandidacy,
+              q: r.QEPassedDate, l: r.LanguageFulfilledDate, n: r.Notes })
+              .replace(/</g, '\\u003c').replace(/'/g, '&#39;') +
+            ')\'>Edit</button></td></tr>';
+        }).join('') + '</tbody></table></div>';
+    });
+  }
+
+  function editProgress(p) {
+    document.getElementById('gs-prog-form-title').textContent = 'Edit Progress Record — ' + p.e;
+    _set('gs-prog-email', p.e); _set('gs-prog-advisor', p.a || '');
+    _set('gs-prog-objective', p.o || ''); _set('gs-prog-entered', p.d || '');
+    _set('gs-prog-expgrad', p.x || ''); _set('gs-prog-cand', p.c || '');
+    _set('gs-prog-qe', p.q || ''); _set('gs-prog-lang', p.l || '');
+    _set('gs-prog-notes', p.n || '');
+    document.getElementById('gs-prog-email').readOnly = true;
+  }
+
+  function saveProgress() {
+    const payload = {
+      studentEmail: _val('gs-prog-email'),
+      AdvisorEmail: _val('gs-prog-advisor'),
+      DegreeObjective: _val('gs-prog-objective'),
+      DateEntered: _val('gs-prog-entered'),
+      ExpectedGraduation: _val('gs-prog-expgrad'),
+      AdvancedToCandidacy: _val('gs-prog-cand'),
+      QEPassedDate: _val('gs-prog-qe'),
+      LanguageFulfilledDate: _val('gs-prog-lang'),
+      Notes: _val('gs-prog-notes'),
+    };
+    App.call('grad_status', 'progressSave', payload, function () {
+      Toast.show('Progress record saved.', 'success');
+      document.getElementById('gs-prog-form-title').textContent = 'Add / Edit a Progress Record';
+      document.getElementById('gs-prog-email').readOnly = false;
+      ['gs-prog-email','gs-prog-advisor','gs-prog-objective','gs-prog-entered','gs-prog-expgrad',
+       'gs-prog-cand','gs-prog-qe','gs-prog-lang','gs-prog-notes'].forEach(function (id) { _set(id, ''); });
+      loadProgress();
+    });
+  }
+
+  // ── Settings tab ──────────────────────────────────────────
+  const SETTING_META = [
+    { key: 'NOTIFY_LOA_SUBMITTED', label: 'Student message — submitted to Grad Div', rows: 2 },
+    { key: 'NOTIFY_LOA_COMPLETE',  label: 'Student message — department review complete', rows: 2 },
+    { key: 'NOTIFY_LOA_RETURNED',  label: 'Student message — returned for revision', rows: 2 },
+    { key: 'ISSP_EMAIL',           label: 'ISSP functional address (visa-holder packet destination)', rows: 1 },
+    { key: 'DEPT_GRAD_EMAIL',      label: 'Department grad functional address (Grad Div "Department Email" prefill)', rows: 1 },
+    { key: 'LOA_TEMPLATE_FILE_ID', label: 'LOA AcroForm template — Drive file id', rows: 1 },
+    { key: 'GRADDIV_FORM_LOA',     label: 'Grad Div LOA form mapping (JSON: url + fields[{label,entry,source}])', rows: 8 },
+  ];
+
+  function loadSettings() {
+    App.call('grad_status', 'getSettings', {}, function (vals) {
+      _settings = vals;
+      document.getElementById('gs-settings-form').innerHTML = SETTING_META.map(function (m) {
+        const v = vals[m.key] == null ? '' : String(vals[m.key]);
+        return '<div class="form-group"><label class="form-label" for="gs-set-' + m.key + '">' +
+          esc(m.label) + '</label>' +
+          (m.rows > 1
+            ? '<textarea class="form-textarea" id="gs-set-' + m.key + '" rows="' + m.rows + '">' + esc(v) + '</textarea>'
+            : '<input class="form-input" id="gs-set-' + m.key + '" value="' + esc(v) + '">') +
+          '</div>';
+      }).join('') +
+      '<button class="btn btn-primary" onclick="GradStatusUI.saveSettings()">' +
+      '<i class="ti ti-device-floppy"></i> Save settings</button>';
+    });
+  }
+
+  function saveSettings() {
+    const values = {};
+    SETTING_META.forEach(function (m) { values[m.key] = _val('gs-set-' + m.key); });
+    if (values.GRADDIV_FORM_LOA) {
+      try { JSON.parse(values.GRADDIV_FORM_LOA); }
+      catch (e) { Toast.show('The Grad Div form mapping is not valid JSON.', 'error'); return; }
+    }
+    App.call('grad_status', 'saveSettings', { values: values }, function (res) {
+      Toast.show('Settings saved (' + res.saved + ').', 'success');
+    });
+  }
+
+  // ── Exports (every onclick above must appear here) ────────
+  return {
+    init, switchTab,
+    loadMine, submitLoa, startResubmit, cancelResubmit, withdraw,
+    loadAdvisor, advisorApprove, advisorReturn,
+    loadDepartment, chairApprove, chairReturn, staffComplete, staffReturn,
+    recordIsspReturn, onIsspFile, markSubmitted, regeneratePdf, copyField,
+    loadProgress, editProgress, saveProgress,
+    loadSettings, saveSettings,
+    open, closeModal,
+  };
+
+})();
+GradStatusUI.init();
+</script>
