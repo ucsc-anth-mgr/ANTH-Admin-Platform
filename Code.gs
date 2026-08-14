@@ -317,6 +317,10 @@ function getModuleHTML(moduleKey) {
  * CourseworkPetitionModule.gs (and coursework_petition.html) BEFORE
  * saving this Code.gs, or the app fails with
  * "CourseworkPetitionModule is not defined".
+ *
+ * NOTE: GradStatusModule is likewise ACTIVE — save GradProgress.gs,
+ * GradStatusModule.gs (and grad_status.html) BEFORE saving this
+ * Code.gs, or the app fails with "GradStatusModule is not defined".
  */
 function getModuleHandler(name) {
   const handlers = {
@@ -330,6 +334,7 @@ function getModuleHandler(name) {
     ServiceModule:     ServiceModule,
     CalendarModule:    CalendarModule,
     CourseworkPetitionModule: CourseworkPetitionModule,
+    GradStatusModule:  GradStatusModule,
     // HRModule:       HRModule,
   };
   if (!handlers[name]) throw new Error('Handler not found: ' + name);
@@ -342,7 +347,7 @@ function getModuleHandler(name) {
  * Used by the Module Manager to validate sheet entries.
  */
 function getRegisteredHandlers() {
-  return ['AdminModule', 'SubmissionsModule', 'UserManagerModule', 'ThesisModule', 'TranscriptModule', 'IndividualStudiesModule', 'PersonnelModule', 'ServiceModule', 'CalendarModule', 'CourseworkPetitionModule'];
+  return ['AdminModule', 'SubmissionsModule', 'UserManagerModule', 'ThesisModule', 'TranscriptModule', 'IndividualStudiesModule', 'PersonnelModule', 'ServiceModule', 'CalendarModule', 'CourseworkPetitionModule', 'GradStatusModule'];
 }
 
 

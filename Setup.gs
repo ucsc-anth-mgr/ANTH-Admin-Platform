@@ -42,6 +42,9 @@ const SETUP_SCHEMA = {
       ['graduate_student',      'Graduate students'],
       ['undergraduate_student', 'Undergraduate students'],
       ['visitor',               'Visitors and limited-access users'],
+      ['masters_student',       'Master\'s students (layered on graduate_student)'],
+      ['phd_student',           'PhD students (layered on graduate_student)'],
+      ['visa_holder',           'Visa holders — routes status forms through ISSP'],
     ],
   },
   MODULES: {
@@ -778,6 +781,50 @@ const SETUP_SCHEMA = {
     headers: ['Key', 'Value', 'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
     seed: [],
   },
+  GRAD_PROGRESS: {
+    tab: 'GradProgress',
+    // One row per graduate student (key: StudentEmail) — the shared
+    // academic-state spine read/written by all three grad modules
+    // (GradProgress.gs service). Rows created lazily by submissions
+    // or staff edits; Notes and roster JSON are preserved on update
+    // unless explicitly supplied.
+    headers: ['StudentEmail', 'AdvisorEmail', 'DateEntered', 'DegreeObjective',
+              'ExpectedGraduation', 'AdvancedToCandidacy', 'QECommitteeJSON',
+              'ReadingCommitteeJSON', 'QEPassedDate', 'LanguageFulfilledDate',
+              'Notes', 'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
+  GRAD_STATUS: {
+    tab: 'GradStatus',
+    // All registration-status forms, FormType-discriminated (Phase 1:
+    // LOA; Phase 2 adds WDR/PTS/IAB on the same stage machine).
+    // Decision columns are the audit trail; RETURNED resubmission
+    // reuses the same row. PDFFileID/Url = the portal-generated form;
+    // FinalPDFFileID/Url = the ISSP-signed copy when one exists.
+    headers: ['RecordID', 'FormType', 'StudentEmail', 'StudentName', 'AdvisorEmail',
+              'Stage', 'SubmittedAt',
+              'LeaveBeginQuarter', 'LeaveBeginYear', 'ReturnQuarter', 'ReturnYear',
+              'LeaveSpanQuarters', 'Reason', 'EmploymentLeave', 'AcknowledgedAt',
+              'VisaHolderAtSubmit', 'DateEntered', 'ExpectedGraduation',
+              'AdvancedToCandidacy',
+              'AdvisorDecidedBy', 'AdvisorDecidedAt', 'AdvisorNote',
+              'ChairDecidedBy', 'ChairDecidedAt', 'ChairNote',
+              'ConditionsForReadmission',
+              'StaffDecidedBy', 'StaffDecidedAt', 'StaffNote',
+              'ISSPSentAt', 'ISSPClearedAt', 'ISSPClearedBy', 'ISSPNote',
+              'PDFFileID', 'PDFUrl', 'FinalPDFFileID', 'FinalPDFUrl',
+              'SubmittedToGradDivAt', 'SubmittedToGradDivBy', 'SubmissionNote',
+              'ReturnedNote', 'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
+  GRAD_FORMS_SETTINGS: {
+    tab: 'GradFormsSettings',
+    // UI-managed key/value settings for the grad modules (Settings tab
+    // of grad_status; mirrors PetitionSettings). Values seed lazily
+    // from the module's SETTINGS_DEFAULTS — no seed rows here.
+    headers: ['Key', 'Value'],
+    seed: [],
+  },
 };
 
 
@@ -872,6 +919,13 @@ function setUp() {
   _setupTab(courseworkSS, SETUP_SCHEMA.COURSEWORK_INSTITUTIONS);
   _setupTab(courseworkSS, SETUP_SCHEMA.COURSEWORK_SETTINGS);
   _tidyDefaultSheet(courseworkSS);
+
+  // Graduate Forms spreadsheet (grad_status + future milestone modules)
+  const gradSS = _resolveSpreadsheet(CONFIG.SHEETS.GRAD, 'Portal Graduate Forms', 'GRAD');
+  _setupTab(gradSS, SETUP_SCHEMA.GRAD_PROGRESS);
+  _setupTab(gradSS, SETUP_SCHEMA.GRAD_STATUS);
+  _setupTab(gradSS, SETUP_SCHEMA.GRAD_FORMS_SETTINGS);
+  _tidyDefaultSheet(gradSS);
 
   // Submissions spreadsheet: tabs are created per form type on demand,
   // so we just ensure the spreadsheet exists and remove the default

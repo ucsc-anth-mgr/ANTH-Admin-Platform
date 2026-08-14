@@ -66,17 +66,29 @@
 
       <div class="form-row">
         <div class="form-group">
-          <label class="form-label" for="gs-date-entered">Date entered (quarter/year)</label>
-          <input class="form-input" id="gs-date-entered" placeholder="e.g. Fall 2024">
+          <label class="form-label" for="gs-date-entered-q">Date entered</label>
+          <div style="display:flex;gap:6px;">
+            <select class="form-select" id="gs-date-entered-q" style="flex:1;"><option value="">— Quarter —</option></select>
+            <input class="form-input" id="gs-date-entered-y" placeholder="YYYY" inputmode="numeric" maxlength="4" style="width:90px;">
+          </div>
+          <input class="form-input" id="gs-date-entered-raw" readonly style="display:none;margin-top:4px;">
           <div class="form-hint" id="gs-date-entered-hint"></div>
         </div>
         <div class="form-group">
-          <label class="form-label" for="gs-expected-grad">Expected graduation</label>
-          <input class="form-input" id="gs-expected-grad" placeholder="e.g. Spring 2028">
+          <label class="form-label" for="gs-expected-grad-q">Expected graduation</label>
+          <div style="display:flex;gap:6px;">
+            <select class="form-select" id="gs-expected-grad-q" style="flex:1;"><option value="">— Quarter —</option></select>
+            <input class="form-input" id="gs-expected-grad-y" placeholder="YYYY" inputmode="numeric" maxlength="4" style="width:90px;">
+          </div>
+          <input class="form-input" id="gs-expected-grad-raw" readonly style="display:none;margin-top:4px;">
         </div>
         <div class="form-group">
-          <label class="form-label" for="gs-candidacy">Advanced to candidacy</label>
-          <input class="form-input" id="gs-candidacy" placeholder="Date, or blank if not yet">
+          <label class="form-label" for="gs-candidacy-q">Advanced to candidacy (blank if not yet)</label>
+          <div style="display:flex;gap:6px;">
+            <select class="form-select" id="gs-candidacy-q" style="flex:1;"><option value="">— Quarter —</option></select>
+            <input class="form-input" id="gs-candidacy-y" placeholder="YYYY" inputmode="numeric" maxlength="4" style="width:90px;">
+          </div>
+          <input class="form-input" id="gs-candidacy-raw" readonly style="display:none;margin-top:4px;">
         </div>
       </div>
 
@@ -190,16 +202,28 @@
       </div>
       <div class="form-row">
         <div class="form-group">
-          <label class="form-label" for="gs-prog-entered">Date entered</label>
-          <input class="form-input" id="gs-prog-entered" placeholder="Fall 2024">
+          <label class="form-label" for="gs-prog-entered-q">Date entered</label>
+          <div style="display:flex;gap:6px;">
+            <select class="form-select" id="gs-prog-entered-q" style="flex:1;"><option value="">— Quarter —</option></select>
+            <input class="form-input" id="gs-prog-entered-y" placeholder="YYYY" inputmode="numeric" maxlength="4" style="width:90px;">
+          </div>
+          <div class="form-hint" id="gs-prog-entered-hint"></div>
         </div>
         <div class="form-group">
-          <label class="form-label" for="gs-prog-expgrad">Expected graduation</label>
-          <input class="form-input" id="gs-prog-expgrad" placeholder="Spring 2028">
+          <label class="form-label" for="gs-prog-expgrad-q">Expected graduation</label>
+          <div style="display:flex;gap:6px;">
+            <select class="form-select" id="gs-prog-expgrad-q" style="flex:1;"><option value="">— Quarter —</option></select>
+            <input class="form-input" id="gs-prog-expgrad-y" placeholder="YYYY" inputmode="numeric" maxlength="4" style="width:90px;">
+          </div>
+          <div class="form-hint" id="gs-prog-expgrad-hint"></div>
         </div>
         <div class="form-group">
-          <label class="form-label" for="gs-prog-cand">Advanced to candidacy</label>
-          <input class="form-input" id="gs-prog-cand" placeholder="Date or blank">
+          <label class="form-label" for="gs-prog-cand-q">Advanced to candidacy</label>
+          <div style="display:flex;gap:6px;">
+            <select class="form-select" id="gs-prog-cand-q" style="flex:1;"><option value="">— Quarter —</option></select>
+            <input class="form-input" id="gs-prog-cand-y" placeholder="YYYY" inputmode="numeric" maxlength="4" style="width:90px;">
+          </div>
+          <div class="form-hint" id="gs-prog-cand-hint"></div>
         </div>
       </div>
       <div class="form-row">
@@ -281,6 +305,46 @@ window.GradStatusUI = (() => {
   function _val(id) { const el = document.getElementById(id); return el ? el.value.trim() : ''; }
   function _set(id, v) { const el = document.getElementById(id); if (el) el.value = v == null ? '' : v; }
 
+  // ── Quarter+year selector pairs ("Fall 2024") ─────────────
+  const QY_RE = /^(Winter|Spring|Summer|Fall)\s+(\d{4})$/;
+  function _qyFillQuarters(base) {
+    const sel = document.getElementById(base + '-q');
+    if (!sel || sel.options.length > 1) return;
+    ((_formData && _formData.quarters) || ['Winter','Spring','Summer','Fall']).forEach(function (q) {
+      const o = document.createElement('option'); o.value = q; o.textContent = q; sel.appendChild(o);
+    });
+  }
+  /** Reads a pair as "Quarter YYYY" (or ''). Both-or-neither verified. */
+  function _qyGet(base, label) {
+    const q = _val(base + '-q'), y = _val(base + '-y');
+    if (!q && !y) return '';
+    if (!q || !/^\d{4}$/.test(y)) {
+      throw new Error(label + ': select a quarter and enter a 4-digit year (or leave both blank).');
+    }
+    return q + ' ' + y;
+  }
+  /** Writes a stored value into a pair; unparseable values go to the hint. */
+  function _qySet(base, stored, editable) {
+    _qyFillQuarters(base);
+    const m = String(stored || '').trim().match(QY_RE);
+    _set(base + '-q', m ? m[1] : ''); _set(base + '-y', m ? m[2] : '');
+    const hint = document.getElementById(base + '-hint');
+    if (hint) hint.textContent = (!m && String(stored || '').trim())
+      ? 'Stored value "' + stored + '" isn\u2019t in Quarter YYYY form — re-select to normalize it.' : '';
+    if (editable === false) {
+      const q = document.getElementById(base + '-q'), y = document.getElementById(base + '-y');
+      if (q) q.disabled = true; if (y) y.readOnly = true;
+    }
+  }
+  /** _qyGet, but when the pair is hidden behind a raw legacy value,
+   *  returns that raw value unchanged (server skips re-verification of
+   *  values the student can't edit — staff normalize them in Progress). */
+  function _qyReadOrRaw(base, label) {
+    const raw = document.getElementById(base + '-raw');
+    if (raw && raw.style.display !== 'none') return raw.value;
+    return _qyGet(base, label);
+  }
+
   // ── Init ──────────────────────────────────────────────────
   function init() {
     const f = window.__focus;
@@ -331,9 +395,9 @@ window.GradStatusUI = (() => {
       }).join('');
     if (data.progress && data.progress.advisorEmail) adv.value = data.progress.advisorEmail;
 
-    _prefill('gs-date-entered', data.progress && data.progress.dateEntered);
-    _prefill('gs-expected-grad', data.progress && data.progress.expectedGraduation);
-    _prefill('gs-candidacy', data.progress && data.progress.advancedToCandidacy);
+    _prefillQY('gs-date-entered', data.progress && data.progress.dateEntered);
+    _prefillQY('gs-expected-grad', data.progress && data.progress.expectedGraduation);
+    _prefillQY('gs-candidacy', data.progress && data.progress.advancedToCandidacy);
     document.getElementById('gs-date-entered-hint').textContent =
       'From your progress record — editable only while blank there.';
 
@@ -360,13 +424,27 @@ window.GradStatusUI = (() => {
     document.getElementById('gs-visa-note').style.display = data.isVisaHolder ? 'block' : 'none';
   }
 
-  /** Editable-if-blank: a stored value renders read-only (self-healing
-   *  prefill contract — the record is corrected in Progress, not here). */
-  function _prefill(id, stored) {
-    const el = document.getElementById(id);
-    el.value = stored || '';
-    el.readOnly = !!(stored && String(stored).trim());
-    el.style.background = el.readOnly ? 'var(--color-bg, #f5f6f8)' : '';
+  /** Editable-if-blank (self-healing prefill contract): a stored value
+   *  renders locked — the record is corrected in Progress, not here. A
+   *  stored value that parses fills the selectors read-only; one that
+   *  doesn't parse shows read-only as raw text (staff normalize it in
+   *  Progress); blank leaves the pair editable. */
+  function _prefillQY(base, stored) {
+    const s = String(stored || '').trim();
+    const raw = document.getElementById(base + '-raw');
+    const qEl = document.getElementById(base + '-q');
+    const yEl = document.getElementById(base + '-y');
+    const row = qEl ? qEl.parentElement : null;
+    if (s && !QY_RE.test(s)) {              // legacy/odd value: show as-is
+      if (row) row.style.display = 'none';
+      raw.style.display = ''; raw.value = s;
+      return;
+    }
+    if (row) row.style.display = 'flex';
+    raw.style.display = 'none';
+    _qySet(base, s, !s);                    // stored → locked; blank → editable
+    const hint = document.getElementById(base + '-hint');
+    if (hint && base !== 'gs-date-entered') hint.textContent = '';
   }
 
   function submitLoa() {
@@ -374,6 +452,14 @@ window.GradStatusUI = (() => {
     const acks = Array.prototype.map.call(document.querySelectorAll('.gs-ack'),
       function (c) { return c.checked; });
     const emp = document.querySelector('input[name="gs-emp"]:checked');
+    let de, eg, ac;
+    try {
+      // A locked (prefilled) pair reads back its stored value; a legacy
+      // raw value passes through untouched for staff to normalize later.
+      de = _qyReadOrRaw('gs-date-entered', 'Date entered');
+      eg = _qyReadOrRaw('gs-expected-grad', 'Expected graduation');
+      ac = _qyReadOrRaw('gs-candidacy', 'Advanced to candidacy');
+    } catch (e) { Toast.show(e.message, 'error'); return; }
     const payload = {
       recordId: _resubmitId || '',
       advisorEmail: _val('gs-advisor'),
@@ -382,9 +468,9 @@ window.GradStatusUI = (() => {
       reason: _val('gs-reason'),
       employmentLeave: emp ? emp.value : '',
       acknowledged: acks,
-      dateEntered: _val('gs-date-entered'),
-      expectedGraduation: _val('gs-expected-grad'),
-      advancedToCandidacy: _val('gs-candidacy'),
+      dateEntered: de,
+      expectedGraduation: eg,
+      advancedToCandidacy: ac,
     };
     App.call('grad_status', 'submit', payload, function (res) {
       Toast.show(res.resubmitted ? 'Request resubmitted.' : 'Request submitted.', 'success');
@@ -393,6 +479,7 @@ window.GradStatusUI = (() => {
       _set('gs-reason', ''); _set('gs-begin', ''); _set('gs-return', '');
       document.querySelectorAll('.gs-ack').forEach(function (c) { c.checked = false; });
       const e = document.querySelector('input[name="gs-emp"]:checked'); if (e) e.checked = false;
+      _formData = null; _ensureFormData();   // re-fetch: absorbed values now render locked
       loadMine();
     }, null, 'Submitting…');
   }
@@ -707,6 +794,7 @@ window.GradStatusUI = (() => {
 
   // ── Progress tab ──────────────────────────────────────────
   function loadProgress() {
+    ['gs-prog-entered', 'gs-prog-expgrad', 'gs-prog-cand'].forEach(_qyFillQuarters);
     App.call('grad_status', 'progressList', {}, function (rows) {
       const el = document.getElementById('gs-progress-list');
       if (!rows || !rows.length) {
@@ -734,21 +822,29 @@ window.GradStatusUI = (() => {
   function editProgress(p) {
     document.getElementById('gs-prog-form-title').textContent = 'Edit Progress Record — ' + p.e;
     _set('gs-prog-email', p.e); _set('gs-prog-advisor', p.a || '');
-    _set('gs-prog-objective', p.o || ''); _set('gs-prog-entered', p.d || '');
-    _set('gs-prog-expgrad', p.x || ''); _set('gs-prog-cand', p.c || '');
+    _set('gs-prog-objective', p.o || '');
+    _qySet('gs-prog-entered', p.d || '');
+    _qySet('gs-prog-expgrad', p.x || '');
+    _qySet('gs-prog-cand', p.c || '');
     _set('gs-prog-qe', p.q || ''); _set('gs-prog-lang', p.l || '');
     _set('gs-prog-notes', p.n || '');
     document.getElementById('gs-prog-email').readOnly = true;
   }
 
   function saveProgress() {
+    let pd, px, pc;
+    try {
+      pd = _qyGet('gs-prog-entered', 'Date entered');
+      px = _qyGet('gs-prog-expgrad', 'Expected graduation');
+      pc = _qyGet('gs-prog-cand', 'Advanced to candidacy');
+    } catch (e) { Toast.show(e.message, 'error'); return; }
     const payload = {
       studentEmail: _val('gs-prog-email'),
       AdvisorEmail: _val('gs-prog-advisor'),
       DegreeObjective: _val('gs-prog-objective'),
-      DateEntered: _val('gs-prog-entered'),
-      ExpectedGraduation: _val('gs-prog-expgrad'),
-      AdvancedToCandidacy: _val('gs-prog-cand'),
+      DateEntered: pd,
+      ExpectedGraduation: px,
+      AdvancedToCandidacy: pc,
       QEPassedDate: _val('gs-prog-qe'),
       LanguageFulfilledDate: _val('gs-prog-lang'),
       Notes: _val('gs-prog-notes'),
@@ -757,8 +853,10 @@ window.GradStatusUI = (() => {
       Toast.show('Progress record saved.', 'success');
       document.getElementById('gs-prog-form-title').textContent = 'Add / Edit a Progress Record';
       document.getElementById('gs-prog-email').readOnly = false;
-      ['gs-prog-email','gs-prog-advisor','gs-prog-objective','gs-prog-entered','gs-prog-expgrad',
-       'gs-prog-cand','gs-prog-qe','gs-prog-lang','gs-prog-notes'].forEach(function (id) { _set(id, ''); });
+      ['gs-prog-email','gs-prog-advisor','gs-prog-objective',
+       'gs-prog-entered-q','gs-prog-entered-y','gs-prog-expgrad-q','gs-prog-expgrad-y',
+       'gs-prog-cand-q','gs-prog-cand-y','gs-prog-qe','gs-prog-lang','gs-prog-notes']
+        .forEach(function (id) { _set(id, ''); });
       loadProgress();
     });
   }

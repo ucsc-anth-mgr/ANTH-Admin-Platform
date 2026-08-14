@@ -52,12 +52,6 @@ const CONFIG = {
     // Graduate Individual Studies module — its OWN spreadsheet
     // (per-module storage tier). Tab: Petitions. Blank until setUp()
     // creates it and logs the id to paste back here.
-    GRAD_INDIVIDUAL_STUDIES: '',
-    // Academic Personnel module — its OWN spreadsheet (per-module storage
-    // tier). Tabs: PersonAttributes (person-attribute extension table),
-    // Cases (review cases from the Call), ReviewHistory (the APO action
-    // ledger + case completions), Components (drafting units), Cycles
-    // (scheduler anchors), Settings.
     PERSONNEL:     '1MEE2WYjHddPfEVo7SEOU7tbNp1CFbUM90sFIFkbdPh0',
     // Service module — its OWN spreadsheet (per-module storage tier).
     // Owns committee assignment; grants/revokes the personnel_committee
@@ -70,6 +64,12 @@ const CONFIG = {
     // CourseworkSettings. Blank until setUp() creates it and logs the
     // id to paste back here.
     COURSEWORK:    '1QN7MHAW4NXOfQC3d3UXvMio4PLdWn9mR2rMtl3hfyAk',
+    // Graduate Forms — shared spreadsheet for the grad_status /
+    // phd_milestones / masters_milestones modules (one storage home,
+    // one tab per concern). Tabs (Phase 1): GradProgress, GradStatus,
+    // GradFormsSettings. Blank until setUp() creates it and logs the
+    // id to paste back here.
+    GRAD:          '1ph7kERn7bj_F-CMjgV6E--ESbVpG5ZWYKyb0yIjlclo',
   },
 
   // Optional: Drive folder where setUp() creates new spreadsheets.
@@ -142,6 +142,10 @@ const CONFIG = {
     COURSEWORK_ITEMS:        'PetitionItems',
     COURSEWORK_INSTITUTIONS: 'Institutions',
     COURSEWORK_SETTINGS:     'CourseworkSettings',
+    // Graduate Forms tabs (live in SHEETS.GRAD)
+    GRAD_PROGRESS:       'GradProgress',
+    GRAD_STATUS:         'GradStatus',
+    GRAD_FORMS_SETTINGS: 'GradFormsSettings',
   },
 
   // ── Storage convention (three tiers) ───────────────────────
@@ -290,6 +294,15 @@ const CONFIG = {
   // share-notification email, which is harmless.
   COURSEWORK: {
     DRIVE_FOLDER_ID: '16R0gJj6p8Y5Z4RwqbaMMfu0vq8hIm5In',
+  },
+
+  // ── Graduate Registration Status module ────────────────────
+  // Drive folder for uploaded documents (currently: the ISSP-signed
+  // LOA PDFs staff attach when recording an ISSP return). The
+  // portal-generated LOA PDFs are archived by ReportService under
+  // CONFIG.REPORTS.ARCHIVE_FOLDER_ID/grad_status/.
+  GRAD_STATUS: {
+    DRIVE_FOLDER_ID: '14F6NBjSSfy_ZCoGU5pYh_6cz33QQ8asT',
   },
 
   // ── Academic Personnel module ──────────────────────────────

@@ -204,6 +204,8 @@ const GradStatusModule = (() => {
       employmentOptions: EMPLOYMENT_OPTIONS,
       beginQuarters:  _quarterOptions(1, 6),   // next quarter … +6
       returnQuarters: _quarterOptions(2, 9),
+      quarters:       QUARTER_ORDER,            // for the quarter+year selectors
+      currentYear:    new Date().getFullYear(),
     };
   }
 
@@ -249,11 +251,13 @@ const GradStatusModule = (() => {
       : '';
 
     // ── Self-healing progress writeback (advisor always; dates if blank) ──
+    // Quarter+year fields are format-verified and normalized first, so
+    // the progress record (and everything downstream) never stores drift.
     GradProgress.absorb(user, {
       AdvisorEmail:        advisorEmail,
-      DateEntered:         payload.dateEntered,
-      ExpectedGraduation:  payload.expectedGraduation,
-      AdvancedToCandidacy: payload.advancedToCandidacy,
+      DateEntered:         _checkQuarterYear('Date entered', payload.dateEntered),
+      ExpectedGraduation:  _checkQuarterYear('Expected graduation', payload.expectedGraduation),
+      AdvancedToCandidacy: _checkQuarterYear('Advanced to candidacy', payload.advancedToCandidacy),
     }, user);
     const progress = GradProgress.get(user) || {};
 
@@ -550,6 +554,11 @@ const GradStatusModule = (() => {
       .forEach(function (f) {
         if (payload && Object.prototype.hasOwnProperty.call(payload, f)) patch[f] = payload[f];
       });
+    // Quarter+year fields are format-verified here too, so staff edits
+    // can't reintroduce format drift (same rule as student submission).
+    if (patch.DateEntered)         patch.DateEntered         = _checkQuarterYear('Date entered', patch.DateEntered);
+    if (patch.ExpectedGraduation)  patch.ExpectedGraduation  = _checkQuarterYear('Expected graduation', patch.ExpectedGraduation);
+    if (patch.AdvancedToCandidacy) patch.AdvancedToCandidacy = _checkQuarterYear('Advanced to candidacy', patch.AdvancedToCandidacy);
     return GradProgress.upsert(email, patch, user);
   }
 
@@ -614,16 +623,14 @@ const GradStatusModule = (() => {
   }
 
   function _advisorOptions() {
-    return Auth.usersWithRole(ADVISOR_POOL)
-      .filter(function (u) { return u.active; })
-      .map(function (u) { return { email: u.email, name: u.name || u.email }; })
-      .sort(function (a, b) { return a.name.localeCompare(b.name); });
+    // Auth.usersWithRole already filters to ACTIVE holders and returns
+    // { email, name } sorted by display name — use it as-is. (Filtering
+    // on a nonexistent u.active here was emptying the advisor list.)
+    return Auth.usersWithRole(ADVISOR_POOL);
   }
 
   function _roleEmails(role) {
-    return Auth.usersWithRole(role)
-      .filter(function (u) { return u.active; })
-      .map(function (u) { return u.email; });
+    return Auth.usersWithRole(role).map(function (u) { return u.email; });
   }
 
   /** Next `count` quarters starting `offset` quarters from now. */
@@ -638,6 +645,24 @@ const GradStatusModule = (() => {
       if (qi === QUARTER_ORDER.length) { qi = 0; year++; }
     }
     return out;
+  }
+
+  /**
+   * Format verification for the "Quarter YYYY" academic-date fields
+   * (Date entered / Expected graduation / Advanced to candidacy).
+   * Blank is allowed (the fields are optional); a non-blank value must
+   * be a real quarter plus a sane 4-digit year. Returns the normalized
+   * string, so downstream (PDF, GradProgress, Grad Div prefill) always
+   * sees the one canonical form.
+   */
+  function _checkQuarterYear(label, value) {
+    const s = String(value == null ? '' : value).trim();
+    if (!s) return '';
+    const m = s.match(/^(Winter|Spring|Summer|Fall)\s+(\d{4})$/);
+    if (!m || Number(m[2]) < 1990 || Number(m[2]) > 2099) {
+      throw new Error(label + ' must be a quarter and a 4-digit year (e.g. "Fall 2024").');
+    }
+    return m[1] + ' ' + m[2];
   }
 
   /** Whole quarters from begin to return (return − begin). */
