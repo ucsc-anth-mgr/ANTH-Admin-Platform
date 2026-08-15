@@ -275,4 +275,30 @@ table.data-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
   .task-when { display: none; }
   .task-item { flex-wrap: wrap; }
 }
+
+/* ============================================================
+   Modal (platform) — used with the Modal service in _Scripts.html.
+   Markup contract:
+     <div id="my-modal" class="app-modal" style="display:none;"
+          role="dialog" aria-modal="true" aria-labelledby="my-modal-title">
+       <div class="app-modal-card card" style="max-width:760px;">
+         <div class="card-title" style="justify-content:space-between;">
+           <span id="my-modal-title">Title</span>
+           <button class="btn btn-secondary btn-sm"
+                   onclick="Modal.close('my-modal')" aria-label="Close dialog">
+             <i class="ti ti-x"></i></button>
+         </div>
+         <div id="my-modal-body">…</div>
+       </div>
+     </div>
+   Open with Modal.open('my-modal'); the service supplies the backdrop
+   click, Escape, and focus trap. Top-aligned with page scroll so tall
+   forms remain reachable on short viewports.
+   ============================================================ */
+.app-modal {
+  position: fixed; inset: 0; background: rgba(0, 0, 0, 0.4);
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: 40px 16px; z-index: 1000; overflow-y: auto;
+}
+.app-modal-card { width: 100%; margin: 0; }
 </style>

@@ -52,6 +52,12 @@ const CONFIG = {
     // Graduate Individual Studies module — its OWN spreadsheet
     // (per-module storage tier). Tab: Petitions. Blank until setUp()
     // creates it and logs the id to paste back here.
+    GRAD_INDIVIDUAL_STUDIES: '',
+    // Academic Personnel module — its OWN spreadsheet (per-module storage
+    // tier). Tabs: PersonAttributes (person-attribute extension table),
+    // Cases (review cases from the Call), ReviewHistory (the APO action
+    // ledger + case completions), Components (drafting units), Cycles
+    // (scheduler anchors), Settings.
     PERSONNEL:     '1MEE2WYjHddPfEVo7SEOU7tbNp1CFbUM90sFIFkbdPh0',
     // Service module — its OWN spreadsheet (per-module storage tier).
     // Owns committee assignment; grants/revokes the personnel_committee

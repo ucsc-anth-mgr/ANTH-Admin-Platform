@@ -661,6 +661,83 @@ const App = (() => {
 
 
 // ============================================================
+// Modal — platform modal open/close (pairs with .app-modal CSS)
+// ============================================================
+// One place that gives every module's dialogs the same behavior:
+//   Modal.open(id, opts)  — shows the overlay, traps focus in the card
+//                           (A11y.trap), closes on Escape and on backdrop
+//                           click, and remembers what to restore focus to.
+//   Modal.close(id)       — hides it, releases the trap (A11y.release
+//                           restores focus), runs opts.onClose if given.
+// opts:
+//   initialFocus — element (or id) to focus first; default: first focusable
+//   static       — true disables backdrop-click close (Escape still works;
+//                  set staticEscape:true to disable Escape too)
+//   onClose      — function called after the modal hides, however closed
+// One modal at a time (opening a second closes the first) — matching how
+// every module uses dialogs today.
+//
+// ADOPTION NOTE (from A11y.trap): if your module keeps its own _lastFocus
+// and restores it in closeModal(), remove that when migrating — release()
+// restores focus itself, and doing both makes focus jump twice.
+const Modal = (() => {
+
+  let _open = null;   // { id, overlay, opts, onOverlayClick, onKeydown }
+
+  function open(id, opts) {
+    const overlay = document.getElementById(id);
+    if (!overlay) { console.warn('Modal.open: no element #' + id); return; }
+    if (_open) close(_open.id);
+    opts = opts || {};
+
+    overlay.style.display = 'flex';
+
+    const card = overlay.firstElementChild || overlay;
+    let initial = opts.initialFocus;
+    if (typeof initial === 'string') initial = document.getElementById(initial);
+    A11y.trap(card, { initialFocus: initial || undefined });
+
+    function onOverlayClick(e) {
+      if (e.target === overlay && !opts.static) close(id);
+    }
+    function onKeydown(e) {
+      if (e.key === 'Escape' && !opts.staticEscape) { e.stopPropagation(); close(id); }
+    }
+    overlay.addEventListener('click', onOverlayClick);
+    document.addEventListener('keydown', onKeydown, true);
+
+    _open = { id: id, overlay: overlay, opts: opts,
+              onOverlayClick: onOverlayClick, onKeydown: onKeydown };
+  }
+
+  function close(id) {
+    if (!_open || (id && _open.id !== id)) {
+      // Not the tracked modal (or none) — still hide the element so a
+      // stray close() can never leave a visible orphan overlay.
+      const el = id && document.getElementById(id);
+      if (el) el.style.display = 'none';
+      return;
+    }
+    const m = _open;
+    _open = null;
+    m.overlay.removeEventListener('click', m.onOverlayClick);
+    document.removeEventListener('keydown', m.onKeydown, true);
+    m.overlay.style.display = 'none';
+    A11y.release();
+    if (typeof m.opts.onClose === 'function') {
+      try { m.opts.onClose(); } catch (e) { console.warn('Modal onClose failed: ' + e); }
+    }
+  }
+
+  /** The id of the currently open modal, or null. */
+  function current() { return _open ? _open.id : null; }
+
+  return { open: open, close: close, current: current };
+
+})();
+
+
+// ============================================================
 // Toast
 // ============================================================
 const Toast = (() => {

@@ -7,13 +7,20 @@
   <div class="module-tabs">
     <? var gsRoles = JSON.parse(userRoles); ?>
     <? if (gsRoles.includes('graduate_student') || gsRoles.includes('super_admin')) { ?>
-    <button class="module-tab" data-tab="myforms" onclick="GradStatusUI.switchTab('myforms')">
-      <i class="ti ti-file-text"></i> My Forms
+    <button class="module-tab" data-tab="forms" onclick="GradStatusUI.switchTab('forms')">
+      <i class="ti ti-file-plus"></i> Forms
+    </button><button class="module-tab" data-tab="myforms" onclick="GradStatusUI.switchTab('myforms')">
+      <i class="ti ti-list"></i> My Requests
     </button>
     <? } ?>
     <? if (gsRoles.includes('senate_faculty') || gsRoles.includes('super_admin')) { ?>
     <button class="module-tab" data-tab="advisor" onclick="GradStatusUI.switchTab('advisor')">
       <i class="ti ti-gavel"></i> Advisor Review
+    </button>
+    <? } ?>
+    <? if (gsRoles.includes('issp_staff') || gsRoles.includes('super_admin')) { ?>
+    <button class="module-tab" data-tab="issp" onclick="GradStatusUI.switchTab('issp')">
+      <i class="ti ti-world"></i> ISSP Review
     </button>
     <? } ?>
     <? if (gsRoles.includes('staff_grad') || gsRoles.includes('department_chair') || gsRoles.includes('super_admin')) { ?>
@@ -33,7 +40,27 @@
     <? } ?>
   </div>
 
-  <!-- ── Tab: My Forms (student) ─────────────────────── -->
+  <!-- ── Tab: Forms (student launcher) ───────────────── -->
+  <div id="gs-tab-forms" class="tab-panel" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title"><i class="ti ti-file-plus"></i> Registration Status Forms</div>
+      <p class="text-muted" style="font-size:13px;margin-top:0;">Each form opens in its own window,
+        is routed through department review, and is filed with the Division of Graduate Studies by
+        department staff. Track anything you submit under My Requests.</p>
+      <div class="card" style="margin-top:12px;">
+        <div class="card-title" style="font-size:14px;"><i class="ti ti-calendar-pause"></i> Leave of Absence</div>
+        <p class="text-muted" style="font-size:13px;margin-top:0;">Request a leave for up to one year
+          (three quarters — Summer doesn't count). Reviewed by your advisor and the department chair;
+          visa holders are also routed through ISSP.</p>
+        <button class="btn btn-primary" onclick="GradStatusUI.openForm()">
+          <i class="ti ti-file-plus"></i> Start a Leave of Absence Request</button>
+      </div>
+      <p class="form-hint" style="margin-top:12px;">Withdrawal, part-time status, and in-absentia
+        forms are coming to this tab.</p>
+    </div>
+  </div>
+
+  <!-- ── Tab: My Requests (student) ──────────────────── -->
   <div id="gs-tab-myforms" class="tab-panel" style="display:none;">
     <div class="card" style="margin-top:20px;">
       <div class="card-title" style="justify-content:space-between;">
@@ -43,92 +70,7 @@
       <div id="gs-mine-list"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
     </div>
 
-    <div class="card" style="margin-top:20px;">
-      <div class="card-title"><i class="ti ti-file-plus"></i> <span id="gs-form-title">New Leave of Absence Request</span></div>
-      <div id="gs-resubmit-note" class="text-muted" style="display:none;font-size:13px;margin-bottom:10px;"></div>
 
-      <div class="form-row">
-        <div class="form-group">
-          <label class="form-label" for="gs-advisor">Faculty advisor <span class="required">*</span></label>
-          <select class="form-select" id="gs-advisor">
-            <option value="">— Select your advisor —</option>
-          </select>
-          <div class="form-hint">Your advisor reviews this request first.</div>
-        </div>
-        <div class="form-group">
-          <div id="gs-visa-note" style="display:none;" class="form-hint">
-            <i class="ti ti-world"></i> University records indicate you hold a visa. After department
-            approval, this form will also be routed to International Student Services and Programs
-            (ISSP) for their review. If this is not correct, contact the graduate program coordinator.
-          </div>
-        </div>
-      </div>
-
-      <div class="form-row">
-        <div class="form-group">
-          <label class="form-label" for="gs-date-entered-q">Date entered</label>
-          <div style="display:flex;gap:6px;">
-            <select class="form-select" id="gs-date-entered-q" style="flex:1;"><option value="">— Quarter —</option></select>
-            <input class="form-input" id="gs-date-entered-y" placeholder="YYYY" inputmode="numeric" maxlength="4" style="width:90px;">
-          </div>
-          <input class="form-input" id="gs-date-entered-raw" readonly style="display:none;margin-top:4px;">
-          <div class="form-hint" id="gs-date-entered-hint"></div>
-        </div>
-        <div class="form-group">
-          <label class="form-label" for="gs-expected-grad-q">Expected graduation</label>
-          <div style="display:flex;gap:6px;">
-            <select class="form-select" id="gs-expected-grad-q" style="flex:1;"><option value="">— Quarter —</option></select>
-            <input class="form-input" id="gs-expected-grad-y" placeholder="YYYY" inputmode="numeric" maxlength="4" style="width:90px;">
-          </div>
-          <input class="form-input" id="gs-expected-grad-raw" readonly style="display:none;margin-top:4px;">
-        </div>
-        <div class="form-group">
-          <label class="form-label" for="gs-candidacy-q">Advanced to candidacy (blank if not yet)</label>
-          <div style="display:flex;gap:6px;">
-            <select class="form-select" id="gs-candidacy-q" style="flex:1;"><option value="">— Quarter —</option></select>
-            <input class="form-input" id="gs-candidacy-y" placeholder="YYYY" inputmode="numeric" maxlength="4" style="width:90px;">
-          </div>
-          <input class="form-input" id="gs-candidacy-raw" readonly style="display:none;margin-top:4px;">
-        </div>
-      </div>
-
-      <div class="form-row">
-        <div class="form-group">
-          <label class="form-label" for="gs-begin">Leave will begin <span class="required">*</span></label>
-          <select class="form-select" id="gs-begin"><option value="">— Quarter —</option></select>
-        </div>
-        <div class="form-group">
-          <label class="form-label" for="gs-return">Return from leave <span class="required">*</span></label>
-          <select class="form-select" id="gs-return"><option value="">— Quarter —</option></select>
-          <div class="form-hint">A leave is valid for up to one year (three quarters) at a time.</div>
-        </div>
-      </div>
-
-      <div class="form-group">
-        <label class="form-label" for="gs-reason">Reason for requesting a Leave of Absence <span class="required">*</span></label>
-        <textarea class="form-textarea" id="gs-reason" rows="3"></textarea>
-      </div>
-
-      <div class="form-group">
-        <label class="form-label">Are you on a medical or other type of leave from University employment? <span class="required">*</span></label>
-        <div class="form-hint">For example, you hold a GSR/GSI/TA appointment and are on baby bonding
-          leave, or requested emergency medical leave through the APO Leaves office.</div>
-        <div id="gs-employment"></div>
-      </div>
-
-      <div class="form-group">
-        <label class="form-label">I understand that: <span class="required">*</span></label>
-        <div id="gs-acks"></div>
-      </div>
-
-      <div style="display:flex;gap:8px;align-items:center;">
-        <button class="btn btn-primary" onclick="GradStatusUI.submitLoa()">
-          <i class="ti ti-send"></i> <span id="gs-submit-label">Sign and submit</span>
-        </button>
-        <button class="btn btn-secondary" id="gs-cancel-resubmit" style="display:none;" onclick="GradStatusUI.cancelResubmit()">Cancel resubmission</button>
-        <span class="form-hint">Submitting constitutes your electronic signature.</span>
-      </div>
-    </div>
   </div>
 
   <!-- ── Tab: Advisor Review ─────────────────────────── -->
@@ -139,6 +81,20 @@
         <button class="btn btn-secondary btn-sm" onclick="GradStatusUI.loadAdvisor()" aria-label="Refresh"><i class="ti ti-refresh"></i></button>
       </div>
       <div id="gs-advisor-list"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
+    </div>
+  </div>
+
+  <!-- ── Tab: ISSP Review ────────────────────────────── -->
+  <div id="gs-tab-issp" class="tab-panel" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title" style="justify-content:space-between;">
+        <span><i class="ti ti-world"></i> Leaves Awaiting ISSP Review</span>
+        <button class="btn btn-secondary btn-sm" onclick="GradStatusUI.loadIssp()" aria-label="Refresh"><i class="ti ti-refresh"></i></button>
+      </div>
+      <p class="text-muted" style="font-size:13px;">Visa-holding graduate students whose Leave of
+        Absence has completed department review. Approving signs the ISSP line electronically;
+        returning sends the record back to department staff with your note.</p>
+      <div id="gs-issp-queue"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
     </div>
   </div>
 
@@ -253,18 +209,114 @@
     </div>
   </div>
 
-  <!-- ── Detail modal ────────────────────────────────── -->
-  <div id="gs-modal" class="modal-overlay" style="display:none;" onclick="if(event.target===this)GradStatusUI.closeModal()">
-    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="gs-modal-title" style="max-width:760px;">
-      <div class="modal-header">
-        <span id="gs-modal-title">Request</span>
-        <button class="btn btn-secondary btn-sm" onclick="GradStatusUI.closeModal()" aria-label="Close"><i class="ti ti-x"></i></button>
+  <!-- ── Form modal (student LOA form) ───────────────── -->
+  <div id="gs-form-modal" class="app-modal" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="gs-form-title">
+    <div class="app-modal-card card" style="max-width:820px;">
+      <div class="card-title" style="justify-content:space-between;">
+        <span><i class="ti ti-file-plus"></i> <span id="gs-form-title">New Leave of Absence Request</span></span>
+        <button class="btn btn-secondary btn-sm" onclick="GradStatusUI.closeForm()" aria-label="Close dialog"><i class="ti ti-x"></i></button>
       </div>
-      <div class="modal-body" id="gs-modal-body"></div>
+      <div>
+      <div id="gs-resubmit-note" class="text-muted" style="display:none;font-size:13px;margin-bottom:10px;"></div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label" for="gs-advisor">Faculty advisor <span class="required">*</span></label>
+          <select class="form-select" id="gs-advisor">
+            <option value="">— Select your advisor —</option>
+          </select>
+          <div class="form-hint">Your advisor reviews this request first.</div>
+        </div>
+        <div class="form-group">
+          <div id="gs-visa-note" style="display:none;" class="form-hint">
+            <i class="ti ti-world"></i> University records indicate you hold a visa. After department
+            approval, this form will also be routed to International Student Services and Programs
+            (ISSP) for their review. If this is not correct, contact the graduate program coordinator.
+          </div>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label" for="gs-date-entered-q">Date entered</label>
+          <div style="display:flex;gap:6px;">
+            <select class="form-select" id="gs-date-entered-q" style="flex:1;"><option value="">— Quarter —</option></select>
+            <input class="form-input" id="gs-date-entered-y" placeholder="YYYY" inputmode="numeric" maxlength="4" style="width:90px;">
+          </div>
+          <input class="form-input" id="gs-date-entered-raw" readonly style="display:none;margin-top:4px;">
+          <div class="form-hint" id="gs-date-entered-hint"></div>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="gs-expected-grad-q">Expected graduation</label>
+          <div style="display:flex;gap:6px;">
+            <select class="form-select" id="gs-expected-grad-q" style="flex:1;"><option value="">— Quarter —</option></select>
+            <input class="form-input" id="gs-expected-grad-y" placeholder="YYYY" inputmode="numeric" maxlength="4" style="width:90px;">
+          </div>
+          <input class="form-input" id="gs-expected-grad-raw" readonly style="display:none;margin-top:4px;">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="gs-candidacy-q">Advanced to candidacy (blank if not yet)</label>
+          <div style="display:flex;gap:6px;">
+            <select class="form-select" id="gs-candidacy-q" style="flex:1;"><option value="">— Quarter —</option></select>
+            <input class="form-input" id="gs-candidacy-y" placeholder="YYYY" inputmode="numeric" maxlength="4" style="width:90px;">
+          </div>
+          <input class="form-input" id="gs-candidacy-raw" readonly style="display:none;margin-top:4px;">
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label" for="gs-begin">Leave will begin <span class="required">*</span></label>
+          <select class="form-select" id="gs-begin"><option value="">— Quarter —</option></select>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="gs-return">Return from leave <span class="required">*</span></label>
+          <select class="form-select" id="gs-return"><option value="">— Quarter —</option></select>
+          <div class="form-hint">A leave is valid for up to one year (three quarters) at a time; Summer doesn't count toward the limit.</div>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="gs-reason">Reason for requesting a Leave of Absence <span class="required">*</span></label>
+        <textarea class="form-textarea" id="gs-reason" rows="3"></textarea>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Are you on a medical or other type of leave from University employment? <span class="required">*</span></label>
+        <div class="form-hint">For example, you hold a GSR/GSI/TA appointment and are on baby bonding
+          leave, or requested emergency medical leave through the APO Leaves office.</div>
+        <div id="gs-employment"></div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">I understand that: <span class="required">*</span></label>
+        <div id="gs-acks"></div>
+      </div>
+
+      <div style="display:flex;gap:8px;align-items:center;">
+        <button class="btn btn-primary" onclick="GradStatusUI.submitLoa()">
+          <i class="ti ti-send"></i> <span id="gs-submit-label">Sign and submit</span>
+        </button>
+        <button class="btn btn-secondary" id="gs-cancel-resubmit" style="display:none;" onclick="GradStatusUI.cancelResubmit()">Cancel resubmission</button>
+        <span class="form-hint">Submitting constitutes your electronic signature.</span>
+      </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Detail modal ────────────────────────────────── -->
+  <div id="gs-modal" class="app-modal" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="gs-modal-title">
+    <div class="app-modal-card card" style="max-width:760px;">
+      <div class="card-title" style="justify-content:space-between;">
+        <span id="gs-modal-title">Request</span>
+        <button class="btn btn-secondary btn-sm" onclick="GradStatusUI.closeModal()" aria-label="Close dialog"><i class="ti ti-x"></i></button>
+      </div>
+      <div id="gs-modal-body"></div>
     </div>
   </div>
 
 </div>
+
 
 <script>
 window.GradStatusUI = (() => {
@@ -276,6 +328,7 @@ window.GradStatusUI = (() => {
   const _isStaff   = _roles.indexOf('staff_grad') !== -1;
   const _isChair   = _roles.indexOf('department_chair') !== -1;
   const _isSuper   = _roles.indexOf('super_admin') !== -1;
+  const _isIssp    = _roles.indexOf('issp_staff') !== -1;
 
   const STAGE_META = {
     SUBMITTED:            { cls: 'badge-navy',    label: 'Awaiting advisor' },
@@ -291,6 +344,7 @@ window.GradStatusUI = (() => {
   let _formData   = null;   // formData bootstrap
   let _resubmitId = null;   // record being resubmitted (same-record contract)
   let _isspUpload = null;   // { pdfBase64, pdfName } staged for recordIsspReturn
+  let _receipt    = null;   // { receiptBase64, receiptName, receiptMime } staged for markSubmitted/attachReceipt
   let _settings   = null;
 
   function esc(s) {
@@ -353,11 +407,12 @@ window.GradStatusUI = (() => {
     if (_isStudent)      { switchTab('myforms'); }
     else if (_isFaculty && !_isStaff && !_isChair && !_isSuper) { switchTab('advisor'); }
     else if (_isStaff || _isChair) { switchTab('department'); }
+    else if (_isIssp)    { switchTab('issp'); }
     else if (_isFaculty) { switchTab('advisor'); }
     else if (_isSuper)   { switchTab('department'); }
 
     if (target && target !== 'form') open(target);
-    else if (target === 'form' && _isStudent) switchTab('myforms');
+    else if (target === 'form' && _isStudent) { switchTab('forms'); openForm(); }
   }
 
   function switchTab(tab) {
@@ -370,14 +425,28 @@ window.GradStatusUI = (() => {
     const panel = document.getElementById('gs-tab-' + tab);
     if (panel) panel.style.display = 'block';
 
-    if (tab === 'myforms')    { loadMine(); _ensureFormData(); }
+    if (tab === 'forms')      _ensureFormData();
+    if (tab === 'myforms')    loadMine();
     if (tab === 'advisor')    loadAdvisor();
+    if (tab === 'issp')       loadIssp();
     if (tab === 'department') loadDepartment();
     if (tab === 'progress')   loadProgress();
     if (tab === 'settings')   loadSettings();
   }
 
   // ── Student: form bootstrap + submit ──────────────────────
+  function openForm(cb) {
+    _ensureFormData(function () {
+      // Platform Modal service: backdrop click, Escape, and the focus
+      // trap all come from the shell. Entered values survive a close/
+      // reopen — "Cancel resubmission" is the explicit reset.
+      Modal.open('gs-form-modal', { initialFocus: 'gs-advisor' });
+      if (cb) cb();
+    });
+  }
+
+  function closeForm() { Modal.close('gs-form-modal'); }
+
   function _ensureFormData(cb) {
     if (_formData) { if (cb) cb(); return; }
     App.call('grad_status', 'formData', {}, function (data) {
@@ -475,6 +544,7 @@ window.GradStatusUI = (() => {
     App.call('grad_status', 'submit', payload, function (res) {
       Toast.show(res.resubmitted ? 'Request resubmitted.' : 'Request submitted.', 'success');
       if (res.warning) Toast.show(res.warning, 'warning');
+      closeForm();
       cancelResubmit();
       _set('gs-reason', ''); _set('gs-begin', ''); _set('gs-return', '');
       document.querySelectorAll('.gs-ack').forEach(function (c) { c.checked = false; });
@@ -488,7 +558,7 @@ window.GradStatusUI = (() => {
     _resubmitId = rec.recordId;
     closeModal();
     switchTab('myforms');
-    _ensureFormData(function () {
+    openForm(function () {
       document.getElementById('gs-form-title').textContent = 'Resubmit Leave of Absence Request';
       document.getElementById('gs-submit-label').textContent = 'Sign and resubmit';
       document.getElementById('gs-cancel-resubmit').style.display = '';
@@ -534,19 +604,34 @@ window.GradStatusUI = (() => {
     visa:    { h: 'Visa',      f: function (r) { return r.visaHolder ? '<i class="ti ti-world" title="Visa holder — ISSP routing"></i>' : ''; } },
   };
 
+  function _loadFail(elId) {
+    return function (err) {
+      document.getElementById(elId).innerHTML =
+        '<p class="text-muted" style="font-size:13px;color:var(--color-danger);">' +
+        'Couldn\u2019t load: ' + esc((err && err.message) || err) + '</p>';
+    };
+  }
+
   function loadMine() {
     App.call('grad_status', 'mine', {}, function (rows) {
       document.getElementById('gs-mine-list').innerHTML =
         _rowsTable(rows, [ { h: 'Form', f: function (r) { return esc(r.formType); } },
           COL.leave, COL.stage, COL.sub ],
           'No requests yet — the form below starts one.');
-    });
+    }, _loadFail('gs-mine-list'));
   }
 
   function loadAdvisor() {
     App.call('grad_status', 'advisorQueue', {}, function (rows) {
       document.getElementById('gs-advisor-list').innerHTML =
         _rowsTable(rows, [COL.student, COL.leave, COL.sub, COL.visa], 'Nothing awaiting your review.');
+    }, _loadFail('gs-advisor-list'));
+  }
+
+  function loadIssp() {
+    App.call('grad_status', 'isspQueue', {}, function (rows) {
+      document.getElementById('gs-issp-queue').innerHTML =
+        _rowsTable(rows, [COL.student, COL.leave, COL.sub], 'Nothing is awaiting ISSP review.');
     });
   }
 
@@ -579,14 +664,15 @@ window.GradStatusUI = (() => {
   function open(recordId) {
     App.call('grad_status', 'get', { recordId: recordId }, function (rec) {
       _isspUpload = null;
+      _receipt = null;
       document.getElementById('gs-modal-title').textContent =
         rec.formType + ' — ' + (rec.studentName || rec.studentEmail);
       document.getElementById('gs-modal-body').innerHTML = _detailHtml(rec) + _actionsHtml(rec);
-      document.getElementById('gs-modal').style.display = 'flex';
+      Modal.open('gs-modal');
       if (rec.stage === 'READY_TO_SUBMIT' && (_isStaff || _isSuper)) _loadHelper(rec.recordId);
     }, null, 'Loading…');
   }
-  function closeModal() { document.getElementById('gs-modal').style.display = 'none'; }
+  function closeModal() { Modal.close('gs-modal'); }
 
   function _kv(k, v) {
     if (!v) return '';
@@ -614,10 +700,12 @@ window.GradStatusUI = (() => {
       _kv('Conditions for readmission', esc(r.conditions)) +
       _kv('Staff completed', r.staffDecidedAt ? esc(r.staffDecidedBy + ' · ' + r.staffDecidedAt) : '') +
       _kv('Sent to ISSP', esc(r.isspSentAt)) +
+      _kv('ISSP decision (portal)', r.isspDecidedAt ? esc(r.isspDecidedBy + ' · ' + r.isspDecidedAt) : '') +
       _kv('ISSP return recorded', r.isspClearedAt ? esc(r.isspClearedAt + (r.isspNote ? ' — ' + r.isspNote : '')) : '') +
       _kv('Returned note', esc(r.returnedNote)) +
       _kv('Submitted to Grad Div', r.submittedToGradDivAt ?
         esc(r.submittedToGradDivAt + (r.submissionNote ? ' — ' + r.submissionNote : '')) : '') +
+      _kv('Grad Div receipt', r.receiptUrl ? '<a href="' + esc(r.receiptUrl) + '" target="_blank" rel="noopener">Open</a>' : '') +
       _kv('Portal PDF', r.pdfUrl ? '<a href="' + esc(r.pdfUrl) + '" target="_blank" rel="noopener">Open</a>' : '') +
       _kv('ISSP-signed PDF', r.finalPdfUrl ? '<a href="' + esc(r.finalPdfUrl) + '" target="_blank" rel="noopener">Open</a>' : '') +
       '</div>';
@@ -676,6 +764,18 @@ window.GradStatusUI = (() => {
         '\')"><i class="ti ti-arrow-back-up"></i> Return to student</button>';
     }
 
+    if (r.stage === 'PENDING_ISSP' && (_isIssp || _isSuper)) {
+      h += '<p class="form-hint">Approving signs the International Student Services line ' +
+        'electronically and releases the form for filing with Graduate Division.</p>' +
+        (r.pdfUrl ? '<p style="font-size:13px;"><a href="' + esc(r.pdfUrl) +
+          '" target="_blank" rel="noopener"><i class="ti ti-file-text"></i> Review the completed form (PDF)</a></p>' : '') +
+        _noteBox('gs-issp-note', 'Note (required for a return; optional on approval)') +
+        '<button class="btn btn-primary" onclick="GradStatusUI.isspApprove(\'' + esc(r.recordId) +
+        '\')"><i class="ti ti-world-check"></i> Approve and sign (ISSP)</button> ' +
+        '<button class="btn btn-secondary" onclick="GradStatusUI.isspReturn(\'' + esc(r.recordId) +
+        '\')"><i class="ti ti-arrow-back-up"></i> Return to department staff</button><hr>';
+    }
+
     if (r.stage === 'PENDING_ISSP' && (_isStaff || _isSuper)) {
       h += '<p class="form-hint">When ISSP returns the signed form to the department, attach it here ' +
         'and record the return. The attached copy becomes the version submitted to Grad Division.</p>' +
@@ -691,6 +791,10 @@ window.GradStatusUI = (() => {
     if (r.stage === 'READY_TO_SUBMIT' && (_isStaff || _isSuper)) {
       h += '<div id="gs-helper"><div class="module-loading"><div class="spinner"></div>' +
         '<span>Loading submission helper…</span></div></div>' +
+        '<div class="form-group"><label class="form-label" for="gs-receipt-file">Grad Div receipt ' +
+        '(optional — the "copy of your responses" email, as PDF or image; can also be attached later)</label>' +
+        '<input type="file" id="gs-receipt-file" accept="application/pdf,image/*,message/rfc822,.eml" ' +
+        'onchange="GradStatusUI.onReceiptFile(this)"></div>' +
         _noteBox('gs-act-note', 'Submission note (optional — e.g. a confirmation number)') +
         '<button class="btn btn-primary" onclick="GradStatusUI.markSubmitted(\'' + esc(r.recordId) +
         '\')"><i class="ti ti-checkbox"></i> Mark submitted to Grad Division</button> ' +
@@ -698,6 +802,21 @@ window.GradStatusUI = (() => {
         '\')"><i class="ti ti-refresh"></i> Regenerate PDF</button>';
     }
 
+    if (r.stage === 'SUBMITTED_TO_GRADDIV' && (_isStaff || _isSuper)) {
+      h += '<p class="form-hint">' + (r.receiptUrl
+          ? 'A receipt is attached; choosing a new file replaces it on the record.'
+          : 'Attach the Grad Div receipt (the "copy of your responses" email) when it arrives.') + '</p>' +
+        '<div class="form-group"><input type="file" id="gs-receipt-file" ' +
+        'accept="application/pdf,image/*,message/rfc822,.eml" onchange="GradStatusUI.onReceiptFile(this)"></div>' +
+        '<button class="btn btn-primary" onclick="GradStatusUI.attachReceipt(\'' + esc(r.recordId) +
+        '\')"><i class="ti ti-receipt"></i> ' + (r.receiptUrl ? 'Replace receipt' : 'Attach receipt') + '</button>';
+    }
+
+    if (_isSuper) {
+      h += '<hr><button class="btn btn-danger" onclick="GradStatusUI.deleteRecord(\'' +
+        esc(r.recordId) + '\')"><i class="ti ti-trash-x"></i> Delete record (super admin)</button>' +
+        '<span class="form-hint" style="margin-left:8px;">Permanent. Generated PDFs stay in Drive.</span>';
+    }
     return h + '</div>';
   }
 
@@ -756,6 +875,21 @@ window.GradStatusUI = (() => {
     }, null, busy || 'Working…');
   }
 
+  function isspApprove(id) {
+    App.call('grad_status', 'isspApprove',
+      { recordId: id, note: _val('gs-issp-note') }, function () {
+        Toast.show('Approved and signed.', 'success');
+        closeModal(); loadIssp();
+      }, null, 'Signing and generating PDF…');
+  }
+  function isspReturn(id) {
+    App.call('grad_status', 'isspReturn',
+      { recordId: id, note: _val('gs-issp-note') }, function () {
+        Toast.show('Returned to department staff.', 'success');
+        closeModal(); loadIssp();
+      });
+  }
+
   function advisorApprove(id) { _act('advisorApprove', id); }
   function advisorReturn(id)  { _act('advisorReturn', id); }
   function chairApprove(id)   { _act('chairApprove', id, { conditions: _val('gs-act-conditions') }); }
@@ -766,7 +900,25 @@ window.GradStatusUI = (() => {
       'Generating PDF…');
   }
   function staffReturn(id)    { _act('staffReturn', id); }
-  function markSubmitted(id)  { _act('markSubmitted', id); }
+  function markSubmitted(id)  { _act('markSubmitted', id, _receipt || {}); }
+  function attachReceipt(id) {
+    if (!_receipt) { Toast.show('Choose the receipt file first.', 'error'); return; }
+    App.call('grad_status', 'attachReceipt',
+      Object.assign({ recordId: id, note: _val('gs-act-note') }, _receipt), function () {
+        Toast.show('Receipt attached.', 'success');
+        open(id);
+      });
+  }
+  function onReceiptFile(input) {
+    const f = input.files && input.files[0];
+    if (!f) { _receipt = null; return; }
+    const reader = new FileReader();
+    reader.onload = function () {
+      _receipt = { receiptBase64: String(reader.result).split(',')[1] || '',
+                   receiptName: f.name, receiptMime: f.type || 'application/pdf' };
+    };
+    reader.readAsDataURL(f);
+  }
   function recordIsspReturn(id) { _act('recordIsspReturn', id, _isspUpload || {}); }
   function regeneratePdf(id) {
     App.call('grad_status', 'regeneratePdf', { recordId: id }, function (res) {
@@ -774,6 +926,16 @@ window.GradStatusUI = (() => {
       open(id);
     }, null, 'Generating PDF…');
   }
+  function deleteRecord(id) {
+    if (!confirm('Permanently delete this record? This cannot be undone.')) return;
+    App.call('grad_status', 'deleteRecord', { recordId: id }, function () {
+      Toast.show('Record deleted.', 'success');
+      closeModal();
+      if (_isStudent) loadMine();
+      loadDepartment();
+    });
+  }
+
   function withdraw(id) {
     if (!confirm('Withdraw this request? This cannot be undone.')) return;
     App.call('grad_status', 'withdraw', { recordId: id }, function () {
@@ -809,14 +971,17 @@ window.GradStatusUI = (() => {
           return '<tr><td>' + esc(r.StudentEmail) + '</td><td>' + esc(r.AdvisorEmail || '') +
             '</td><td>' + esc(r.DegreeObjective || '') + '</td><td>' + esc(r.DateEntered || '') +
             '</td><td>' + esc(r.AdvancedToCandidacy || '') +
-            '</td><td><button class="btn btn-secondary btn-sm" onclick=\'GradStatusUI.editProgress(' +
+            '</td><td style="white-space:nowrap;"><button class="btn btn-secondary btn-sm" onclick=\'GradStatusUI.editProgress(' +
             JSON.stringify({ e: r.StudentEmail, a: r.AdvisorEmail, o: r.DegreeObjective,
               d: r.DateEntered, x: r.ExpectedGraduation, c: r.AdvancedToCandidacy,
               q: r.QEPassedDate, l: r.LanguageFulfilledDate, n: r.Notes })
               .replace(/</g, '\\u003c').replace(/'/g, '&#39;') +
-            ')\'>Edit</button></td></tr>';
+            ')\'>Edit</button>' +
+            (_isSuper ? ' <button class="btn btn-danger btn-sm" onclick="GradStatusUI.progressDelete(\'' +
+              esc(r.StudentEmail) + '\')" aria-label="Delete"><i class="ti ti-trash-x"></i></button>' : '') +
+            '</td></tr>';
         }).join('') + '</tbody></table></div>';
-    });
+    }, _loadFail('gs-progress-list'));
   }
 
   function editProgress(p) {
@@ -829,6 +994,14 @@ window.GradStatusUI = (() => {
     _set('gs-prog-qe', p.q || ''); _set('gs-prog-lang', p.l || '');
     _set('gs-prog-notes', p.n || '');
     document.getElementById('gs-prog-email').readOnly = true;
+  }
+
+  function progressDelete(email) {
+    if (!confirm('Permanently delete the progress record for ' + email + '?')) return;
+    App.call('grad_status', 'progressDelete', { studentEmail: email }, function () {
+      Toast.show('Progress record deleted.', 'success');
+      loadProgress();
+    });
   }
 
   function saveProgress() {
@@ -904,11 +1077,13 @@ window.GradStatusUI = (() => {
   // ── Exports (every onclick above must appear here) ────────
   return {
     init, switchTab,
-    loadMine, submitLoa, startResubmit, cancelResubmit, withdraw,
+    loadMine, openForm, closeForm, submitLoa, startResubmit, cancelResubmit, withdraw,
     loadAdvisor, advisorApprove, advisorReturn,
+    loadIssp, isspApprove, isspReturn,
     loadDepartment, chairApprove, chairReturn, staffComplete, staffReturn,
-    recordIsspReturn, onIsspFile, markSubmitted, regeneratePdf, copyField,
-    loadProgress, editProgress, saveProgress,
+    recordIsspReturn, onIsspFile, markSubmitted, attachReceipt, onReceiptFile, regeneratePdf, copyField,
+    loadProgress, editProgress, saveProgress, progressDelete,
+    deleteRecord,
     loadSettings, saveSettings,
     open, closeModal,
   };

@@ -22,6 +22,13 @@
 const GradProgress = (() => {
 
   function _sheetId() { return CONFIG.SHEETS.GRAD; }
+  function _configured() { return String(CONFIG.SHEETS.GRAD || '').trim().length >= 20; }
+  function _requireConfigured() {
+    if (!_configured()) {
+      throw new Error('The Graduate Forms spreadsheet is not configured — run setUp() ' +
+        'from the Apps Script editor and paste the logged id into CONFIG.SHEETS.GRAD in Config.gs.');
+    }
+  }
   function _tab()     { return (CONFIG.TABS && CONFIG.TABS.GRAD_PROGRESS) || 'GradProgress'; }
 
   // Fields a caller may write via upsert(). Anything else in a patch is
@@ -41,9 +48,15 @@ const GradProgress = (() => {
   function get(studentEmail) {
     const email = _norm(studentEmail);
     if (!email) return null;
-    const rows = DataService.getAll(_sheetId(), _tab());
-    for (let i = 0; i < rows.length; i++) {
-      if (_norm(rows[i].StudentEmail) === email) return rows[i];
+    try {
+      const rows = DataService.getAll(_sheetId(), _tab());
+      for (let i = 0; i < rows.length; i++) {
+        if (_norm(rows[i].StudentEmail) === email) return rows[i];
+      }
+    } catch (e) {
+      // Read failure posture: degrade to "no row" (form bootstraps must
+      // still render); the cause is logged for the admin.
+      Logger.log('GradProgress.get degraded to null: ' + e);
     }
     return null;
   }
@@ -61,6 +74,7 @@ const GradProgress = (() => {
   function upsert(studentEmail, patch, user) {
     const email = _norm(studentEmail);
     if (!email) throw new Error('GradProgress.upsert: student email is required.');
+    _requireConfigured();
     const clean = {};
     WRITABLE.forEach(function (f) {
       if (patch && Object.prototype.hasOwnProperty.call(patch, f) && patch[f] !== undefined) {
@@ -148,9 +162,25 @@ const GradProgress = (() => {
     };
   }
 
+  /**
+   * Deletes a student's progress row entirely. Deliberately destructive
+   * (DataService.remove semantics) — the caller owns the decision and
+   * any cleanup of records that reference the student.
+   */
+  function remove(studentEmail, user) {
+    const email = _norm(studentEmail);
+    if (!email) throw new Error('GradProgress.remove: student email is required.');
+    _requireConfigured();
+    const row = get(email);
+    if (!row) return { deleted: false };
+    DataService.remove(_sheetId(), _tab(), 'StudentEmail', row.StudentEmail);
+    return { deleted: true };
+  }
+
   /** All progress rows (staff Progress tab). */
   function listAll() {
-    return DataService.getAll(_sheetId(), _tab());
+    try { return DataService.getAll(_sheetId(), _tab()); }
+    catch (e) { Logger.log('GradProgress.listAll degraded to []: ' + e); return []; }
   }
 
   function _parseJson(v) {
@@ -159,6 +189,6 @@ const GradProgress = (() => {
     try { return JSON.parse(s); } catch (e) { return null; }
   }
 
-  return { get, upsert, absorb, writeRoster, milestoneSummary, listAll };
+  return { get, upsert, absorb, writeRoster, milestoneSummary, listAll, remove };
 
 })();

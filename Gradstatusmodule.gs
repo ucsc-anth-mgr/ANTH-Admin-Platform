@@ -21,20 +21,23 @@
 // and stamps the record. The only outbound external email is the ISSP
 // packet (D11), sent when a visa holder's record enters the hold.
 //
-// PDF: the official campus LOA form as a fillable AcroForm in Drive
-// (file id in GradFormsSettings LOA_TEMPLATE_FILE_ID — UI-managed so
-// staff can swap a revised form without a deployment). Filled via
-// ReportService.fillTemplate at staff Complete; signature lines carry
-// the platform's electronic-signature text. Expected AcroForm field
-// names (create the template with EXACTLY these):
-//   LastName, FirstName, StudentID, Email, Department, DateEntered,
-//   ExpectedGraduation, AdvancedToCandidacy, LeaveBeginQuarter,
-//   LeaveBeginYear, ReturnQuarter, ReturnYear, Reason,
-//   StudentSignature, StudentSignDate, AdviserSignature,
-//   AdviserSignDate, ChairSignature, ChairSignDate,
-//   AssistantSignature, AssistantSignDate, Conditions
-// The ISSP and Dean lines stay blank (ISSP signs out of band during
-// the hold; the Dean's line is Grad Div's).
+// PDF: the OFFICIAL campus LOA form (Rev. 7/2017), used as the
+// template AS-IS — it already ships with fillable AcroForm fields, and
+// the fill map below addresses them by the campus's own field names
+// (verified by extraction from request-loa.pdf):
+//   'Last Name', 'First', 'MI', 'ID', 'Email', 'Dept',
+//   'Date 1' (date entered), 'Date 2' (expected graduation),
+//   'Candidacy', 'Leave Quarter', 'Leave Yr', 'Rtn Quarter', 'Rtn Yr',
+//   'Reason', 'Date 3' + 'Student signature',
+//   'Text1' (REVIEW conditions box), 'Date 4' + 'Advisor signature',
+//   'Date 5' + 'Dept chair signature', 'Date 6' + 'Department Assistant',
+//   'Date 7' + 'ISSS signature' (left blank — ISSP signs out of band),
+//   'Date 8' + 'Grad Div signature' (left blank — theirs, per D16).
+// So: upload the official PDF to Drive unmodified and paste its file id
+// into GradFormsSettings LOA_TEMPLATE_FILE_ID (UI-managed — a campus
+// revision that keeps its field names is a drop-in id swap). Signature
+// values are 'Name (electronic)'; each line's date goes in its paired
+// Date field, keeping the narrow signature boxes from overflowing.
 //
 // ASYNC RULE: staffComplete / regeneratePdf await
 // ReportService.fillTemplate (pdf-lib), so they are async and dispatch
@@ -56,6 +59,8 @@ const GradStatusModule = (() => {
   const CHAIR_ROLE   = 'department_chair';    // existing platform role
   const ADVISOR_POOL = 'senate_faculty';      // advisor picker population
   const VISA_ROLE    = 'visa_holder';         // identity flag; drives the ISSP hold
+  const ISSP_ROLE    = 'issp_staff';          // ISSP reviewers working IN the portal (optional;
+                                              // with no active holders the email-packet path runs)
 
   // ── Stages ─────────────────────────────────────────────────
   const STAGE = {
@@ -132,20 +137,26 @@ const GradStatusModule = (() => {
   // Tab manifest — consumed by TabRegistry (Admin → Modules → Tabs)
   // ============================================================
   const TABS = [
-    { key: 'myforms', label: 'My Forms', icon: 'ti-file-text',
+    { key: 'forms', label: 'Forms', icon: 'ti-file-plus',
       roles: [STUDENT_ROLE],
-      actions: ['formData', 'submit', 'mine', 'get', 'withdraw'] },
+      actions: ['formData', 'submit'] },
+    { key: 'myforms', label: 'My Requests', icon: 'ti-list',
+      roles: [STUDENT_ROLE],
+      actions: ['mine', 'get', 'withdraw'] },
     { key: 'advisor', label: 'Advisor Review', icon: 'ti-gavel',
       roles: [ADVISOR_POOL],
       actions: ['advisorQueue', 'advisorApprove', 'advisorReturn', 'get'] },
+    { key: 'issp', label: 'ISSP Review', icon: 'ti-world',
+      roles: [ISSP_ROLE],
+      actions: ['isspQueue', 'isspApprove', 'isspReturn', 'get'] },
     { key: 'department', label: 'Department Review', icon: 'ti-clipboard-check',
       roles: [STAFF_ROLE, CHAIR_ROLE],
       actions: ['departmentQueue', 'chairApprove', 'chairReturn', 'staffComplete',
                 'staffReturn', 'recordIsspReturn', 'markSubmitted', 'submissionHelper',
-                'regeneratePdf', 'allRecords', 'get'] },
+                'regeneratePdf', 'allRecords', 'get', 'deleteRecord', 'attachReceipt'] },
     { key: 'progress', label: 'Progress Records', icon: 'ti-timeline',
       roles: [STAFF_ROLE], floor: STAFF_ROLE,
-      actions: ['progressList', 'progressSave'] },
+      actions: ['progressList', 'progressSave', 'progressDelete'] },
     { key: 'settings', label: 'Settings', icon: 'ti-settings',
       roles: [], floor: 'super_admin',
       actions: ['getSettings', 'saveSettings'] },
@@ -171,7 +182,11 @@ const GradStatusModule = (() => {
     staffComplete:    [STAFF_ROLE],
     staffReturn:      [STAFF_ROLE],
     recordIsspReturn: [STAFF_ROLE],
+    isspQueue:        [ISSP_ROLE],
+    isspApprove:      [ISSP_ROLE],
+    isspReturn:       [ISSP_ROLE],
     markSubmitted:    [STAFF_ROLE],
+    attachReceipt:    [STAFF_ROLE],
     submissionHelper: [STAFF_ROLE],
     regeneratePdf:    [STAFF_ROLE],
     allRecords:       [STAFF_ROLE],
@@ -179,6 +194,8 @@ const GradStatusModule = (() => {
     progressSave:     [STAFF_ROLE],
     getSettings:      [],                          // super_admin only
     saveSettings:     [],
+    deleteRecord:     [],                          // super_admin only
+    progressDelete:   [],
   };
 
   // ============================================================
@@ -231,7 +248,7 @@ const GradStatusModule = (() => {
     if (QUARTER_ORDER.indexOf(bq) === -1 || !/^\d{4}$/.test(by)) throw new Error('Select the quarter your leave will begin.');
     if (QUARTER_ORDER.indexOf(rq) === -1 || !/^\d{4}$/.test(ry)) throw new Error('Select the quarter you will return from leave.');
     const span = _quarterSpan(bq, by, rq, ry);
-    if (span < 1) throw new Error('The return quarter must be after the quarter your leave begins.');
+    if (span < 0) throw new Error('The return quarter must be after the quarter your leave begins.');
 
     const reason = String(payload.reason || '').trim();
     if (!reason) throw new Error('Enter the reason for requesting a Leave of Absence.');
@@ -247,7 +264,7 @@ const GradStatusModule = (() => {
 
     const isVisa = (roles || []).indexOf(VISA_ROLE) !== -1;
     const warning = span > 3
-      ? 'This request spans ' + span + ' quarters. A Leave of Absence is valid for no more than one year (three quarters); longer requests require resubmission at the end of the approved term.'
+      ? 'This request spans ' + span + ' countable quarters (Summer excluded). A Leave of Absence is valid for no more than one year (three quarters); longer requests require resubmission at the end of the approved term.'
       : '';
 
     // ── Self-healing progress writeback (advisor always; dates if blank) ──
@@ -303,8 +320,8 @@ const GradStatusModule = (() => {
   /** The student's own records, newest first. */
   function mine(payload, user, roles) {
     return DataService.query(SHEET(), TAB(), 'StudentEmail', user)
-      .map(_publicShape)
-      .sort(function (a, b) { return String(b.createdAt).localeCompare(String(a.createdAt)); });
+      .map(function (r) { return _publicShape(r); })
+      .sort(function (a, b) { return b.createdAt - a.createdAt; });
   }
 
   /** One record, for the detail modal. Record-level visibility check. */
@@ -335,7 +352,7 @@ const GradStatusModule = (() => {
   function advisorQueue(payload, user, roles) {
     return DataService.query(SHEET(), TAB(), 'AdvisorEmail', _norm(user))
       .filter(function (r) { return r.Stage === STAGE.SUBMITTED; })
-      .map(_publicShape);
+      .map(function (r) { return _publicShape(r); });
   }
 
   function advisorApprove(payload, user, roles) {
@@ -369,10 +386,10 @@ const GradStatusModule = (() => {
     const isChair = (roles || []).indexOf(CHAIR_ROLE) !== -1 || (roles || []).indexOf('super_admin') !== -1;
     const isStaff = (roles || []).indexOf(STAFF_ROLE) !== -1 || (roles || []).indexOf('super_admin') !== -1;
     return {
-      chair: isChair ? all.filter(function (r) { return r.Stage === STAGE.PENDING_CHAIR; }).map(_publicShape) : [],
-      staff: isStaff ? all.filter(function (r) { return r.Stage === STAGE.PENDING_STAFF; }).map(_publicShape) : [],
-      issp:  isStaff ? all.filter(function (r) { return r.Stage === STAGE.PENDING_ISSP; }).map(_publicShape) : [],
-      ready: isStaff ? all.filter(function (r) { return r.Stage === STAGE.READY_TO_SUBMIT; }).map(_publicShape) : [],
+      chair: isChair ? all.filter(function (r) { return r.Stage === STAGE.PENDING_CHAIR; }).map(function (r) { return _publicShape(r); }) : [],
+      staff: isStaff ? all.filter(function (r) { return r.Stage === STAGE.PENDING_STAFF; }).map(function (r) { return _publicShape(r); }) : [],
+      issp:  isStaff ? all.filter(function (r) { return r.Stage === STAGE.PENDING_ISSP; }).map(function (r) { return _publicShape(r); }) : [],
+      ready: isStaff ? all.filter(function (r) { return r.Stage === STAGE.READY_TO_SUBMIT; }).map(function (r) { return _publicShape(r); }) : [],
     };
   }
 
@@ -408,6 +425,9 @@ const GradStatusModule = (() => {
     const updates = {
       StaffDecidedBy: user, StaffDecidedAt: new Date(),
       StaffNote: String((payload && payload.note) || '').trim(),
+      // Fresh hold: clear any in-portal ISSP decision from a previous
+      // round so the regenerated PDF never carries a stale ISSS signature.
+      ISSPDecidedBy: '', ISSPDecidedAt: '',
     };
     if (payload && String(payload.conditions || '').trim() !== '') {
       updates.ConditionsForReadmission = String(payload.conditions).trim();
@@ -421,6 +441,7 @@ const GradStatusModule = (() => {
     const pdf = await _generatePdf(fresh, user);
     DataService.update(SHEET(), TAB(), 'RecordID', rec.RecordID,
       { PDFFileID: pdf.fileId, PDFUrl: pdf.url });
+    _grantViewers(pdf.fileId, _fileAudience(fresh));
     Tasks.resolveForSource(MODULE, rec.RecordID);
 
     const isVisa = _isTrue(fresh.VisaHolderAtSubmit);
@@ -435,6 +456,73 @@ const GradStatusModule = (() => {
   function staffReturn(payload, user, roles) {
     const rec = _assertStage(payload, STAGE.PENDING_STAFF);
     return _returnToStudent(rec, user, payload, 'StaffDecidedBy', 'StaffDecidedAt');
+  }
+
+  // ── ISSP in-portal review (records at PENDING_ISSP) ────────
+  // Runs when ISSP staff hold the issp_staff role and work in the
+  // portal. The staff "Record ISSP return" below remains the fallback
+  // for the email-packet path — both can coexist on one record's life.
+
+  function isspQueue(payload, user, roles) {
+    return DataService.getAll(SHEET(), TAB())
+      .filter(function (r) { return r.Stage === STAGE.PENDING_ISSP; })
+      .map(function (r) { return _publicShape(r); });
+  }
+
+  /**
+   * ISSP approves: their electronic signature lands on the form's
+   * 'ISSS signature' / 'Date 7' lines via a PDF regeneration, and the
+   * record moves to READY_TO_SUBMIT. ASYNC — awaits the pdf-lib fill.
+   */
+  async function isspApprove(payload, user, roles) {
+    const rec = _assertStage(payload, STAGE.PENDING_ISSP);
+    DataService.update(SHEET(), TAB(), 'RecordID', rec.RecordID, {
+      ISSPDecidedBy: user, ISSPDecidedAt: new Date(),
+      ISSPNote: String((payload && payload.note) || '').trim(),
+      ISSPClearedAt: new Date(), ISSPClearedBy: user,
+    });
+    const fresh = _byId(rec.RecordID);
+    const pdf = await _generatePdf(fresh, user);
+    DataService.update(SHEET(), TAB(), 'RecordID', rec.RecordID,
+      { PDFFileID: pdf.fileId, PDFUrl: pdf.url });
+    _grantViewers(pdf.fileId, _fileAudience(fresh));
+    Tasks.resolveForSource(MODULE, rec.RecordID);
+    _enterReadyToSubmit(_byId(rec.RecordID), pdf.url);
+    return { recordId: rec.RecordID, stage: STAGE.READY_TO_SUBMIT, pdfUrl: pdf.url };
+  }
+
+  /**
+   * ISSP sends the record back to DEPARTMENT STAFF (not the student) —
+   * ISSP-stage problems are administrative. Staff address the note and
+   * Complete again, which re-enters the hold with a clean decision.
+   */
+  function isspReturn(payload, user, roles) {
+    const rec = _assertStage(payload, STAGE.PENDING_ISSP);
+    const note = String((payload && payload.note) || '').trim();
+    if (!note) throw new Error('Enter a note telling department staff what needs attention.');
+    DataService.update(SHEET(), TAB(), 'RecordID', rec.RecordID, {
+      Stage: STAGE.PENDING_STAFF,
+      ISSPDecidedBy: user, ISSPDecidedAt: new Date(),
+      ISSPNote: note,
+    });
+    Tasks.resolveForSource(MODULE, rec.RecordID);
+    Tasks.create({
+      module: MODULE, sourceType: SOURCE_TYPE, sourceId: rec.RecordID,
+      label: 'ISSP returned a Leave of Absence — ' + rec.StudentName,
+      assignedRole: STAFF_ROLE,
+    });
+    const to = Notify.resolveRecipients({ superAdmins: [], explicit: _roleEmails(STAFF_ROLE) });
+    if (to.length) {
+      Notify.send({
+        to: to,
+        subject: 'ISSP returned a Leave of Absence — ' + rec.StudentName,
+        body: 'ISSP reviewed ' + rec.StudentName + '\u2019s Leave of Absence and returned it to the department:\n\n' +
+          note + '\n\nAddress the note and complete review again in the portal: ' + _deepLink(rec.RecordID),
+        replyTo: Settings.replyTo(MODULE),
+        cc: Settings.cc(MODULE),
+      });
+    }
+    return { recordId: rec.RecordID, stage: STAGE.PENDING_STAFF };
   }
 
   /**
@@ -455,6 +543,7 @@ const GradStatusModule = (() => {
         String((payload && payload.pdfName) || ('ISSP-signed-' + rec.RecordID + '.pdf')));
       updates.FinalPDFFileID = saved.fileId;
       updates.FinalPDFUrl    = saved.url;
+      _grantViewers(saved.fileId, _fileAudience(rec));
     }
     DataService.update(SHEET(), TAB(), 'RecordID', rec.RecordID, updates);
     Tasks.resolveForSource(MODULE, rec.RecordID);
@@ -500,17 +589,56 @@ const GradStatusModule = (() => {
     };
   }
 
-  /** Staff stamps the record after uploading through Grad Div's system. */
+  /**
+   * Staff stamps the record after uploading through Grad Div's system.
+   * Google Forms emails the submitter a receipt (a copy of the
+   * responses); it can be attached here, or later via attachReceipt
+   * once the email arrives — the record isn't held open waiting for it.
+   */
   function markSubmitted(payload, user, roles) {
     const rec = _assertStage(payload, STAGE.READY_TO_SUBMIT);
-    DataService.update(SHEET(), TAB(), 'RecordID', rec.RecordID, {
+    const updates = {
       Stage: STAGE.SUBMITTED_TO_GRADDIV,
       SubmittedToGradDivAt: new Date(), SubmittedToGradDivBy: user,
       SubmissionNote: String((payload && payload.note) || '').trim(),
-    });
+    };
+    const b64 = String((payload && payload.receiptBase64) || '').trim();
+    if (b64) {
+      const saved = _saveUpload(rec, b64,
+        String((payload && payload.receiptName) || ('GradDiv-receipt-' + rec.RecordID + '.pdf')),
+        String((payload && payload.receiptMime) || ''));
+      updates.ReceiptFileID = saved.fileId;
+      updates.ReceiptFileUrl = saved.url;
+      _grantViewers(saved.fileId, _fileAudience(rec));
+    }
+    DataService.update(SHEET(), TAB(), 'RecordID', rec.RecordID, updates);
     Tasks.resolveForSource(MODULE, rec.RecordID);
     _notifyStudentSubmitted(_byId(rec.RecordID));
     return { recordId: rec.RecordID, stage: STAGE.SUBMITTED_TO_GRADDIV };
+  }
+
+  /**
+   * Attaches (or replaces) the Grad Div submission receipt on an
+   * already-submitted record. The prior receipt file, if any, is left
+   * in Drive (evidence posture) — only the record's pointer moves.
+   */
+  function attachReceipt(payload, user, roles) {
+    const rec = _byId(payload && payload.recordId);
+    if (!rec) throw new Error('Record not found.');
+    if (rec.Stage !== STAGE.SUBMITTED_TO_GRADDIV) {
+      throw new Error('Receipts attach to records already marked submitted; use Mark submitted to attach one at submission time.');
+    }
+    const b64 = String((payload && payload.receiptBase64) || '').trim();
+    if (!b64) throw new Error('Choose the receipt file to attach.');
+    const saved = _saveUpload(rec, b64,
+      String((payload && payload.receiptName) || ('GradDiv-receipt-' + rec.RecordID + '.pdf')),
+      String((payload && payload.receiptMime) || ''));
+    _grantViewers(saved.fileId, _fileAudience(rec));
+    DataService.update(SHEET(), TAB(), 'RecordID', rec.RecordID, {
+      ReceiptFileID: saved.fileId, ReceiptFileUrl: saved.url,
+      SubmissionNote: String((payload && payload.note) || rec.SubmissionNote || '').trim(),
+    });
+    return { recordId: rec.RecordID, receiptUrl: saved.url };
   }
 
   /** Regenerates the portal PDF (corrections before submission). ASYNC. */
@@ -523,13 +651,43 @@ const GradStatusModule = (() => {
     const pdf = await _generatePdf(rec, user);
     DataService.update(SHEET(), TAB(), 'RecordID', rec.RecordID,
       { PDFFileID: pdf.fileId, PDFUrl: pdf.url });
+    _grantViewers(pdf.fileId, _fileAudience(rec));
     return { recordId: rec.RecordID, pdfUrl: pdf.url };
   }
 
   /** Every record (staff oversight list on the Department tab). */
   function allRecords(payload, user, roles) {
-    return DataService.getAll(SHEET(), TAB()).map(_publicShape)
-      .sort(function (a, b) { return String(b.createdAt).localeCompare(String(a.createdAt)); });
+    return DataService.getAll(SHEET(), TAB()).map(function (r) { return _publicShape(r); })
+      .sort(function (a, b) { return b.createdAt - a.createdAt; });
+  }
+
+  /**
+   * SUPER ADMIN: permanently deletes a status record (any stage) —
+   * primarily for clearing test data. The row is removed (not staged),
+   * its open tasks are resolved, and any generated/uploaded PDFs are
+   * deliberately LEFT in Drive and the Reports index (documents are
+   * evidence; remove them by hand if they too are test artifacts).
+   * ActionPolicy declares this [] (super_admin only); the explicit
+   * check below is the handler-level floor that holds even with the
+   * policy in shadow mode.
+   */
+  function deleteRecord(payload, user, roles) {
+    if ((roles || []).indexOf('super_admin') === -1) {
+      throw new Error('Only a super admin can delete records.');
+    }
+    const rec = _byId(payload && payload.recordId);
+    if (!rec) throw new Error('Record not found.');
+    Tasks.resolveForSource(MODULE, rec.RecordID);
+    DataService.remove(SHEET(), TAB(), 'RecordID', rec.RecordID);
+    return { recordId: rec.RecordID, deleted: true };
+  }
+
+  /** SUPER ADMIN: permanently deletes one GradProgress row (test cleanup). */
+  function progressDelete(payload, user, roles) {
+    if ((roles || []).indexOf('super_admin') === -1) {
+      throw new Error('Only a super admin can delete progress records.');
+    }
+    return GradProgress.remove(payload && payload.studentEmail, user);
   }
 
   // ============================================================
@@ -537,7 +695,7 @@ const GradStatusModule = (() => {
   // ============================================================
 
   function progressList(payload, user, roles) {
-    return GradProgress.listAll();
+    return GradProgress.listAll().map(_serializable);
   }
 
   /**
@@ -559,7 +717,7 @@ const GradStatusModule = (() => {
     if (patch.DateEntered)         patch.DateEntered         = _checkQuarterYear('Date entered', patch.DateEntered);
     if (patch.ExpectedGraduation)  patch.ExpectedGraduation  = _checkQuarterYear('Expected graduation', patch.ExpectedGraduation);
     if (patch.AdvancedToCandidacy) patch.AdvancedToCandidacy = _checkQuarterYear('Advanced to candidacy', patch.AdvancedToCandidacy);
-    return GradProgress.upsert(email, patch, user);
+    return _serializable(GradProgress.upsert(email, patch, user));
   }
 
   // ============================================================
@@ -591,6 +749,19 @@ const GradStatusModule = (() => {
   function _norm(e) { return String(e || '').trim().toLowerCase(); }
   function _isTrue(v) { return String(v).trim().toUpperCase() === 'TRUE'; }
 
+  /**
+   * Makes a sheet row safe to return through google.script.run, which
+   * rejects Date objects anywhere in the payload: every Date value is
+   * formatted to a string; everything else passes through.
+   */
+  function _serializable(row) {
+    const out = {};
+    Object.keys(row || {}).forEach(function (k) {
+      out[k] = (row[k] instanceof Date) ? _fmtDate(row[k]) : row[k];
+    });
+    return out;
+  }
+
   function _byId(recordId) {
     const id = String(recordId || '').trim();
     if (!id) return null;
@@ -618,6 +789,7 @@ const GradStatusModule = (() => {
     if ((roles || []).indexOf('super_admin') !== -1) return true;
     if ((roles || []).indexOf(STAFF_ROLE) !== -1) return true;
     if ((roles || []).indexOf(CHAIR_ROLE) !== -1) return true;
+    if ((roles || []).indexOf(ISSP_ROLE) !== -1 && _isTrue(rec.VisaHolderAtSubmit)) return true;
     const me = _norm(user);
     return _norm(rec.StudentEmail) === me || _norm(rec.AdvisorEmail) === me;
   }
@@ -665,11 +837,26 @@ const GradStatusModule = (() => {
     return m[1] + ' ' + m[2];
   }
 
-  /** Whole quarters from begin to return (return − begin). */
+  function _rawQuarterIndex(q, y) { return Number(y) * 4 + QUARTER_ORDER.indexOf(q); }
+
+  /**
+   * COUNTABLE quarters on leave: begin (inclusive) through return
+   * (exclusive), EXCLUDING Summer — summer is not a regular term and
+   * does not count toward the one-year (three-quarter) leave limit.
+   * So Fall 2026 → Fall 2027 spans Fall/Winter/Spring (+ an uncounted
+   * Summer) = 3, exactly one year. Returns -1 when the return quarter
+   * is not after the begin quarter (ordering error; a Summer-only
+   * leave legitimately counts 0).
+   */
   function _quarterSpan(bq, by, rq, ry) {
-    const a = Number(by) * 4 + QUARTER_ORDER.indexOf(bq);
-    const b = Number(ry) * 4 + QUARTER_ORDER.indexOf(rq);
-    return b - a;
+    const a = _rawQuarterIndex(bq, by);
+    const b = _rawQuarterIndex(rq, ry);
+    if (b <= a) return -1;
+    let n = 0;
+    for (let i = a; i < b; i++) {
+      if (QUARTER_ORDER[i % QUARTER_ORDER.length] !== 'Summer') n++;
+    }
+    return n;
   }
 
   function _fmtDate(d) {
@@ -677,8 +864,9 @@ const GradStatusModule = (() => {
     return Utilities.formatDate(dt, Session.getScriptTimeZone(), 'M/d/yyyy');
   }
 
-  function _eSig(name, when) {
-    return String(name || '') + ' (electronic ' + _fmtDate(when) + ')';
+  function _eSig(name) {
+    if (!String(name || '').trim()) return '';
+    return String(name || '') + ' (electronic)';
   }
 
   function _deepLink(recordId) {
@@ -698,7 +886,10 @@ const GradStatusModule = (() => {
       spanQuarters:  rec.LeaveSpanQuarters,
       visaHolder:    _isTrue(rec.VisaHolderAtSubmit),
       submittedAt:   rec.SubmittedAt ? _fmtDate(rec.SubmittedAt) : '',
-      createdAt:     rec.CreatedAt || '',
+      // Epoch ms, NOT the raw Date: google.script.run cannot serialize
+      // Date objects — one anywhere in a return value fails the whole
+      // call into the client's failure handler.
+      createdAt:     rec.CreatedAt ? new Date(rec.CreatedAt).getTime() : 0,
       pdfUrl:        String(rec.PDFUrl || ''),
       finalPdfUrl:   String(rec.FinalPDFUrl || ''),
     };
@@ -719,8 +910,11 @@ const GradStatusModule = (() => {
       out.isspSentAt           = rec.ISSPSentAt ? _fmtDate(rec.ISSPSentAt) : '';
       out.isspClearedAt        = rec.ISSPClearedAt ? _fmtDate(rec.ISSPClearedAt) : '';
       out.isspNote             = String(rec.ISSPNote || '');
+      out.isspDecidedBy        = String(rec.ISSPDecidedBy || '');
+      out.isspDecidedAt        = rec.ISSPDecidedAt ? _fmtDate(rec.ISSPDecidedAt) : '';
       out.submittedToGradDivAt = rec.SubmittedToGradDivAt ? _fmtDate(rec.SubmittedToGradDivAt) : '';
       out.submissionNote       = String(rec.SubmissionNote || '');
+      out.receiptUrl           = String(rec.ReceiptFileUrl || '');
     }
     return out;
   }
@@ -811,10 +1005,41 @@ const GradStatusModule = (() => {
     return { recordId: rec.RecordID, stage: STAGE.RETURNED };
   }
 
-  /** D11: the ISSP hold — packet out, record parked, staff tasked. */
+  /**
+   * D11: the ISSP hold. Two transports, one stage:
+   *   - PORTAL: active issp_staff holders exist — they get the task and
+   *     a deep-link email, and act via the ISSP Review tab.
+   *   - EMAIL (fallback/default): no holders — the packet goes to the
+   *     ISSP functional address and department staff hold the task,
+   *     recording the signed return manually.
+   */
   function _enterIsspHold(rec, pdf) {
     DataService.update(SHEET(), TAB(), 'RecordID', rec.RecordID,
       { Stage: STAGE.PENDING_ISSP, ISSPSentAt: new Date() });
+
+    const isspHolders = _roleEmails(ISSP_ROLE);
+    if (isspHolders.length) {
+      Tasks.create({
+        module: MODULE, sourceType: SOURCE_TYPE, sourceId: rec.RecordID,
+        label: 'ISSP review — Leave of Absence for ' + rec.StudentName,
+        assignedRole: ISSP_ROLE,
+      });
+      Notify.send({
+        to: isspHolders,
+        subject: 'Leave of Absence awaiting ISSP review — ' + rec.StudentName,
+        body: 'The Anthropology Department has completed review of a Leave of Absence for ' +
+          rec.StudentName + ' (' + rec.StudentEmail + '), who holds a visa.\n\n' +
+          'Leave: ' + rec.LeaveBeginQuarter + ' ' + rec.LeaveBeginYear + ' through ' +
+          rec.ReturnQuarter + ' ' + rec.ReturnYear + '.\n\n' +
+          'Review and sign it in the portal: ' + _deepLink(rec.RecordID),
+        attachments: (pdf && pdf.blob) ? [pdf.blob] : [],
+        replyTo: Settings.replyTo(MODULE),
+        cc: Settings.cc(MODULE),
+      });
+      _notifyStudentDeptComplete(rec, true);
+      return;
+    }
+
     Tasks.create({
       module: MODULE, sourceType: SOURCE_TYPE, sourceId: rec.RecordID,
       label: 'Awaiting ISSP return — Leave of Absence for ' + rec.StudentName,
@@ -920,29 +1145,35 @@ const GradStatusModule = (() => {
       templateFileId: templateId,
       fileName: fileName,
       returnBase64: false,
+      // Field names are the OFFICIAL campus form's own (see header).
       values: {
-        LastName:            String(profile.lastName || ''),
-        FirstName:           String(profile.firstName || ''),
-        StudentID:           String(profile.studentId || ''),
-        Email:               String(rec.StudentEmail || ''),
-        Department:          'Anthropology',
-        DateEntered:         String(rec.DateEntered || ''),
-        ExpectedGraduation:  String(rec.ExpectedGraduation || ''),
-        AdvancedToCandidacy: String(rec.AdvancedToCandidacy || ''),
-        LeaveBeginQuarter:   String(rec.LeaveBeginQuarter || ''),
-        LeaveBeginYear:      String(rec.LeaveBeginYear || ''),
-        ReturnQuarter:       String(rec.ReturnQuarter || ''),
-        ReturnYear:          String(rec.ReturnYear || ''),
-        Reason:              String(rec.Reason || ''),
-        Conditions:          String(rec.ConditionsForReadmission || ''),
-        StudentSignature:    _eSig(rec.StudentName, rec.SubmittedAt),
-        StudentSignDate:     _fmtDate(rec.SubmittedAt),
-        AdviserSignature:    _eSig(_displayName(rec.AdvisorDecidedBy), rec.AdvisorDecidedAt),
-        AdviserSignDate:     rec.AdvisorDecidedAt ? _fmtDate(rec.AdvisorDecidedAt) : '',
-        ChairSignature:      _eSig(_displayName(rec.ChairDecidedBy), rec.ChairDecidedAt),
-        ChairSignDate:       rec.ChairDecidedAt ? _fmtDate(rec.ChairDecidedAt) : '',
-        AssistantSignature:  _eSig(_displayName(rec.StaffDecidedBy), rec.StaffDecidedAt),
-        AssistantSignDate:   rec.StaffDecidedAt ? _fmtDate(rec.StaffDecidedAt) : '',
+        'Last Name':            String(profile.lastName || ''),
+        'First':                String(profile.firstName || ''),
+        'ID':                   String(profile.studentId || ''),
+        'Email':                String(rec.StudentEmail || ''),
+        'Dept':                 'Anthropology',
+        'Date 1':               String(rec.DateEntered || ''),
+        'Date 2':               String(rec.ExpectedGraduation || ''),
+        'Candidacy':            String(rec.AdvancedToCandidacy || ''),
+        'Leave Quarter':        String(rec.LeaveBeginQuarter || ''),
+        'Leave Yr':             String(rec.LeaveBeginYear || ''),
+        'Rtn Quarter':          String(rec.ReturnQuarter || ''),
+        'Rtn Yr':               String(rec.ReturnYear || ''),
+        'Reason':               String(rec.Reason || ''),
+        'Text1':                String(rec.ConditionsForReadmission || ''),
+        'Student signature':    _eSig(rec.StudentName),
+        'Date 3':               _fmtDate(rec.SubmittedAt),
+        'Advisor signature':    _eSig(_displayName(rec.AdvisorDecidedBy)),
+        'Date 4':               rec.AdvisorDecidedAt ? _fmtDate(rec.AdvisorDecidedAt) : '',
+        'Dept chair signature': _eSig(_displayName(rec.ChairDecidedBy)),
+        'Date 5':               rec.ChairDecidedAt ? _fmtDate(rec.ChairDecidedAt) : '',
+        'Department Assistant': _eSig(_displayName(rec.StaffDecidedBy)),
+        'Date 6':               rec.StaffDecidedAt ? _fmtDate(rec.StaffDecidedAt) : '',
+        // Filled only by an IN-PORTAL ISSP approval (ISSPDecidedBy);
+        // the email-packet path leaves these blank — the uploaded
+        // ISSP-signed copy (FinalPDF) carries that signature instead.
+        'ISSS signature':       _eSig(_displayName(rec.ISSPDecidedBy)),
+        'Date 7':               rec.ISSPDecidedAt ? _fmtDate(rec.ISSPDecidedAt) : '',
       },
     }, user);
   }
@@ -953,15 +1184,15 @@ const GradStatusModule = (() => {
     return (p && p.name) || String(email);
   }
 
-  /** Saves an uploaded (ISSP-signed) PDF to the module's Drive folder. */
-  function _saveUpload(rec, b64, name) {
+  /** Saves an uploaded document to the module's Drive folder. */
+  function _saveUpload(rec, b64, name, mime) {
     const folderId = (CONFIG.GRAD_STATUS && CONFIG.GRAD_STATUS.DRIVE_FOLDER_ID) || '';
     if (!folderId) {
       throw new Error('No document folder is configured for this module ' +
         '(CONFIG.GRAD_STATUS.DRIVE_FOLDER_ID). Create a Drive folder and paste its id into Config.gs.');
     }
-    const blob = Utilities.newBlob(Utilities.base64Decode(b64), 'application/pdf',
-      String(name || 'upload.pdf'));
+    const blob = Utilities.newBlob(Utilities.base64Decode(b64),
+      String(mime || 'application/pdf'), String(name || 'upload.pdf'));
     const file = DriveApp.getFolderById(folderId).createFile(blob);
     return { fileId: file.getId(), url: file.getUrl() };
   }
@@ -980,6 +1211,71 @@ const GradStatusModule = (() => {
       returnQuarter:   String(rec.ReturnQuarter || '') + ' ' + String(rec.ReturnYear || ''),
       employmentLeave: String(rec.EmploymentLeave || ''),
     };
+  }
+
+  // ============================================================
+  // PRIVATE — Drive viewer grants (the Coursework/IS pattern)
+  // ============================================================
+  // Generated and uploaded PDFs live in Drive owned by the deploying
+  // account; without grants, the links in emails and the portal 404 for
+  // everyone else. Per-file audience = the record's student + the
+  // record's advisor + every staff_grad and department_chair holder —
+  // so a student can only ever open their OWN file, while the review
+  // roles can open all of them.
+
+  function _fileAudience(rec) {
+    return [rec.StudentEmail, rec.AdvisorEmail]
+      .concat(_roleEmails(STAFF_ROLE))
+      .concat(_roleEmails(CHAIR_ROLE))
+      .concat(_isTrue(rec.VisaHolderAtSubmit) ? _roleEmails(ISSP_ROLE) : []);
+  }
+
+  /**
+   * Grants read access on a file to several people (deduped
+   * case-insensitively, blanks dropped). Each grant is best-effort and
+   * silent; one failure never blocks the others or the workflow.
+   */
+  function _grantViewers(fileId, emails) {
+    const seen = {};
+    (emails || []).forEach(function (e) {
+      const email = String(e || '').trim();
+      if (!email) return;
+      const key = email.toLowerCase();
+      if (seen[key]) return;
+      seen[key] = true;
+      _grantViewer(fileId, email);
+    });
+  }
+
+  /**
+   * Grants one person read access without a notification email. Uses
+   * the Advanced Drive Service when available (v3 then v2 shapes);
+   * falls back to DriveApp.addViewer (which does notify — harmless).
+   * Best-effort, never throws. Idempotent.
+   */
+  function _grantViewer(fileId, email) {
+    const id = String(fileId || '').trim();
+    const who = String(email || '').trim();
+    if (!id || !who) return;
+    try {
+      if (typeof Drive !== 'undefined' && Drive && Drive.Permissions) {
+        if (typeof Drive.Permissions.create === 'function') {          // v3
+          Drive.Permissions.create(
+            { role: 'reader', type: 'user', emailAddress: who },
+            id, { sendNotificationEmail: false });
+          return;
+        }
+        if (typeof Drive.Permissions.insert === 'function') {          // v2
+          Drive.Permissions.insert(
+            { role: 'reader', type: 'user', value: who },
+            id, { sendNotificationEmails: false });
+          return;
+        }
+      }
+      DriveApp.getFileById(id).addViewer(who);   // last resort: does notify
+    } catch (e) {
+      Logger.log('GradStatusModule._grantViewer: could not share ' + id + ' with ' + who + ': ' + e);
+    }
   }
 
   // ============================================================
@@ -1014,10 +1310,80 @@ const GradStatusModule = (() => {
     departmentQueue: departmentQueue, chairApprove: chairApprove, chairReturn: chairReturn,
     staffComplete: staffComplete, staffReturn: staffReturn,
     recordIsspReturn: recordIsspReturn, markSubmitted: markSubmitted,
+    isspQueue: isspQueue, isspApprove: isspApprove, isspReturn: isspReturn,
+    attachReceipt: attachReceipt,
     submissionHelper: submissionHelper, regeneratePdf: regeneratePdf,
     allRecords: allRecords,
     progressList: progressList, progressSave: progressSave,
+    deleteRecord: deleteRecord, progressDelete: progressDelete,
     getSettings: getSettings, saveSettings: saveSettings,
   };
 
 })();
+
+
+/**
+ * DIAGNOSTIC (safe to leave in; run from the editor's function dropdown,
+ * then read the execution log). Prints exactly what the LOA form's
+ * bootstrap would receive: how many active senate_faculty holders the
+ * advisor list resolves, the first few names, whether the Graduate Forms
+ * spreadsheet id is configured, and whether formData completes at all.
+ */
+/**
+ * DIAGNOSTIC: verifies the configured LOA template end to end. Run from
+ * the editor dropdown and read the log:
+ *   - the Drive file's name and MIME type ("application/pdf" required —
+ *     "application/vnd.google-apps.document" means Drive converted it
+ *     to a Google Doc: re-upload the .pdf with conversion off)
+ *   - whether the bytes start with %PDF (the "No PDF header found" test)
+ *   - every AcroForm field name in the PDF, checked against the names
+ *     the module fills, with missing/extra names called out.
+ */
+async function debugGradLoaTemplate() {
+  const EXPECTED = ['Last Name', 'First', 'ID', 'Email', 'Dept',
+    'Date 1', 'Date 2', 'Candidacy',
+    'Leave Quarter', 'Leave Yr', 'Rtn Quarter', 'Rtn Yr',
+    'Reason', 'Text1', 'Student signature', 'Date 3',
+    'Advisor signature', 'Date 4', 'Dept chair signature', 'Date 5',
+    'Department Assistant', 'Date 6'];
+  const id = String((function () {
+    try {
+      const rows = DataService.query(CONFIG.SHEETS.GRAD,
+        (CONFIG.TABS && CONFIG.TABS.GRAD_FORMS_SETTINGS) || 'GradFormsSettings',
+        'Key', 'LOA_TEMPLATE_FILE_ID');
+      return rows && rows.length ? rows[0].Value : '';
+    } catch (e) { return ''; }
+  })() || '').trim();
+  Logger.log('LOA_TEMPLATE_FILE_ID = "' + (id || '(blank)') + '"');
+  if (!id) { Logger.log('Configure it in the module Settings tab first.'); return; }
+  const f = DriveApp.getFileById(id);
+  const b = f.getBlob();
+  const bytes = b.getBytes();
+  const head = bytes.slice(0, 5).map(function (x) { return String.fromCharCode(x < 0 ? x + 256 : x); }).join('');
+  Logger.log('File: "' + f.getName() + '" | MIME: ' + f.getMimeType() + ' | size: ' + bytes.length);
+  Logger.log('First bytes: "' + head + '" → ' + (head === '%PDF-' ? 'real PDF ✓' : 'NOT a PDF ✗ (re-upload as .pdf without conversion)'));
+  if (head !== '%PDF-') return;
+  const doc = await PDFLib.PDFDocument.load(new Uint8Array(bytes), { updateMetadata: false });
+  const names = doc.getForm().getFields().map(function (fl) { return fl.getName(); });
+  Logger.log('AcroForm fields (' + names.length + '): ' + names.join(', '));
+  const missing = EXPECTED.filter(function (n) { return names.indexOf(n) === -1; });
+  const extra   = names.filter(function (n) { return EXPECTED.indexOf(n) === -1; });
+  Logger.log(missing.length ? 'MISSING (module fills these; add them): ' + missing.join(', ') : 'All expected fields present ✓');
+  if (extra.length) Logger.log('Extra fields (harmless, left blank): ' + extra.join(', '));
+}
+
+
+function debugGradStatusFormData() {
+  const me = Session.getActiveUser().getEmail();
+  Logger.log('CONFIG.SHEETS.GRAD = "' + (CONFIG.SHEETS.GRAD || '(blank)') + '"');
+  const advisors = Auth.usersWithRole('senate_faculty');
+  Logger.log('Auth.usersWithRole(senate_faculty): ' + advisors.length + ' holder(s)');
+  advisors.slice(0, 5).forEach(function (a) { Logger.log('  ' + a.name + ' <' + a.email + '>'); });
+  try {
+    const fd = GradStatusModule.formData({}, me, Auth.getRoles(me));
+    Logger.log('formData OK — advisors in payload: ' + fd.advisors.length +
+      ', quarters: ' + fd.beginQuarters.length + '/' + fd.returnQuarters.length);
+  } catch (e) {
+    Logger.log('formData THREW: ' + e);
+  }
+}
