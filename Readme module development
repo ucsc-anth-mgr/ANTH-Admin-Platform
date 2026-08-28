@@ -1,183 +1,3 @@
-
-All projects
-USCC Anthropology Admin Platform
-This is the platform I'm developing to manage administrative processes in the UCSC Department of Anthropology.
-
-
-
-How can I help you today?
-
-
-Fable is the most capable model and draws down usage 2× faster than Opus
-
-Platform-wide notification service architecture
-Last message 28 minutes ago
-GitHub connection verification
-Last message 58 minutes ago
-Senior thesis module development
-Last message 6 hours ago
-User account page access
-Last message 2 days ago
-Adding filter and search to user list
-Last message 2 days ago
-Adding code modules through the UI
-Last message 6 days ago
-Disabling super admin notifications for access requests
-Last message 6 days ago
-Instructions
-This project is the UCSC Anthropology Portal — a Google Apps Script web app for administering department processes. TEST-ONLY deployment: no production data, no migration concerns. The Apps Script project is the source of truth; project knowledge files are a snapshot and may lag — ask me to confirm which version is current if it matters. ARCHITECTURE: Shell + pluggable modules. Index.html/_Scripts.html provide login, nav, and a single server gateway dispatch(module, action, payload) in Code.gs, which validates the module, checks roles, calls the handler, and writes the audit log. The module registry lives in the Modules sheet tab (key, label, icon, roles, handler, include, order, enabled), not in code. A handler name must appear in BOTH getModuleHandler() and getRegisteredHandlers() in Code.gs, and ONLY when its .gs file is actually in the project — otherwise "X is not defined" errors. Deploying code does not add the Modules sheet row; new modules are registered via Admin → Modules. The module key is the dispatch identifier and is permanent. ROLES & IDENTITY: Roles are identity categories (super_admin, staff, senate_faculty, lecturer, graduate_student, undergraduate_student, visitor), not permission levels — never a generic "admin" role. Access is module-centric: each module's Roles list controls entry; finer permissions are per-action checks in handlers, always including super_admin. Profiles are platform-level (Auth.gs): Email, FirstName, LastName, AltNames (JSON array of alternate spellings for matching, not display), Roles, StudentID (7 digits), EmployeeID (8 digits), Active, Notes. Display names are computed (name = "First Last", nameLastFirst = "Last, First"). PersonMatch.gs matches incoming records email-first, then either ID; fills empty ID slots and attaches alt names on certain matches; conflicts are flagged, never silently overwritten. The ImportPolicy allowlist (Admin → Roles) governs which roles a delegated manager/importer may assign — shared by batch import, individual user management, and request approval scoping. CONVENTIONS: Read sheet columns by header name, not position. Module UI objects are declared window.X = (...) (never const — module scripts re-execute on each load). In HTML templates: no bare < or > inside <? ?> scriptlets (use forEach/ includes); use <?!= ?> (force-print) when injecting JSON into <script>. Notes fields and altNames are preserved on update unless explicitly supplied. Syntax-check every .gs via node --check before delivery; verify every onclick handler is exported from its UI object. Configuration is UI-managed (Module Manager, Roles, Import permissions, Request notifications) — avoid telling the user to edit sheets directly except Config.gs constants. Functional/shared email addresses are used for notification destinations; humans always log in with personal accounts. setUp() in Setup.gs creates missing tabs/headers only — it never modifies existing tabs. /dev serves latest saved code; /exec requires a new deployment version (Deploy → Manage deployments → Edit → New version). OPEN THREADS: Thesis module — fully designed (multi-stage workflow: student → advisor → conditional honors review → undergraduate advisor; PDF upload to a configurable Drive folder; filename 2026-Spring_<StudentID>-THES_Last-First.pdf; separate clean database sheet; resubmission replaces in place keeping the Drive file ID) but NOT built — waiting on the user's PDF form to define fields. ThesisModule registration in Code.gs stays commented out until its file ships. Conflict review queue — PersonMatch conflicts currently skip-with-reason in import previews; a reviewable queue (workable by delegated importers) is planned.
-
-Files
-10% of project capacity used
-Search mode
-
-ucsc-anth-mgr/ANTH-Admin-Platform
-main
-
-GITHUB
-
-
-
-Readme module development
-280 lines
-
-text
-
-
-
-Rolesmanager.gs
-176 lines
-
-text
-
-
-
-submissions.html
-260 lines
-
-html
-
-
-
-Submissionmodule.gs
-147 lines
-
-text
-
-
-
-Services.gs
-115 lines
-
-text
-
-
-
-Dataservice.gs
-134 lines
-
-text
-
-
-
-admin.html
-822 lines
-
-html
-
-
-
-Adminmodule.gs
-80 lines
-
-text
-
-
-
-Modulemanager.gs
-154 lines
-
-text
-
-
-
-Tasks.gs
-343 lines
-
-text
-
-
-
-Setup.gs
-397 lines
-
-text
-
-
-
-Code.gs
-214 lines
-
-text
-
-
-
-_Styles.html
-278 lines
-
-html
-
-
-
-_Scripts.html
-244 lines
-
-html
-
-
-
-Requestmanager.gs
-237 lines
-
-text
-
-
-
-Config.gs
-177 lines
-
-text
-
-
-
-EventBus.gs
-128 lines
-
-text
-
-
-
-Auth.gs
-390 lines
-
-text
-
-
-
-Notify.gs
-203 lines
-
-text
-
-
-
-Index.html
-77 lines
-
-html
-
-
-Readme module development
 # Building a Platform-Compatible Module
  
 UCSC Anthropology Portal — developer guide.
@@ -384,6 +204,73 @@ identity key; IDs are a backup match path (see PersonMatch).
 `CreatedAt/CreatedBy/UpdatedAt/UpdatedBy` automatically when those columns
 exist. Always include those meta columns in your tab's headers.
  
+### TestMode — end-to-end workflow tests without bothering real people
+ 
+An authorized functional account can walk your whole workflow while every
+assignment and email routes to mapped test accounts. Dispatch owns
+activation (a `_test:true` payload from a rostered account); your module
+opts in with a few conventions:
+ 
+1. **Declare a `TEST_SLOTS` manifest** on your handler — the workflow
+   POSITIONS a test routes through, not roles or people:
+   `[{ key: 'sponsor', label: 'Faculty Sponsor', defaultRole: SPONSOR_ROLE }]`.
+   Export it like `TABS`/`CHANNELS` (`TEST_SLOTS: TEST_SLOTS` — not an
+   action). `defaultRole` is both the Admin-UI hint for the role the
+   account genuinely needs and the global-default lookup key. Admin →
+   Testing assigns which account fills each slot.
+2. **Add `TestMode` and `TestSelections` columns** to your record tab's
+   `SETUP_SCHEMA` headers (before the meta columns), and run
+   `addMissingColumns()` for an existing tab. `TestMode` flags the record;
+   `TestSelections` preserves what the tester REALLY selected.
+3. **Substitute at WRITE time, after real validation.** In your submit
+   action, run the real eligibility/PersonMatch checks on the tester's
+   real selection first — that validation is half of what a test
+   exercises — then:
+   `TestMode.assertReady(MODULE);` (refuse if any slot is unmapped —
+   fail closed) and
+   `const finalX = TestMode.substitute(MODULE, 'slotKey', selectedX);`
+   Write `finalX` on the record, plus
+   `TestMode: TestMode.recordFlag()` and
+   `TestSelections: TestMode.selectionNote({ slotKey: selectedX })` when
+   the substitution changed anything — the canonical `slot=value` form,
+   never hand-rolled prose, so `TestMode.selectedFor(rec, 'slotKey')` can
+   recover the real pick later. Use `finalX` in duplicate keys, routing,
+   and event emits. Then GUARD the write: after inserting, re-read the
+   record and throw (removing a fresh insert) if the execution is a test
+   but the stored flag isn't TRUE — a silently dropped stamp (missing
+   columns) otherwise resurfaces three stages later as a half-real record
+   mailing real people. See `_assertTestStamp` in IndividualStudiesModule.
+   Outside a test, every call is a no-op.
+4. **Re-enter test mode at later stages.** Call
+   `TestMode.activateForRecord(rec, user)` right after loading a record in
+   every action that routes or notifies — the flag traveled with the
+   record, so later stages need no client cooperation.
+5. **Intercept role-pool hops.** Where a task is created with
+   `assignedRole` (a shared staff pool), route to the slot account during
+   a test instead:
+   `const t = TestMode.active() ? TestMode.substitute(MODULE, 'slot', '') : '';`
+   then `assignedTo: t` when set, else the role — and email only `t`. A
+   test task must never land on real staff dashboards. (One-off
+   notification targets with no slot of their own can lean on the Notify
+   backstop, which redirects ALL mail to the tester during a test — but
+   the backstop covers mail only, never tasks.)
+6. **Offer the UI checkbox via `testModeAvailable`.** A tiny action
+   returning `{ available: TestMode.isTestAccount(user, roles) && TestMode.readiness(MODULE).ready }`;
+   the client shows the checkbox only when true and sends `_test: true` on
+   submit. Expose the record's flag in your public record
+   (`testMode: _isTrueStr(r.TestMode)`) and badge it TEST in lists.
+7. **Never put test conditionals in permission checks.** Substitution
+   means the record honestly names the functional account, so ownership
+   checks, queues, and per-action gates all work unmodified. If you find
+   yourself writing `if (TestMode.active())` inside an authorization
+   check, the design is wrong. The line to hold is *authorization vs
+   fidelity*: a SIMULATION-FIDELITY conditional — e.g. running a schedule
+   lookup against `TestMode.selectedFor(rec, 'slot')` because the
+   substituted functional account has no sections of its own — is fine
+   and encouraged, because it makes the test exercise MORE real behavior.
+   What must stay test-blind is anything that grants, denies, or routes
+   authority.
+ 
 ---
  
 ## 6. Deep-linking from the dashboard
@@ -457,4 +344,10 @@ constants.
 - [ ] Tasks/Notify/EventBus used for cross-cutting concerns; no direct calls
       into other modules.
 - [ ] `window.__focus` read in `init` if the module appears in tasks.
+- [ ] Test mode wired if the module routes work to people: `TEST_SLOTS`
+      manifest exported; `TestMode`/`TestSelections` columns in the schema;
+      `assertReady` + `substitute` at write time (after real validation);
+      `activateForRecord` after record loads; role-pool hops routed to the
+      slot account during tests; `testModeAvailable` for the UI checkbox;
+      zero test conditionals in permission checks.
 - [ ] All `.gs` pass `node --check`; project loads with no duplicate-const error.
