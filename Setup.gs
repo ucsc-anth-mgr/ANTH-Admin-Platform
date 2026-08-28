@@ -94,6 +94,30 @@ const SETUP_SCHEMA = {
     headers: ['Module', 'Tab', 'Roles', 'Enabled'],
     seed: [],
   },
+  TESTMODE_MAP: {
+    tab: 'TestModeMap',
+    // Test-mode slot assignments (TestMode.gs). One row per assignment:
+    // Scope='global' with Slot=<role name> is a platform-wide default
+    // ("any slot whose expected role is X routes to this account");
+    // Scope=<module key> with Slot=<slot key from the handler's TEST_SLOTS
+    // manifest> is a per-module override. MapID is the row's unique key
+    // (DataService has no composite keys). No seed: assignments are made
+    // in Admin → Testing. Machine-managed — not for hand editing.
+    headers: ['MapID', 'Scope', 'Slot', 'Account', 'Active', 'Notes',
+              'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
+  TESTMODE_ACCOUNTS: {
+    tab: 'TestModeAccounts',
+    // Test-account roster (TestMode.gs): the accounts (plus super_admins,
+    // who are implicit) whose _test flag dispatch honors. Anyone else
+    // sending _test is silently ignored — the roster is the authorization
+    // gate for entering test mode at all. No seed: managed in Admin →
+    // Testing. Machine-managed — not for hand editing.
+    headers: ['Email', 'Active', 'Notes',
+              'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
   THESIS_ELIGIBILITY: {
     tab: 'ThesisEligibility',
     // Who may sponsor / read senior theses. Roles is the base set; the
@@ -342,6 +366,10 @@ const SETUP_SCHEMA = {
     // schedule (ClassSchedule), not from code. Syllabus* hold an optional
     // supporting document (student or sponsor supplied); the canonical
     // petition PDF is generated at COMPLETE (DriveFileID/DocumentLink).
+    // TestMode ('TRUE' on records created by a test-mode submission) and
+    // TestSelections (what the tester REALLY selected before the TestMode
+    // slot substitution) support the platform TestMode service; run
+    // addMissingColumns() to append them to an existing tab.
     headers: ['PetitionID', 'StudentEmail', 'TermCode', 'Quarter', 'Year', 'Course', 'SponsorEmail',
               'StudySiteAddress', 'Title', 'CourseDescription', 'EvidenceOfPreparation',
               'WorkToBeSubmitted', 'ReportRequired', 'ReportDueDate',
@@ -356,6 +384,7 @@ const SETUP_SCHEMA = {
               'RoomAccessRequested', 'RoomAccessRoom', 'RoomAccessNote',
               'RoomAccessRequestedBy', 'RoomAccessRequestedAt',
               'DriveFileID', 'FileName', 'DocumentLink', 'ReturnNote',
+              'TestMode', 'TestSelections',
               'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
     seed: [],
   },
@@ -399,6 +428,8 @@ const SETUP_SCHEMA = {
     // LateSubmission flags a submission after it (calendar failure
     // degrades to blank/FALSE). The canonical PDF is generated at
     // COMPLETE via ReportService. Meta columns filled by DataService.
+    // TestMode / TestSelections mirror the undergrad tab (platform
+    // TestMode service); run addMissingColumns() for an existing tab.
     headers: ['PetitionID', 'StudentEmail', 'TermCode', 'Quarter', 'Year', 'Course', 'Units', 'SponsorEmail',
               'StudySite', 'Subject', 'WorkOutline',
               'WeeklyContactHours', 'FinalPaperRequired',
@@ -410,6 +441,7 @@ const SETUP_SCHEMA = {
               'RoomAccessRequested', 'RoomAccessRoom', 'RoomAccessNote',
               'RoomAccessRequestedBy', 'RoomAccessRequestedAt',
               'DriveFileID', 'FileName', 'DocumentLink', 'ReturnNote',
+              'TestMode', 'TestSelections',
               'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
     seed: [],
   },
@@ -859,6 +891,8 @@ function setUp() {
   _setupTab(usersSS, SETUP_SCHEMA.THESIS_SETTINGS);
   _setupTab(usersSS, SETUP_SCHEMA.SETTINGS);
   _setupTab(usersSS, SETUP_SCHEMA.MODULE_TABS);
+  _setupTab(usersSS, SETUP_SCHEMA.TESTMODE_MAP);
+  _setupTab(usersSS, SETUP_SCHEMA.TESTMODE_ACCOUNTS);
 
   // Audit spreadsheet gets the AuditLog tab
   _setupTab(auditSS, SETUP_SCHEMA.AUDIT);
@@ -1102,7 +1136,7 @@ function _ensureSuperAdminNote() {
  */
 function checkSetup() {
   const checks = [
-    ['USERS_CONFIG', CONFIG.SHEETS.USERS_CONFIG, [SETUP_SCHEMA.USERS.tab, SETUP_SCHEMA.ROLES.tab, SETUP_SCHEMA.MODULES.tab, SETUP_SCHEMA.SETTINGS.tab, SETUP_SCHEMA.MODULE_TABS.tab]],
+    ['USERS_CONFIG', CONFIG.SHEETS.USERS_CONFIG, [SETUP_SCHEMA.USERS.tab, SETUP_SCHEMA.ROLES.tab, SETUP_SCHEMA.MODULES.tab, SETUP_SCHEMA.SETTINGS.tab, SETUP_SCHEMA.MODULE_TABS.tab, SETUP_SCHEMA.TESTMODE_MAP.tab, SETUP_SCHEMA.TESTMODE_ACCOUNTS.tab]],
     ['AUDIT_LOG',    CONFIG.SHEETS.AUDIT_LOG,    [SETUP_SCHEMA.AUDIT.tab]],
     ['SUBMISSIONS',  CONFIG.SHEETS.SUBMISSIONS,  []],
     ['PLATFORM',     CONFIG.SHEETS.PLATFORM,     [SETUP_SCHEMA.TASKS.tab, SETUP_SCHEMA.REPORTS.tab]],
@@ -1154,6 +1188,8 @@ function _schemaPlacement() {
     { sheetKey: 'USERS_CONFIG', def: SETUP_SCHEMA.THESIS_SETTINGS },
     { sheetKey: 'USERS_CONFIG', def: SETUP_SCHEMA.SETTINGS },
     { sheetKey: 'USERS_CONFIG', def: SETUP_SCHEMA.MODULE_TABS },
+    { sheetKey: 'USERS_CONFIG', def: SETUP_SCHEMA.TESTMODE_MAP },
+    { sheetKey: 'USERS_CONFIG', def: SETUP_SCHEMA.TESTMODE_ACCOUNTS },
     { sheetKey: 'AUDIT_LOG',    def: SETUP_SCHEMA.AUDIT },
     { sheetKey: 'PLATFORM',     def: SETUP_SCHEMA.TASKS },
     { sheetKey: 'PLATFORM',     def: SETUP_SCHEMA.REPORTS },

@@ -78,6 +78,21 @@
     <div class="card" style="margin-top:20px;">
       <div class="card-title"><i class="ti ti-file-plus"></i> New Individual Studies Petition</div>
 
+      <!-- Test mode (TestMode.gs): hidden unless the server says the caller
+           is an authorized test account AND every slot is mapped (see init's
+           testModeAvailable call). Top-of-form so the mode is visible the
+           whole time the form is being filled; the box goes hot and the
+           submit button relabels while checked. Purely UI convenience —
+           dispatch silently ignores _test from anyone unauthorized. -->
+      <div id="is-testmode-wrap" class="is-testmode-box" style="display:none;">
+        <label style="display:flex;align-items:flex-start;gap:10px;font-weight:normal;cursor:pointer;margin:0;">
+          <input type="checkbox" id="is-testmode" onchange="IndividualStudiesUI.onTestModeToggle(this.checked)" style="margin-top:3px;">
+          <span><strong><i class="ti ti-flask"></i> Test mode</strong><span id="is-testmode-note"> —
+            route this petition to the department's functional test accounts;
+            no real faculty or staff will be contacted.</span></span>
+        </label>
+      </div>
+
       <!-- Course interceptor: choosing a redirect course (e.g. 195S) swaps in this panel -->
       <div id="is-redirect-panel" style="display:none;" class="card">
         <div class="card-title" style="font-size:14px;"><i class="ti ti-info-circle"></i> Handled elsewhere</div>
@@ -226,7 +241,7 @@
 
           <div class="form-actions">
             <button class="btn btn-primary" id="is-submit-btn" onclick="IndividualStudiesUI.submit()">
-              <i class="ti ti-send"></i> Submit petition
+              <i class="ti ti-send"></i> <span id="is-submit-label">Submit petition</span>
             </button>
             <button class="btn btn-secondary" onclick="IndividualStudiesUI.resetForm()">Clear</button>
             <button class="btn btn-secondary" id="is-cancel-resubmit" style="display:none;" onclick="IndividualStudiesUI.cancelResubmit()">Cancel resubmission</button>
@@ -500,6 +515,17 @@
   <div id="is-tab-gnew" class="tab-panel" style="display:none;">
     <div class="card">
       <div class="card-title"><i class="ti ti-file-plus"></i> Petition for a Graduate Individual Studies Course</div>
+
+      <!-- Test mode: grad twin of is-testmode-wrap above. -->
+      <div id="is-g-testmode-wrap" class="is-testmode-box" style="display:none;">
+        <label style="display:flex;align-items:flex-start;gap:10px;font-weight:normal;cursor:pointer;margin:0;">
+          <input type="checkbox" id="is-g-testmode" onchange="IndividualStudiesUI.onGradTestModeToggle(this.checked)" style="margin-top:3px;">
+          <span><strong><i class="ti ti-flask"></i> Test mode</strong><span id="is-g-testmode-note"> —
+            route this petition to the department's functional test accounts;
+            no real faculty or staff will be contacted.</span></span>
+        </label>
+      </div>
+
       <div id="is-g-resubmit-banner" class="alert alert-info" style="display:none;">
         <i class="ti ti-refresh"></i> You are revising a returned petition.
         <span id="is-g-resubmit-note" style="display:block;margin-top:4px;font-style:italic;"></span>
@@ -693,6 +719,12 @@
     border:1px solid var(--color-border); border-radius: var(--radius); padding:7px 10px; margin:5px 0; font-size:13px; }
   .is-section.is-unassigned { background:#eaf7ee; border-color:#9ed3b0; }
   .is-section .is-section-meta { color: var(--color-muted); font-size:12px; }
+  /* Test-mode banner (TestMode.gs): quiet dashed amber when available,
+     solid + hotter tint while checked so the state reads at a glance. */
+  .is-testmode-box { border:1px dashed #d9a406; background:#fdf6e3; border-radius:8px;
+    padding:10px 12px; margin:0 0 14px; font-size:13.5px; }
+  .is-testmode-box.on { border:2px solid #d9a406; background:#fdeecb; }
+  .is-testmode-box .ti-flask { vertical-align:-2px; }
 </style>
 
 <script>
@@ -722,6 +754,8 @@ window.IndividualStudiesUI = (() => {
   let _sortSponsored = { key: 'created', dir: 'desc' };
   let _termsByCode = {};      // termCode -> { label, courses:[{course,credits}] }
   let _resubmitId = null;
+  let _testMode = false;         // test-mode checkbox state (TestMode.gs)
+  let _resubmitIsTest = false;   // resubmitting a TEST record — re-tag it
   let _syllabus = null;       // { syllabusBase64, syllabusName, syllabusMimeType } for the next submit
   let _sponsorTemplates = []; // templates for the currently-selected sponsor
   let _carriedReport = null;  // { required, dueText } carried silently from a template (student never sees it)
@@ -784,6 +818,18 @@ window.IndividualStudiesUI = (() => {
         _openDetail(rec);
       }, function () { _idle(); });
     }
+
+    // Test mode (TestMode.gs): reveal the checkboxes only when the server
+    // says this caller may test AND every slot is mapped. Failure or "no"
+    // leaves them hidden — the checkbox is convenience, not security
+    // (dispatch ignores _test from unauthorized accounts regardless).
+    App.call('individual_studies', 'testModeAvailable', {}, function (res) {
+      if (!res || !res.available) return;
+      const u = document.getElementById('is-testmode-wrap');
+      if (u) u.style.display = 'block';
+      const g = document.getElementById('is-g-testmode-wrap');
+      if (g) g.style.display = 'block';
+    }, function () { /* stay hidden */ });
   }
 
   // ── Tabs ──────────────────────────────────────────
@@ -1082,6 +1128,39 @@ window.IndividualStudiesUI = (() => {
   }
 
   // ── Submit / resubmit ─────────────────────────────
+  // Test mode (TestMode.gs): checkbox handlers set state, then sync the
+  // banner's hot styling, its note, and the submit-button caption so the
+  // mode is legible at a glance. The payload tag itself is attached at
+  // submit time in submit()/gradSubmit().
+  function onTestModeToggle(checked) { _testMode = checked === true; _syncTestUi(); }
+  function onGradTestModeToggle(checked) { _gradTestMode = checked === true; _syncGradTestUi(); }
+
+  function _syncTestUi() {
+    const locked = !!_resubmitId && _resubmitIsTest;   // test record revision: stays a test
+    const on = _testMode || locked;
+    const box = document.getElementById('is-testmode-wrap');
+    if (box) box.classList.toggle('on', on);
+    const note = document.getElementById('is-testmode-note');
+    if (note) note.textContent = locked
+      ? ' — resubmitting a test record; it stays a test and routes to the functional accounts.'
+      : ' — route this petition to the department\'s functional test accounts; no real faculty or staff will be contacted.';
+    const lbl = document.getElementById('is-submit-label');
+    if (lbl) lbl.textContent = on ? 'Submit test petition' : 'Submit petition';
+  }
+
+  function _syncGradTestUi() {
+    const locked = !!_gradResubmitId && _gradResubmitIsTest;
+    const on = _gradTestMode || locked;
+    const box = document.getElementById('is-g-testmode-wrap');
+    if (box) box.classList.toggle('on', on);
+    const note = document.getElementById('is-g-testmode-note');
+    if (note) note.textContent = locked
+      ? ' — resubmitting a test record; it stays a test and routes to the functional accounts.'
+      : ' — route this petition to the department\'s functional test accounts; no real faculty or staff will be contacted.';
+    const lbl = document.getElementById('is-g-submit-label');
+    if (lbl) lbl.textContent = (_gradResubmitId ? 'Resubmit' : 'Submit') + (on ? ' test' : '') + ' petition';
+  }
+
   function submit() {
     const termCode = document.getElementById('is-term').value;
     const course = document.getElementById('is-course').value;
@@ -1120,6 +1199,10 @@ window.IndividualStudiesUI = (() => {
       payload.reportDueDate = _carriedReport.dueText || '';
     }
     if (_resubmitId) payload.petitionId = _resubmitId;
+    // Test mode: tag a checkbox submission, or re-tag a TEST record's
+    // resubmission. The server also re-enters test mode from the record's
+    // own flag (belt and suspenders); this keeps the client honest too.
+    if (_testMode || (_resubmitId && _resubmitIsTest)) payload._test = true;
 
     FormHelper.setLoading('is-submit-btn', true, _resubmitId ? 'Resubmitting…' : 'Submitting…');
     _busy(_resubmitId ? 'Resubmitting your petition…' : 'Submitting your petition…');
@@ -1146,6 +1229,10 @@ window.IndividualStudiesUI = (() => {
     const tplGroup = document.getElementById('is-tpl-pick-group'); if (tplGroup) tplGroup.style.display = 'none';
     _hideRedirect();
     _resubmitId = null;
+    _resubmitIsTest = false;
+    _testMode = false;
+    const tm = document.getElementById('is-testmode'); if (tm) { tm.checked = false; tm.disabled = false; }
+    _syncTestUi();
     document.getElementById('is-resubmit-banner').style.display = 'none';
     document.getElementById('is-cancel-resubmit').style.display = 'none';
   }
@@ -1155,6 +1242,12 @@ window.IndividualStudiesUI = (() => {
   function startResubmit(rec) {
     _ensureFormData();
     _resubmitId = rec.petitionId;
+    _resubmitIsTest = !!rec.testMode;   // a TEST record resubmits as a test
+    // Lock the banner checkbox on for a test record so the state reflects
+    // reality and can't be unchecked into a half-test; unlocked otherwise.
+    const rtm = document.getElementById('is-testmode');
+    if (rtm) { rtm.checked = rtm.checked || _resubmitIsTest; rtm.disabled = _resubmitIsTest; }
+    _syncTestUi();
     switchTab('new');
     // Defer field population until the form bootstrap has populated selects.
     setTimeout(function () {
@@ -1378,7 +1471,9 @@ window.IndividualStudiesUI = (() => {
       }
       body += '<tr tabindex="0" style="cursor:pointer;" onclick="IndividualStudiesUI.open(\'' + esc(r.petitionId) + '\')" '
         + 'onkeydown="IndividualStudiesUI.rowKey(event,\'' + esc(r.petitionId) + '\')">'
-        + '<td><strong>' + esc(r.course) + '</strong></td>'
+        + '<td><strong>' + esc(r.course) + '</strong>'
+        + (r.testMode ? ' <span class="badge badge-warning" title="Test record — routed to functional accounts">TEST</span>' : '')
+        + '</td>'
         + '<td>' + esc(r.term) + '</td>'
         + '<td>' + esc(r[whoField]) + '</td>'
         + '<td><span class="badge ' + meta.cls + '">' + esc(meta.label) + '</span></td>'
@@ -1429,6 +1524,7 @@ window.IndividualStudiesUI = (() => {
       body += '<tr tabindex="0" style="cursor:pointer;" onclick="IndividualStudiesUI.open(\'' + esc(r.petitionId) + '\')" '
         + 'onkeydown="IndividualStudiesUI.rowKey(event,\'' + esc(r.petitionId) + '\')">'
         + '<td><strong>' + esc(r.course) + '</strong>'
+        + (r.testMode ? ' <span class="badge badge-warning" title="Test record — routed to functional accounts">TEST</span>' : '')
         + (r.late ? ' <span class="badge badge-danger">Late</span>' : '')
         + '<div class="text-sm text-muted">' + esc(r.term) + '</div></td>'
         + (showWho ? '<td>' + esc(r.studentName) + '</td>' : '<td>' + esc(r.sponsorName) + '</td>')
@@ -1466,7 +1562,8 @@ window.IndividualStudiesUI = (() => {
     document.getElementById('is-modal-title').textContent = (rec.course || 'Petition') + ' — ' + (rec.term || '');
 
     let html = '<dl class="is-detail-grid">'
-      + _row('Status', '<span class="badge ' + meta.cls + '">' + esc(meta.label) + '</span>')
+      + _row('Status', '<span class="badge ' + meta.cls + '">' + esc(meta.label) + '</span>'
+          + (rec.testMode ? ' <span class="badge badge-warning" title="Test record — routed to functional accounts">TEST</span>' : ''))
       + _row('Student', esc(rec.studentName))
       + _row('Course', esc(rec.course) + (rec.credits ? ' · ' + esc(rec.credits) + ' cr' : ''))
       + _row('Term', esc(rec.term))
@@ -2217,6 +2314,8 @@ window.IndividualStudiesUI = (() => {
   let _gradCoursesByCode = {};    // course token -> { units, familyLabel, guidance, advisory }
   let _gradTemplates = [];
   let _gradResubmitId = '';
+  let _gradTestMode = false;         // grad test-mode checkbox (TestMode.gs)
+  let _gradResubmitIsTest = false;   // grad test-record resubmission re-tag
   let _gradOutline = null;        // student's attached outline (held until submit)
   let _gradSponsorOutline = null; // sponsor's attach/replace (held until approve)
 
@@ -2415,6 +2514,7 @@ window.IndividualStudiesUI = (() => {
       payload.outlineMimeType = _gradOutline.outlineMimeType;
     }
     if (_gradResubmitId) payload.petitionId = _gradResubmitId;
+    if (_gradTestMode || (_gradResubmitId && _gradResubmitIsTest)) payload._test = true;   // test mode (see submit)
 
     _busy(_gradResubmitId ? 'Resubmitting petition…' : 'Submitting petition…');
     App.call('individual_studies', 'gradSubmit', payload, function (res) {
@@ -2436,6 +2536,9 @@ window.IndividualStudiesUI = (() => {
     const f = document.getElementById('is-g-outline-file'); if (f) f.value = '';
     const fn = document.getElementById('is-g-outline-file-name'); if (fn) fn.textContent = '';
     _gradOutline = null;
+    _gradTestMode = false;
+    const gtm = document.getElementById('is-g-testmode'); if (gtm) { gtm.checked = false; gtm.disabled = false; }
+    _syncGradTestUi();
     const tw = document.getElementById('is-g-template-wrap'); if (tw) tw.style.display = 'none';
     const dw = document.getElementById('is-g-deadline-warning'); if (dw) dw.style.display = 'none';
     onGradCourseChange();   // hides the guidance + advisory (course is now blank)
@@ -2444,6 +2547,10 @@ window.IndividualStudiesUI = (() => {
 
   function gradCancelResubmit(silent) {
     _gradResubmitId = '';
+    _gradResubmitIsTest = false;
+    const gtmc = document.getElementById('is-g-testmode');
+    if (gtmc && gtmc.disabled) { gtmc.disabled = false; _gradTestMode = gtmc.checked; }
+    _syncGradTestUi();
     const b = document.getElementById('is-g-resubmit-banner'); if (b) b.style.display = 'none';
     const c = document.getElementById('is-g-cancel-resubmit'); if (c) c.style.display = 'none';
     const l = document.getElementById('is-g-submit-label'); if (l) l.textContent = 'Submit petition';
@@ -2456,6 +2563,7 @@ window.IndividualStudiesUI = (() => {
     _gradEnsureFormData(function () {
       switchTab('gnew');
       _gradResubmitId = rec.petitionId;
+      _gradResubmitIsTest = !!rec.testMode;   // a TEST record resubmits as a test
       _setVal('is-g-term', rec.termCode || '');
       onGradTermChange();
       _setVal('is-g-course', rec.course || '');
@@ -2471,6 +2579,12 @@ window.IndividualStudiesUI = (() => {
       if (n) n.textContent = rec.returnNote ? 'Sponsor note: ' + rec.returnNote : '';
       const c = document.getElementById('is-g-cancel-resubmit'); if (c) c.style.display = 'inline-flex';
       const l = document.getElementById('is-g-submit-label'); if (l) l.textContent = 'Resubmit petition';
+      // Lock the banner on for a test record (see startResubmit); sync
+      // runs after the label line above so a test revision reads
+      // "Resubmit test petition".
+      const gtm = document.getElementById('is-g-testmode');
+      if (gtm) { gtm.checked = gtm.checked || _gradResubmitIsTest; gtm.disabled = _gradResubmitIsTest; }
+      _syncGradTestUi();
     });
   }
 
@@ -2510,6 +2624,7 @@ window.IndividualStudiesUI = (() => {
         body += '<tr>'
           + '<td style="cursor:pointer;" onclick="IndividualStudiesUI.open(\'' + esc(r.petitionId) + '\')">'
           +   '<strong>' + esc(r.course) + '</strong>'
+          +   (r.testMode ? ' <span class="badge badge-warning" title="Test record — routed to functional accounts">TEST</span>' : '')
           +   (r.late ? ' <span class="badge badge-danger">Late</span>' : '')
           +   '<div class="text-sm text-muted">' + esc(r.term) + '</div></td>'
           + '<td>' + esc(r.studentName) + '</td>'
@@ -2547,6 +2662,7 @@ window.IndividualStudiesUI = (() => {
 
     let html = '<dl class="is-detail-grid">'
       + _row('Status', '<span class="badge ' + meta.cls + '">' + esc(meta.label) + '</span>'
+          + (rec.testMode ? ' <span class="badge badge-warning" title="Test record — routed to functional accounts">TEST</span>' : '')
           + (rec.late ? ' <span class="badge badge-danger">Late submission</span>' : ''))
       + _row('Student', esc(rec.studentName))
       + _row('Course', esc(rec.course) + (rec.units ? ' · ' + esc(rec.units) + ' units' : ''))
@@ -2860,7 +2976,7 @@ window.IndividualStudiesUI = (() => {
     init, switchTab,
     onTermChange, onCourseChange, onHoursChange, onSyllabusChange,
     onSponsorChange, onTemplatePick,
-    submit, resetForm, cancelResubmit,
+    submit, resetForm, cancelResubmit, onTestModeToggle,
     startResubmit, startResubmitFromModal,
     loadMine, loadReview, loadSponsored, renderSponsored, loadAdvisor,
     loadAll, renderAll, _sortBy, remind,
@@ -2874,7 +2990,7 @@ window.IndividualStudiesUI = (() => {
     loadExportTerms, exportTermCsv,
     // graduate audience
     onGradTermChange, onGradCourseChange, onGradSponsorChange, onGradTemplatePick, onGradOutlineChange,
-    gradSubmit, gradResetForm, gradCancelResubmit, gradStartResubmit, gradStartResubmitFromModal,
+    gradSubmit, gradResetForm, gradCancelResubmit, gradStartResubmit, gradStartResubmitFromModal, onGradTestModeToggle,
     loadGradMine, loadGradReview, loadGradSponsored, loadGradAdvisor, loadGradAll, gradRemind,
     onGradRoomReqToggle, onGradSponsorOutlineChange, gradSponsorApprove,
     gradPickClass, gradAdvisorComplete,

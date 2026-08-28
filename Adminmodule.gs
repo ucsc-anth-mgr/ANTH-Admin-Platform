@@ -39,6 +39,20 @@ const AdminModule = (() => {
   function setModuleEnabled(p)       { return ModuleManager.setEnabled(p.key, p.enabled); }
   function removeModule(p)           { return ModuleManager.remove(p.key); }
 
+  // ── Testing (TestMode.gs — Admin → Testing tab) ────────────
+  // Configuration only: nothing here grants a permission or activates a
+  // test. Activation happens per-execution in dispatch (an authorized
+  // account sending _test:true); these actions manage the roster of
+  // accounts whose flag is honored and the slot→account assignments the
+  // substitution layer resolves through. All five are super_admin-gated
+  // by the Admin module's registry Roles list (super_admin only), the
+  // same way every other Admin action is.
+  function testModeOverview()        { return TestMode.overview(); }
+  function saveTestAssignment(p)     { return TestMode.setAssignment(p); }
+  function clearTestAssignment(p)    { return TestMode.clearAssignment(p); }
+  function saveTestAccount(p)        { return TestMode.upsertAccount(p); }
+  function removeTestAccount(p)      { return TestMode.removeAccount(p); }
+
   // ── Tab visibility (per-module, per-role — TabRegistry) ────
   // Which roles see each tab inside a module. Backed by the ModuleTabs
   // sheet; defaults come from each handler's code-declared TABS manifest.
@@ -258,6 +272,7 @@ const AdminModule = (() => {
     listUsers, listRoles, upsertUser, recentAudit,
     listModules, availableHandlers, registeredHandlers, upsertModule, setModuleEnabled, removeModule, iconChoices,
     listModuleTabs, saveModuleTabs,
+    testModeOverview, saveTestAssignment, clearTestAssignment, saveTestAccount, removeTestAccount,
     listRolesDetailed, upsertRole, removeRole, roleUsage,
     listPendingRequests, listAllRequests, approveRequest, rejectRequest,
     listImportPolicy, upsertImportPolicy, removeImportPolicy,

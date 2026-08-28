@@ -273,6 +273,23 @@ const IndividualStudiesModule = (() => {
   const GRAD_SPONSOR_ROLE = 'grad_individual_studies_sponsor';
   const GRAD_ADVISOR_ROLE = 'staff_grad';
 
+  // Test-mode slot manifest (TestMode.gs) — the WORKFLOW POSITIONS a test
+  // routes through, consumed by the platform TestMode service the same way
+  // TABS and CHANNELS are consumed: code declares WHAT slots exist; Admin →
+  // Testing assigns WHICH functional account fills each. defaultRole is
+  // both the Admin-UI hint for the role the account genuinely needs AND
+  // the global-default lookup key (a slot with no per-module override
+  // inherits the global account mapped to its defaultRole). Not a
+  // dispatchable action. Substitution happens at WRITE time in submit/
+  // gradSubmit and at role-pool routing in the two _routeToAdvisor
+  // helpers; permission checks are never test-aware.
+  const TEST_SLOTS = [
+    { key: 'sponsor',     label: 'Faculty Sponsor (Undergrad)', defaultRole: SPONSOR_ROLE },
+    { key: 'advisor',     label: 'Undergraduate Advisor',       defaultRole: ADVISOR_ROLE },
+    { key: 'gradSponsor', label: 'Faculty Sponsor (Grad)',      defaultRole: GRAD_SPONSOR_ROLE },
+    { key: 'gradAdvisor', label: 'Graduate Advisor',            defaultRole: GRAD_ADVISOR_ROLE },
+  ];
+
   // Fixed course/unit pairs, ANTH 297A–299C. The A/B/C suffix encodes
   // the unit value (5/10/15) — VERIFY these pairs against the catalog
   // before first real use; this constant is the single place to fix.
@@ -387,6 +404,19 @@ const IndividualStudiesModule = (() => {
   }
 
   /**
+   * Whether the caller may submit in TEST MODE right now: they must be an
+   * authorized test account (or super_admin) AND every declared slot must
+   * resolve to a functional account. The UI shows the test-mode checkbox
+   * only when available — pure convenience; the server-side roster check
+   * in dispatch and the assertReady refusal in submit are the real gates.
+   */
+  function testModeAvailable(payload, user, roles) {
+    const r = TestMode.readiness(MODULE);
+    return { available: TestMode.isTestAccount(user, roles) && r.ready,
+             unresolved: r.unresolved };
+  }
+
+  /**
    * Submit a NEW petition, or resubmit one currently RETURNED.
    *
    * @param {Object} payload
@@ -472,6 +502,26 @@ const IndividualStudiesModule = (() => {
 
     const existingId = String(payload.petitionId || '').trim();
 
+    // ── Test mode (TestMode.gs) ─────────────────────────────
+    // Belt-and-suspenders on resubmission: a RETURNED test record whose
+    // client forgot to re-attach _test still re-enters test mode from its
+    // own TestMode flag. Then refuse outright if any slot is unmapped
+    // (fail closed — a half-intercepted test is how a real professor gets
+    // pinged), and substitute the mapped functional account AT WRITE TIME.
+    // The REAL selection already passed eligibility above, so the test
+    // exercised the real validation. Outside a test execution every line
+    // here is a no-op and finalSponsorEmail === sponsorEmail.
+    if (existingId) {
+      const prior = _byId(existingId);
+      if (prior) TestMode.activateForRecord(prior, user);
+    }
+    TestMode.assertReady(MODULE);
+    const finalSponsorEmail = TestMode.substitute(MODULE, 'sponsor', sponsorEmail);
+    fields.SponsorEmail = finalSponsorEmail;
+    fields.TestMode = TestMode.recordFlag();
+    fields.TestSelections = (finalSponsorEmail !== sponsorEmail)
+      ? ('TEST: selected sponsor ' + sponsorEmail) : '';
+
     // ── Resubmission: must be the caller's own RETURNED record ──
     if (existingId) {
       const rec = _byId(existingId);
@@ -492,13 +542,13 @@ const IndividualStudiesModule = (() => {
       _maybeSaveSyllabus(existingId, payload, user);
 
       Tasks.resolveForSource(MODULE, existingId, { resolvedBy: user });
-      _routeToSponsor(existingId, sponsorEmail, profile, course, /*resubmitted*/ true);
-      EventBus.emit(MODULE + '.resubmitted', { recordId: existingId, sponsorEmail: sponsorEmail }, { user: user });
+      _routeToSponsor(existingId, finalSponsorEmail, profile, course, /*resubmitted*/ true);
+      EventBus.emit(MODULE + '.resubmitted', { recordId: existingId, sponsorEmail: finalSponsorEmail }, { user: user });
       return { petitionId: existingId, stage: STAGE.SUBMITTED, resubmitted: true };
     }
 
     // ── New petition: enforce the four-part duplicate key ──
-    _assertNoDuplicate(user, termCode, sponsorEmail, course);
+    _assertNoDuplicate(user, termCode, finalSponsorEmail, course);
 
     const petitionId = DataService.generateId('IS');
     DataService.insert(SHEET(), TAB(), Object.assign({
@@ -523,8 +573,8 @@ const IndividualStudiesModule = (() => {
     // Optional syllabus upload.
     _maybeSaveSyllabus(petitionId, payload, user);
 
-    _routeToSponsor(petitionId, sponsorEmail, profile, course, /*resubmitted*/ false);
-    EventBus.emit(MODULE + '.submitted', { recordId: petitionId, sponsorEmail: sponsorEmail }, { user: user });
+    _routeToSponsor(petitionId, finalSponsorEmail, profile, course, /*resubmitted*/ false);
+    EventBus.emit(MODULE + '.submitted', { recordId: petitionId, sponsorEmail: finalSponsorEmail }, { user: user });
     return { petitionId: petitionId, stage: STAGE.SUBMITTED };
   }
 
@@ -619,6 +669,12 @@ const IndividualStudiesModule = (() => {
     if (_isGradId((payload || {}).petitionId)) return _gradSponsorApprove(payload || {}, user, roles);
     const rec = _byId((payload || {}).petitionId);
     if (!rec) throw new Error('Petition not found.');
+    // Re-enter test mode when acting on a flagged record (TestMode.gs).
+    // The flag traveled with the record, so later stages need no client
+    // cooperation: mail from here on is backstopped to the tester and the
+    // next role-pool hop routes to the mapped slot account. No-op on real
+    // records. Same one-liner in every later-stage action below.
+    TestMode.activateForRecord(rec, user);
     _assertSponsor(rec, user, roles);
     if (rec.Stage !== STAGE.SUBMITTED) throw new Error('This petition is not awaiting a sponsor decision.');
 
@@ -683,6 +739,7 @@ const IndividualStudiesModule = (() => {
   function _gradSponsorApprove(payload, user, roles) {
     const rec = _rowById(GRAD_TAB(), payload.petitionId);
     if (!rec) throw new Error('Petition not found.');
+    TestMode.activateForRecord(rec, user);   // test records re-enter test mode
     _assertSponsor(rec, user, roles);
     if (rec.Stage !== STAGE.SUBMITTED) throw new Error('This petition is not awaiting a sponsor decision.');
 
@@ -729,6 +786,7 @@ const IndividualStudiesModule = (() => {
     const tab = grad ? GRAD_TAB() : TAB();
     const rec = _rowById(tab, id);
     if (!rec) throw new Error('Petition not found.');
+    TestMode.activateForRecord(rec, user);   // test records re-enter test mode
     _assertSponsor(rec, user, roles);
     if (rec.Stage !== STAGE.SUBMITTED) throw new Error('This petition is not awaiting a sponsor decision.');
 
@@ -757,6 +815,7 @@ const IndividualStudiesModule = (() => {
     const raId = String((payload || {}).petitionId || '').trim();
     const rec = _rowById(_isGradId(raId) ? GRAD_TAB() : TAB(), raId);
     if (!rec) throw new Error('Petition not found.');
+    TestMode.activateForRecord(rec, user);   // test records re-enter test mode
     if (roles.indexOf('super_admin') === -1 && _norm(rec.SponsorEmail) !== _norm(user)) {
       throw new Error('Only the petition\'s faculty sponsor can request room access.');
     }
@@ -804,6 +863,7 @@ const IndividualStudiesModule = (() => {
     if (grad) _assertGradAdvisor(roles); else _assertAdvisor(roles);
     const rec = _rowById(grad ? GRAD_TAB() : TAB(), remId);
     if (!rec) throw new Error('Petition not found.');
+    TestMode.activateForRecord(rec, user);   // test records re-enter test mode
 
     let to, ask;
     if (rec.Stage === STAGE.SUBMITTED) {
@@ -871,6 +931,7 @@ const IndividualStudiesModule = (() => {
     payload = payload || {};
     const rec = _byId(payload.petitionId);
     if (!rec) throw new Error('Petition not found.');
+    TestMode.activateForRecord(rec, user);   // test records re-enter test mode
     if (rec.Stage !== STAGE.PENDING_ADVISOR) throw new Error('This petition is not awaiting advisor processing.');
 
     const classNumber = String(payload.classNumber || '').trim();
@@ -977,6 +1038,7 @@ const IndividualStudiesModule = (() => {
     const tab = grad ? GRAD_TAB() : TAB();
     const rec = _rowById(tab, arId);
     if (!rec) throw new Error('Petition not found.');
+    TestMode.activateForRecord(rec, user);   // test records re-enter test mode
     if (rec.Stage !== STAGE.PENDING_ADVISOR) throw new Error('This petition is not awaiting advisor processing.');
 
     const note = String((payload || {}).note || '').trim();
@@ -1178,6 +1240,18 @@ const IndividualStudiesModule = (() => {
 
     const existingId = String(payload.petitionId || '').trim();
 
+    // ── Test mode (TestMode.gs) — mirrors submit(); gradSponsor slot ──
+    if (existingId) {
+      const prior = _rowById(GRAD_TAB(), existingId);
+      if (prior) TestMode.activateForRecord(prior, user);
+    }
+    TestMode.assertReady(MODULE);
+    const finalSponsorEmail = TestMode.substitute(MODULE, 'gradSponsor', sponsorEmail);
+    fields.SponsorEmail = finalSponsorEmail;
+    fields.TestMode = TestMode.recordFlag();
+    fields.TestSelections = (finalSponsorEmail !== sponsorEmail)
+      ? ('TEST: selected sponsor ' + sponsorEmail) : '';
+
     // ── Resubmission: the caller's own RETURNED grad record ──
     if (existingId) {
       if (!_isGradId(existingId)) throw new Error('That is not a graduate petition.');
@@ -1192,15 +1266,15 @@ const IndividualStudiesModule = (() => {
       }));
       _maybeSaveOutline(existingId, payload, user);
       Tasks.resolveForSource(MODULE, existingId, { resolvedBy: user });
-      _gradRouteToSponsor(existingId, sponsorEmail, profile, pair.course, /*resubmitted*/ true, '', late, dl);
-      EventBus.emit(MODULE + '.grad_resubmitted', { recordId: existingId, sponsorEmail: sponsorEmail }, { user: user });
+      _gradRouteToSponsor(existingId, finalSponsorEmail, profile, pair.course, /*resubmitted*/ true, '', late, dl);
+      EventBus.emit(MODULE + '.grad_resubmitted', { recordId: existingId, sponsorEmail: finalSponsorEmail }, { user: user });
       return { petitionId: existingId, stage: STAGE.SUBMITTED, resubmitted: true, late: late, deadlineDate: dl ? dl.date : '' };
     }
 
     // ── New petition: same four-part duplicate key as undergrad ──
     const dup = DataService.query(SHEET(), GRAD_TAB(), 'StudentEmail', user).find(r =>
       _recTerm(r) === termCode &&
-      _norm(r.SponsorEmail) === _norm(sponsorEmail) &&
+      _norm(r.SponsorEmail) === _norm(finalSponsorEmail) &&
       String(r.Course).trim().toUpperCase() === pair.course.toUpperCase() &&
       r.Stage !== STAGE.RETURNED);
     if (dup) {
@@ -1222,8 +1296,8 @@ const IndividualStudiesModule = (() => {
     }, fields));
 
     _maybeSaveOutline(petitionId, payload, user);
-    _gradRouteToSponsor(petitionId, sponsorEmail, profile, pair.course, /*resubmitted*/ false, '', late, dl);
-    EventBus.emit(MODULE + '.grad_submitted', { recordId: petitionId, sponsorEmail: sponsorEmail }, { user: user });
+    _gradRouteToSponsor(petitionId, finalSponsorEmail, profile, pair.course, /*resubmitted*/ false, '', late, dl);
+    EventBus.emit(MODULE + '.grad_submitted', { recordId: petitionId, sponsorEmail: finalSponsorEmail }, { user: user });
     return { petitionId: petitionId, stage: STAGE.SUBMITTED, late: late, deadlineDate: dl ? dl.date : '' };
   }
 
@@ -1320,6 +1394,7 @@ const IndividualStudiesModule = (() => {
     payload = payload || {};
     const rec = _rowById(GRAD_TAB(), payload.petitionId);
     if (!rec) throw new Error('Petition not found.');
+    TestMode.activateForRecord(rec, user);   // test records re-enter test mode
     if (rec.Stage !== STAGE.PENDING_ADVISOR) throw new Error('This petition is not awaiting advisor processing.');
 
     const classNumber = String(payload.classNumber || '').trim();
@@ -1476,6 +1551,7 @@ const IndividualStudiesModule = (() => {
       roomAccessRoom: r.RoomAccessRoom || '',
       roomAccessNote: r.RoomAccessNote || '',
       returnNote: r.ReturnNote || '',
+      testMode: _isTrueStr(r.TestMode),
       createdAt: r.CreatedAt ? _fmtDate(r.CreatedAt) : '',
       _created: r.CreatedAt ? new Date(r.CreatedAt).getTime() : 0,
     };
@@ -1563,13 +1639,18 @@ const IndividualStudiesModule = (() => {
   }
 
   function _gradRouteToAdvisor(petitionId, rec) {
-    Tasks.create({
+    // Test mode: same role-pool interception as _routeToAdvisor, on the
+    // gradAdvisor slot.
+    const testAdvisor = TestMode.active() ? TestMode.substitute(MODULE, 'gradAdvisor', '') : '';
+    const taskSpec = {
       module: MODULE, sourceType: GRAD_SOURCE_TYPE, sourceId: petitionId,
       label: 'Graduate individual study awaiting class number'
         + (_isTrueStr(rec.LateSubmission) ? ' (late submission)' : ''),
-      assignedRole: GRAD_ADVISOR_ROLE,
-    });
-    const to = Notify.resolveRecipients({ superAdmins: [], explicit: _gradAdvisorEmails() });
+    };
+    if (testAdvisor) taskSpec.assignedTo = testAdvisor;
+    else taskSpec.assignedRole = GRAD_ADVISOR_ROLE;
+    Tasks.create(taskSpec);
+    const to = testAdvisor ? [testAdvisor] : Notify.resolveRecipients({ superAdmins: [], explicit: _gradAdvisorEmails() });
     if (to.length) {
       Notify.send({
         to: to,
@@ -1909,12 +1990,21 @@ const IndividualStudiesModule = (() => {
   }
 
   function _routeToAdvisor(petitionId, rec) {
-    Tasks.create({
+    // Test mode (TestMode.gs): the advisor stage is a ROLE-POOL hop, which
+    // substitution at write time can't cover — so during a test the task
+    // is assigned to the mapped advisor slot account and the pool email
+    // goes only to it. A test task must never land on real staff
+    // dashboards. substitute() with an empty fallback also hard-refuses
+    // (throws) if the slot became unmapped mid-workflow.
+    const testAdvisor = TestMode.active() ? TestMode.substitute(MODULE, 'advisor', '') : '';
+    const taskSpec = {
       module: MODULE, sourceType: SOURCE_TYPE, sourceId: petitionId,
       label: 'Undergraduate individual study awaiting class number',
-      assignedRole: ADVISOR_ROLE,
-    });
-    const to = Notify.resolveRecipients({
+    };
+    if (testAdvisor) taskSpec.assignedTo = testAdvisor;
+    else taskSpec.assignedRole = ADVISOR_ROLE;
+    Tasks.create(taskSpec);
+    const to = testAdvisor ? [testAdvisor] : Notify.resolveRecipients({
       superAdmins: [], explicit: _advisorEmails(),
     });
     if (to.length) {
@@ -1951,11 +2041,19 @@ const IndividualStudiesModule = (() => {
       const sourceId = _roomAccessSourceId(rec.PetitionID);
       // Replace any prior request task so a re-request doesn't stack.
       Tasks.resolveForSource(MODULE, sourceId, { resolvedBy: user, note: 'Superseded by updated request' });
-      Tasks.create({
+      // Test mode: there is deliberately NO facilities slot — during a
+      // test the task is assigned to the TESTER (the facilities email
+      // below is already redirected by the Notify backstop), so nothing
+      // lands on real facilities dashboards and no extra mapping is
+      // required to test the room-access path.
+      const tmCtx = TestMode.active() ? TestMode.context() : null;
+      const raTask = {
         module: MODULE, sourceType: ROOM_ACCESS_SOURCE_TYPE, sourceId: sourceId,
         label: 'Room access requested: ' + rec.Course + (room ? ' — ' + room : ''),
-        assignedRole: FACILITIES_ROLE,
-      });
+      };
+      if (tmCtx && tmCtx.user) raTask.assignedTo = tmCtx.user;
+      else raTask.assignedRole = FACILITIES_ROLE;
+      Tasks.create(raTask);
 
       const to = Notify.resolveRecipients({ superAdmins: [], explicit: _facilitiesEmails() });
       if (to.length) {
@@ -2401,6 +2499,7 @@ const IndividualStudiesModule = (() => {
       roomAccessRoom: r.RoomAccessRoom || '',
       roomAccessNote: r.RoomAccessNote || '',
       returnNote: r.ReturnNote || '',
+      testMode: _isTrueStr(r.TestMode),
       createdAt: r.CreatedAt ? _fmtDate(r.CreatedAt) : '',
       _created: r.CreatedAt ? new Date(r.CreatedAt).getTime() : 0,
     };
@@ -2865,8 +2964,12 @@ const IndividualStudiesModule = (() => {
     // CHANNELS is the notification-address manifest consumed by AdminModule
     // (not a dispatchable action): per-audience reply-to/CC rows in Admin.
     CHANNELS: CHANNELS,
+    // TEST_SLOTS is the test-mode slot manifest consumed by TestMode.gs
+    // (not a dispatchable action): the workflow positions a test routes
+    // through; Admin → Testing assigns which account fills each.
+    TEST_SLOTS: TEST_SLOTS,
     // student
-    formData, mine, get, submit, withdraw, deletePetition,
+    formData, mine, get, submit, withdraw, deletePetition, testModeAvailable,
     // sponsor
     sponsorQueue, sponsored, sponsorApprove, sponsorReturn, requestRoomAccess,
     // advisor

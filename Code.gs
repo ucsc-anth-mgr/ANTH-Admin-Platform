@@ -137,6 +137,17 @@ function include(filename) {
  *   'error'   — handler ran and threw
  * Previously only 'success' was written, so every refusal was invisible.
  *
+ * TEST MODE (TestMode.gs): dispatch is the ONE place test mode is decided.
+ * begin() activates for this execution iff the payload carries _test:true
+ * from an authorized test account (silently ignored otherwise — an
+ * unauthorized flag never changes behavior); handlers may also
+ * self-activate mid-call via TestMode.activateForRecord() when a loaded
+ * record is flagged, which is why the audit note reads TestMode.active()
+ * AFTER the handler ran, not begin()'s return value. Every audit row of a
+ * test execution is labeled, so the log never lies about what was real.
+ * end() is hygiene — each execution evaluates globals fresh, so a leaked
+ * flag cannot cross into another user's execution.
+ *
  * ASYNC-AWARE: dispatch is async and AWAITS the handler's result. This is
  * required for the async actions (IndividualStudiesModule.advisorComplete /
  * gradAdvisorComplete, which await pdf-lib PDF generation): without the
@@ -204,18 +215,26 @@ async function dispatch(module, action, payload) {
     }
   }
 
+  // Test mode (TestMode.gs) — see the TEST MODE note in the docstring.
+  TestMode.begin(module, action, payload, user, roles);
+
   let result;
   try {
     result = await handler[action](payload, user, roles);
   } catch (err) {
+    const testNote = TestMode.active() ? '[test mode] ' : '';
+    TestMode.end();
     AuditLog.write({ user: user, module: module, action: action,
                      payload: payload, status: 'error',
-                     notes: String((err && err.message) || err) });
+                     notes: testNote + String((err && err.message) || err) });
     throw err;   // rethrow unchanged — the client still sees the real message
   }
 
+  const wasTest = TestMode.active();
+  TestMode.end();
   AuditLog.write({ user: user, module: module, action: action,
-                   payload: payload, status: 'success' });
+                   payload: payload, status: 'success',
+                   notes: wasTest ? 'test mode' : '' });
   return result;
 }
 
@@ -321,6 +340,10 @@ function getModuleHTML(moduleKey) {
  * NOTE: GradStatusModule is likewise ACTIVE — save GradProgress.gs,
  * GradStatusModule.gs (and grad_status.html) BEFORE saving this
  * Code.gs, or the app fails with "GradStatusModule is not defined".
+ *
+ * NOTE: TestMode.gs is a platform SERVICE, not a module handler — it is
+ * referenced by dispatch() above, so save TestMode.gs BEFORE this
+ * Code.gs, or the app fails with "TestMode is not defined".
  */
 function getModuleHandler(name) {
   const handlers = {

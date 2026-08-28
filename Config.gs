@@ -113,6 +113,11 @@ const CONFIG = {
     // USERS_CONFIG with the other config tabs. Machine-managed via the
     // Admin UI — not intended for hand editing.
     SETTINGS:    'Settings',
+    // Test-mode slot assignments + test-account roster (TestMode.gs).
+    // Both live in USERS_CONFIG with the other platform config tabs.
+    // Machine-managed via Admin → Testing — not for hand editing.
+    TESTMODE_MAP:      'TestModeMap',
+    TESTMODE_ACCOUNTS: 'TestModeAccounts',
     TASKS:       'Tasks',
     REPORTS:     'Reports',
     THESIS_ELIGIBILITY: 'ThesisEligibility',

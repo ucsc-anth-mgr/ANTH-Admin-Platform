@@ -7,6 +7,7 @@
     <button class="module-tab"        data-tab="adduser" onclick="AdminUI.switchTab('adduser')"><i class="ti ti-user-plus"></i> Add / Edit User</button>
     <button class="module-tab"        data-tab="requests" onclick="AdminUI.switchTab('requests')"><i class="ti ti-inbox"></i> Requests <span id="req-badge" class="badge badge-warning" style="display:none;margin-left:4px;"></span></button>
     <button class="module-tab"        data-tab="roles"   onclick="AdminUI.switchTab('roles')"><i class="ti ti-shield"></i> Roles</button>
+    <button class="module-tab"        data-tab="testing" onclick="AdminUI.switchTab('testing')"><i class="ti ti-flask"></i> Testing</button>
     <button class="module-tab"        data-tab="audit"   onclick="AdminUI.switchTab('audit')"><i class="ti ti-history"></i> Audit Log</button>
   </div>
 
@@ -288,6 +289,24 @@
     </div>
   </div>
 
+  <!-- ══ TESTING (TestMode — accounts, defaults, coverage) ══ -->
+  <div id="tab-testing" class="tab-panel" style="display:none;">
+    <div class="card" style="margin-top:20px;">
+      <div class="card-title between"><span><i class="ti ti-flask"></i> Test mode</span>
+        <button class="btn btn-secondary btn-sm" onclick="AdminUI.loadTesting()"><i class="ti ti-refresh"></i> Refresh</button>
+      </div>
+      <p class="text-muted text-sm" style="margin:-8px 0 16px;">
+        Test mode lets an authorized <strong>test account</strong> walk a real workflow end-to-end
+        while every assignment and email routes to functional accounts instead of real faculty or
+        staff. <strong>Global defaults</strong> fill any module slot that expects the given role;
+        a <strong>per-module override</strong> beats the default. A module with any unfilled slot
+        <em>refuses</em> test submissions rather than half-routing one to a real person. Nothing on
+        this tab grants access or changes real behavior — it only configures where tests route.
+      </p>
+      <div id="testing-content"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
+    </div>
+  </div>
+
   <!-- ══ AUDIT ═══════════════════════════════════════════ -->
   <div id="tab-audit" class="tab-panel" style="display:none;">
     <div class="card" style="margin-top:20px;">
@@ -320,6 +339,9 @@
 .toggle-slider::before { content:''; position:absolute; height:15px; width:15px; left:3px; bottom:3px; background:#fff; border-radius:50%; transition:.2s; }
 .toggle-switch input:checked + .toggle-slider { background:var(--ucsc-navy); }
 .toggle-switch input:checked + .toggle-slider::before { transform:translateX(17px); }
+/* Testing tab: provenance badges + section spacing */
+.tm-section-title { font-size:13px; font-weight:600; color:var(--ucsc-navy); text-transform:uppercase; letter-spacing:0.04em; margin:20px 0 8px; }
+.tm-section-title:first-child { margin-top:4px; }
 </style>
 
 <script>
@@ -377,6 +399,7 @@ window.AdminUI = (() => {
         loadModuleReplyTos();
       });
     }
+    if (tab === 'testing') loadTesting();
     if (tab === 'audit')   loadAudit();
   }
 
@@ -1229,6 +1252,234 @@ window.AdminUI = (() => {
       .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
   }
 
+  // ══ TESTING (TestMode — accounts, defaults, coverage) ══
+  // Draws from one testModeOverview call:
+  //   accounts      — the roster whose _test flag dispatch honors
+  //   roles         — every defaultRole any module manifest references,
+  //                   with its global-default account (if set)
+  //   modules       — per-module slot coverage with provenance
+  //   orphanGlobals — global rows no manifest references (cleanup hint)
+  // Saves return non-blocking warnings (account missing a role, etc.) —
+  // surfaced as error toasts but the save stands; the admin decides.
+  let _tmData = null;   // last fetched testModeOverview result
+
+  function loadTesting() {
+    const el = document.getElementById('testing-content');
+    if (!el) return;
+    el.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading…</span></div>';
+    App.call('admin', 'testModeOverview', {}, d => {
+      if (!document.getElementById('testing-content')) return;
+      _tmData = d || { accounts: [], roles: [], modules: [], orphanGlobals: [] };
+      _renderTesting();
+    }, () => {
+      const box = document.getElementById('testing-content');
+      if (box) box.innerHTML = '<div class="empty-state text-sm">Could not load test-mode settings. If this is a fresh deploy, confirm TestMode.gs is saved and setUp() has created the TestModeMap / TestModeAccounts tabs.</div>';
+    });
+  }
+
+  function _renderTesting() {
+    const el = document.getElementById('testing-content');
+    if (!el || !_tmData) return;
+    el.innerHTML = _tmAccountsHtml(_tmData) + _tmGlobalsHtml(_tmData) + _tmModulesHtml(_tmData);
+  }
+
+  // ── Section 1: the test-account roster ──
+  function _tmAccountsHtml(d) {
+    const accounts = d.accounts || [];
+    const rows = accounts.map(a => `
+      <tr>
+        <td><strong>${_escAttr(a.email)}</strong>${a.notes ? '<div class="text-sm text-muted">' + _escAttr(a.notes) + '</div>' : ''}</td>
+        <td><span class="badge ${a.active ? 'badge-success' : 'badge-neutral'}">${a.active ? 'Active' : 'Inactive'}</span></td>
+        <td style="white-space:nowrap;">
+          <a class="edit-link" onclick="AdminUI.toggleTestAccount('${_escAttr(a.email)}')"><i class="ti ti-power"></i> ${a.active ? 'Deactivate' : 'Activate'}</a>
+          <a class="edit-link danger" onclick="AdminUI.deleteTestAccount('${_escAttr(a.email)}')"><i class="ti ti-trash"></i> Remove</a>
+        </td>
+      </tr>`).join('');
+    return '<div class="tm-section-title"><i class="ti ti-user-cog"></i> Test accounts</div>'
+      + '<p class="text-sm text-muted" style="margin:0 0 10px;">The accounts whose test-mode checkbox is honored '
+      + '(super admins are always honored). Anyone else sending the flag is silently ignored and their '
+      + 'submission proceeds as real. Use functional accounts, not personal ones.</p>'
+      + (accounts.length
+          ? '<div class="table-wrap"><table class="data-table"><thead><tr><th>Account</th><th>Status</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div>'
+          : '<div class="empty-state text-sm" style="margin-bottom:8px;">No test accounts yet — only super admins can run tests until one is added.</div>')
+      + '<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-top:10px;">'
+      +   '<div class="form-group" style="flex:1 1 240px;margin:0;">'
+      +     '<label class="form-label" for="tm-new-account">Add account</label>'
+      +     '<input class="form-input" type="email" id="tm-new-account" placeholder="anthwork@ucsc.edu">'
+      +   '</div>'
+      +   '<div class="form-group" style="flex:1 1 200px;margin:0;">'
+      +     '<label class="form-label" for="tm-new-account-notes">Note</label>'
+      +     '<input class="form-input" type="text" id="tm-new-account-notes" placeholder="Optional (e.g. plays the student)">'
+      +   '</div>'
+      +   '<button class="btn btn-primary" id="tm-add-account-btn" onclick="AdminUI.addTestAccount()" style="margin-bottom:0;"><i class="ti ti-plus"></i> Add test account</button>'
+      + '</div>';
+  }
+
+  // ── Section 2: global defaults, one row per referenced role ──
+  function _tmGlobalsHtml(d) {
+    const roles = d.roles || [];
+    const orphans = d.orphanGlobals || [];
+    if (!roles.length && !orphans.length) {
+      return '<div class="tm-section-title"><i class="ti ti-world"></i> Global defaults</div>'
+        + '<div class="empty-state text-sm">No module declares test slots yet, so there are no roles to default.</div>';
+    }
+    const rows = roles.map(r => {
+      const rid = 'tm-global-' + _slugId(r.role);
+      return '<tr>'
+        + '<td style="white-space:nowrap;"><span class="badge badge-navy">' + _escAttr(r.role) + '</span></td>'
+        + '<td style="min-width:240px;"><input class="form-input" type="email" id="' + rid + '" value="' + _escAttr(r.account || '') + '" placeholder="No default — slots expecting this role stay unresolved" style="margin:0;"></td>'
+        + '<td style="white-space:nowrap;">'
+        +   '<button class="btn btn-primary btn-sm" id="' + rid + '-btn" onclick="AdminUI.saveTmGlobal(\'' + _escAttr(r.role) + '\')"><i class="ti ti-device-floppy"></i> Save</button>'
+        +   (r.account ? ' <a class="edit-link danger" onclick="AdminUI.clearTmAssignment(\'global\',\'' + _escAttr(r.role) + '\')"><i class="ti ti-trash"></i> Clear</a>' : '')
+        + '</td></tr>';
+    }).join('');
+    const orphanNote = orphans.length
+      ? '<p class="text-sm" style="color:#9a6206;margin:10px 0 0;"><i class="ti ti-alert-triangle"></i> '
+        + orphans.length + ' global default(s) reference roles no module manifest uses ('
+        + orphans.map(o => _escAttr(o.role) + ' → ' + _escAttr(o.account)).join(', ')
+        + '). Harmless, but you can clear them: '
+        + orphans.map(o => '<a class="edit-link danger" onclick="AdminUI.clearTmAssignment(\'global\',\'' + _escAttr(o.role) + '\')">clear ' + _escAttr(o.role) + '</a>').join(' ')
+        + '</p>'
+      : '';
+    return '<div class="tm-section-title"><i class="ti ti-world"></i> Global defaults</div>'
+      + '<p class="text-sm text-muted" style="margin:0 0 10px;">One account per role: any module slot expecting that '
+      + 'role routes to this account during a test, unless the module has its own override below. A blank '
+      + 'default leaves those slots unresolved — affected modules refuse test submissions.</p>'
+      + '<div class="table-wrap"><table class="data-table"><thead><tr><th>Slot role</th><th>Test account</th><th></th></tr></thead><tbody>'
+      + rows + '</tbody></table></div>' + orphanNote;
+  }
+
+  // ── Section 3: per-module coverage grid with provenance ──
+  function _tmModulesHtml(d) {
+    const mods = d.modules || [];
+    const declared = mods.filter(m => m.declared);
+    const undeclared = mods.filter(m => !m.declared);
+    let html = '<div class="tm-section-title"><i class="ti ti-apps"></i> Module coverage</div>'
+      + '<p class="text-sm text-muted" style="margin:0 0 10px;">Each declared slot and where its test account '
+      + 'comes from. Type an account to set a per-module <strong>override</strong>; clear it to fall back to '
+      + 'the role\'s global default.</p>';
+    if (!declared.length) {
+      html += '<div class="empty-state text-sm">No module declares test slots yet — a developer adds a TEST_SLOTS manifest to a module\'s handler.</div>';
+    }
+    declared.forEach(m => {
+      const readyBadge = m.ready
+        ? '<span class="badge badge-success">ready</span>'
+        : '<span class="badge badge-warning">incomplete — test submissions refused</span>';
+      const disabledBadge = m.enabled ? '' : ' <span class="badge badge-neutral">module disabled</span>';
+      const rows = (m.slots || []).map(s => {
+        const sid = 'tm-slot-' + _slugId(m.moduleKey) + '-' + _slugId(s.key);
+        let prov, overrideVal = '', placeholder = '';
+        if (s.source === 'override') {
+          prov = '<span class="badge badge-navy" title="Set here for this module; beats the global default.">override</span>';
+          overrideVal = s.account || '';
+          placeholder = 'Clear to fall back to the global default';
+        } else if (s.source === 'global') {
+          prov = '<span class="badge badge-success" title="Inherited from the ' + _escAttr(s.defaultRole) + ' global default.">inherited</span>';
+          placeholder = s.account + ' (from ' + s.defaultRole + ' default)';
+        } else {
+          prov = '<span class="badge badge-danger" title="No override and no global default — this slot blocks test mode for the module.">unresolved</span>';
+          placeholder = 'No account — assign here or set the ' + (s.defaultRole || 'role') + ' default above';
+        }
+        return '<tr>'
+          + '<td style="white-space:nowrap;"><strong>' + _escAttr(s.label) + '</strong>'
+          +   '<div class="text-sm text-muted">' + _escAttr(s.key) + (s.defaultRole ? ' · expects ' + _escAttr(s.defaultRole) : '') + '</div></td>'
+          + '<td style="white-space:nowrap;">' + prov
+          +   (s.account ? '<div class="text-sm" style="margin-top:2px;">' + _escAttr(s.account) + '</div>' : '') + '</td>'
+          + '<td style="min-width:240px;"><input class="form-input" type="email" id="' + sid + '" value="' + _escAttr(overrideVal) + '" placeholder="' + _escAttr(placeholder) + '" style="margin:0;"></td>'
+          + '<td style="white-space:nowrap;">'
+          +   '<button class="btn btn-primary btn-sm" id="' + sid + '-btn" onclick="AdminUI.saveTmSlot(\'' + _escAttr(m.moduleKey) + '\',\'' + _escAttr(s.key) + '\')"><i class="ti ti-device-floppy"></i> Save</button>'
+          +   (s.source === 'override' ? ' <a class="edit-link danger" onclick="AdminUI.clearTmAssignment(\'' + _escAttr(m.moduleKey) + '\',\'' + _escAttr(s.key) + '\')"><i class="ti ti-trash"></i> Clear</a>' : '')
+          + '</td></tr>';
+      }).join('');
+      html += '<div style="margin:14px 0 4px;"><strong>' + _escAttr(m.label) + '</strong> '
+        + '<span class="text-sm text-muted">' + _escAttr(m.moduleKey) + '</span> ' + readyBadge + disabledBadge + '</div>'
+        + '<div class="table-wrap"><table class="data-table"><thead><tr><th>Slot</th><th>Routes to</th><th>Override</th><th></th></tr></thead><tbody>'
+        + rows + '</tbody></table></div>';
+    });
+    if (undeclared.length) {
+      html += '<p class="text-sm text-muted" style="margin:12px 0 0;">Without test slots yet: '
+        + undeclared.map(m => _escAttr(m.label)).join(', ')
+        + ' — testable once a developer adds a TEST_SLOTS manifest.</p>';
+    }
+    return html;
+  }
+
+  // ── Testing actions ──
+  // Shared post-save handler: success toast + each server warning as a
+  // long-lived error toast (the save STANDS — warnings are advisory),
+  // then a full reload so provenance badges reflect the change.
+  function _tmAfterSave(res, msg) {
+    Toast.show(msg, 'success');
+    ((res && res.warnings) || []).forEach(w => Toast.show(w, 'error', 8000));
+    loadTesting();
+  }
+
+  function addTestAccount() {
+    const email = (document.getElementById('tm-new-account') || {}).value || '';
+    const notes = (document.getElementById('tm-new-account-notes') || {}).value || '';
+    if (!email.trim()) { Toast.show('Enter the account email.', 'error'); return; }
+    FormHelper.setLoading('tm-add-account-btn', true);
+    App.call('admin', 'saveTestAccount', { email: email.trim(), active: true, notes: notes.trim() }, res => {
+      FormHelper.setLoading('tm-add-account-btn', false);
+      _tmAfterSave(res, 'Test account saved: ' + email.trim());
+    }, () => FormHelper.setLoading('tm-add-account-btn', false));
+  }
+
+  // Flips Active on a roster row. The server upsert always writes Notes,
+  // so pass the current notes through or a toggle would blank them.
+  function toggleTestAccount(email) {
+    const acct = ((_tmData && _tmData.accounts) || []).find(a =>
+      String(a.email).toLowerCase() === String(email).toLowerCase());
+    if (!acct) { loadTesting(); return; }
+    App.call('admin', 'saveTestAccount', { email: acct.email, active: !acct.active, notes: acct.notes || '' }, res => {
+      _tmAfterSave(res, acct.email + (acct.active ? ' deactivated — its test flag is now ignored.' : ' activated.'));
+    });
+  }
+
+  function deleteTestAccount(email) {
+    if (!confirm('Remove "' + email + '" from the test-account roster?\n\nIts test-mode checkbox will be silently ignored from then on. This does not touch the user profile or any records.')) return;
+    App.call('admin', 'removeTestAccount', { email }, () => {
+      Toast.show('Removed test account: ' + email, 'success');
+      loadTesting();
+    });
+  }
+
+  function saveTmGlobal(role) {
+    const rid = 'tm-global-' + _slugId(role);
+    const input = document.getElementById(rid);
+    if (!input) return;
+    const account = input.value.trim();
+    if (!account) { clearTmAssignment('global', role); return; }   // blank + Save = clear
+    FormHelper.setLoading(rid + '-btn', true);
+    App.call('admin', 'saveTestAssignment', { scope: 'global', slot: role, account: account }, res => {
+      FormHelper.setLoading(rid + '-btn', false);
+      _tmAfterSave(res, 'Global default saved: ' + role + ' → ' + account);
+    }, () => FormHelper.setLoading(rid + '-btn', false));
+  }
+
+  function saveTmSlot(moduleKey, slotKey) {
+    const sid = 'tm-slot-' + _slugId(moduleKey) + '-' + _slugId(slotKey);
+    const input = document.getElementById(sid);
+    if (!input) return;
+    const account = input.value.trim();
+    if (!account) { clearTmAssignment(moduleKey, slotKey); return; }   // blank + Save = clear override
+    FormHelper.setLoading(sid + '-btn', true);
+    App.call('admin', 'saveTestAssignment', { scope: moduleKey, slot: slotKey, account: account }, res => {
+      FormHelper.setLoading(sid + '-btn', false);
+      _tmAfterSave(res, 'Override saved: ' + moduleKey + '.' + slotKey + ' → ' + account);
+    }, () => FormHelper.setLoading(sid + '-btn', false));
+  }
+
+  function clearTmAssignment(scope, slot) {
+    App.call('admin', 'clearTestAssignment', { scope, slot }, res => {
+      Toast.show((res && res.removed)
+        ? ('Cleared ' + (scope === 'global' ? 'global default for ' + slot : scope + '.' + slot)
+           + (scope === 'global' ? ' — slots expecting it may now be unresolved.' : ' — falls back to the global default.'))
+        : 'Nothing to clear.', 'success');
+      loadTesting();
+    });
+  }
+
   // ══ AUDIT ═════════════════════════════════════════════
   function loadAudit() {
     const el = document.getElementById('audit-table');
@@ -1242,7 +1493,7 @@ window.AdminUI = (() => {
     });
   }
 
-  return { init, switchTab, loadModules, toggleModule, deleteModule, openModuleForm, editModule, closeModuleForm, checkHandler, pickIcon, onModuleChip, saveModule, toggleTabsRow, onTabChip, saveModuleTabs, loadUsers, onUserFilterChange, clearUserFilters, sortUsersBy, onChip, editUser, saveUser, clearUserForm, loadAudit, loadRoles, editRole, saveRole, clearRoleForm, deleteRole, explainBlocked, loadRequests, approveRequest, rejectRequest, loadImportPolicy, editPolicy, savePolicy, deletePolicy, loadNotifyRules, editNotifyRule, saveNotifyRule, deleteNotifyRule, loadModuleReplyTos, saveModuleAddresses };
+  return { init, switchTab, loadModules, toggleModule, deleteModule, openModuleForm, editModule, closeModuleForm, checkHandler, pickIcon, onModuleChip, saveModule, toggleTabsRow, onTabChip, saveModuleTabs, loadUsers, onUserFilterChange, clearUserFilters, sortUsersBy, onChip, editUser, saveUser, clearUserForm, loadAudit, loadRoles, editRole, saveRole, clearRoleForm, deleteRole, explainBlocked, loadRequests, approveRequest, rejectRequest, loadImportPolicy, editPolicy, savePolicy, deletePolicy, loadNotifyRules, editNotifyRule, saveNotifyRule, deleteNotifyRule, loadModuleReplyTos, saveModuleAddresses, loadTesting, addTestAccount, toggleTestAccount, deleteTestAccount, saveTmGlobal, saveTmSlot, clearTmAssignment };
 
 })();
 

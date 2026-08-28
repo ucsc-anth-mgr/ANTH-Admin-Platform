@@ -18,6 +18,20 @@
 // helpers (subjectLine, htmlWrap) so every portal email looks alike,
 // but Notify never rewrites a module's content.
 //
+// TEST MODE (TestMode.gs): while a test execution is active, every
+// outbound message goes through TestMode.interceptMail — DELIVER IF
+// SAFE, REDIRECT IF NOT. Recipients that are all test accounts (the
+// tester, rostered accounts, mapped slot accounts) get the mail AS
+// ADDRESSED, [TEST]-prefixed, so a slot account's inbox sees what a
+// real sponsor's would; any unsafe recipient is stripped (tester
+// added, strip noted in the body); mail with no safe recipient is
+// fully redirected to the tester. This is the BACKSTOP — the primary
+// interception is write-time substitution of assignees on the record
+// — and it catches everything substitution doesn't (role-pool
+// notices, CC mirrors, digests). If the tester cannot be determined,
+// the message is suppressed entirely: dropped beats
+// delivered-to-real-people, always.
+//
 // Wraps Utils.sendEmail (the low-level GmailApp call). Absorbs the
 // recipient-dedup logic formerly inline in RequestManager._notifyAdmins.
 // ============================================================
@@ -71,15 +85,40 @@ const Notify = (() => {
         ? subjectText
         : subjectLine(subjectText);
 
+      // ── TEST MODE backstop (TestMode.gs) ─────────────────────
+      // Deliver-if-safe: mail whose recipients are all test accounts
+      // goes AS ADDRESSED ([TEST]-prefixed); unsafe recipients are
+      // stripped with the tester added and the strip noted; no safe
+      // recipient → full redirect to the tester; tester unknown →
+      // suppressed entirely. Attachments deliberately still ride
+      // along, so slot accounts and the tester receive generated PDFs
+      // and can verify them. replyTo is left untouched on purpose: a
+      // reply to test mail goes wherever a real reply would, which is
+      // itself worth testing.
+      let mailTo = to, mailCc = cc, mailSubject = subject,
+          mailBody = p.body || '', mailHtml = p.htmlBody;
+      if (typeof TestMode !== 'undefined' && TestMode.active()) {
+        const r = TestMode.interceptMail({
+          to: to, cc: cc, subject: subject,
+          body: mailBody, htmlBody: mailHtml,
+        });
+        mailTo = r.to; mailCc = r.cc; mailSubject = r.subject;
+        mailBody = r.body; mailHtml = r.htmlBody;
+        if (!mailTo.length) {
+          return { sent: false, recipients: [],
+                   reason: r.note || 'test mode: mail suppressed' };
+        }
+      }
+
       // Route through Utils.sendEmail (the single low-level mailer)
       // when only the basic fields are in play; _deliver upgrades to
       // GmailApp directly whenever extended options are present.
       _deliver({
-        to: to.join(','),
-        subject: subject,
-        body: p.body || '',
-        htmlBody: p.htmlBody,
-        cc: cc.length ? cc.join(',') : '',
+        to: mailTo.join(','),
+        subject: mailSubject,
+        body: mailBody,
+        htmlBody: mailHtml,
+        cc: mailCc.length ? mailCc.join(',') : '',
         attachments: _collectBlobs(p.attachments),
         replyTo: _dedupeEmails(_collect(p.replyTo)).join(','),
         // Inbox display name. A caller may override per-message; otherwise
@@ -88,7 +127,7 @@ const Notify = (() => {
         senderName: String(p.senderName || (typeof CONFIG !== 'undefined' && CONFIG.NOTIFY_FROM_NAME) || '').trim(),
       });
 
-      return { sent: true, recipients: to };
+      return { sent: true, recipients: mailTo };
 
     } catch (err) {
       // Delivery must never break the caller.
