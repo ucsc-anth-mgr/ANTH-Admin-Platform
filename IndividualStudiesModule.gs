@@ -417,6 +417,32 @@ const IndividualStudiesModule = (() => {
   }
 
   /**
+   * Post-write verification that the TestMode stamp actually persisted
+   * (TestMode.gs). If this execution is a test but the stored record
+   * doesn't read TRUE, the stamp was silently dropped at write time — in
+   * practice: the TestMode/TestSelections columns are missing from the
+   * live tab (addMissingColumns() not run after a Setup.gs change).
+   * Without this check the failure surfaces three stages later as a
+   * half-real record leaking unprefixed mail to real routing; with it,
+   * the submission refuses LOUDLY before anything is routed. A fresh
+   * insert is removed again; a resubmission's row is left (it is the
+   * student's live record) but stays unrouted. No-op outside a test.
+   */
+  function _assertTestStamp(tab, id, freshInsert) {
+    if (!TestMode.active()) return;
+    const stored = _rowById(tab, id);
+    if (stored && String(stored.TestMode || '').trim().toUpperCase() === 'TRUE') return;
+    if (freshInsert) {
+      try { DataService.remove(SHEET(), tab, 'PetitionID', id); }
+      catch (err) { Logger.log('_assertTestStamp: cleanup of ' + id + ' failed: ' + err); }
+    }
+    throw new Error('TEST MODE refused: the test flag could not be recorded on the petition — '
+      + 'the TestMode/TestSelections columns are likely missing from the live tab. '
+      + 'Run addMissingColumns() from the Apps Script editor, then submit the test again. '
+      + 'Nothing was routed to the sponsor.');
+  }
+
+  /**
    * Submit a NEW petition, or resubmit one currently RETURNED.
    *
    * @param {Object} payload
@@ -519,8 +545,8 @@ const IndividualStudiesModule = (() => {
     const finalSponsorEmail = TestMode.substitute(MODULE, 'sponsor', sponsorEmail);
     fields.SponsorEmail = finalSponsorEmail;
     fields.TestMode = TestMode.recordFlag();
-    fields.TestSelections = (finalSponsorEmail !== sponsorEmail)
-      ? ('TEST: selected sponsor ' + sponsorEmail) : '';
+    fields.TestSelections = TestMode.selectionNote(
+      (finalSponsorEmail !== sponsorEmail) ? { sponsor: sponsorEmail } : {});
 
     // ── Resubmission: must be the caller's own RETURNED record ──
     if (existingId) {
@@ -537,6 +563,8 @@ const IndividualStudiesModule = (() => {
         Stage: STAGE.SUBMITTED,
         ReturnNote: '',
       }));
+
+      _assertTestStamp(TAB(), existingId, /*freshInsert*/ false);
 
       // Optional syllabus (replace-in-place keeps the same Drive file id).
       _maybeSaveSyllabus(existingId, payload, user);
@@ -569,6 +597,8 @@ const IndividualStudiesModule = (() => {
       SyllabusFileID: '', SyllabusLink: '', SyllabusName: '',
       ReturnNote: '',
     }, fields));
+
+    _assertTestStamp(TAB(), petitionId, /*freshInsert*/ true);
 
     // Optional syllabus upload.
     _maybeSaveSyllabus(petitionId, payload, user);
@@ -1029,6 +1059,56 @@ const IndividualStudiesModule = (() => {
              course: course, courseChanged: courseChanged };
   }
 
+  /**
+   * (Re)generates the canonical PDF for a COMPLETE petition and re-sends
+   * the completion email with it attached. Audience-aware (grad records
+   * gated to the graduate advisor). Exists for two reasons:
+   *   1. RECOVERY — advisorComplete's generation is deliberately
+   *      best-effort (a PDF failure must not strand the record), so a
+   *      completed petition can be missing its document; this fills it
+   *      in without walking the workflow backward.
+   *   2. DIAGNOSIS — unlike the best-effort path, this does NOT swallow
+   *      the error: a generation failure throws the REAL message to the
+   *      caller's screen (and the audit log), no Executions-log
+   *      spelunking required.
+   * Safe on a petition that already has a PDF: ReportService's
+   * fetch-or-create and the replace-in-place Drive flow mean
+   * regeneration updates rather than duplicates, and the resend is just
+   * mail. Test records re-enter test mode, so the resend obeys the
+   * deliver-if-safe policy like any other test mail.
+   */
+  async function regeneratePdf(payload, user, roles) {
+    const id = String((payload || {}).petitionId || '').trim();
+    const grad = _isGradId(id);
+    if (grad) _assertGradAdvisor(roles); else _assertAdvisor(roles);
+    const tab = grad ? GRAD_TAB() : TAB();
+    const rec = _rowById(tab, id);
+    if (!rec) throw new Error('Petition not found.');
+    TestMode.activateForRecord(rec, user);   // test records re-enter test mode
+    if (rec.Stage !== STAGE.COMPLETE) {
+      throw new Error('Only a completed petition has a final PDF to generate.');
+    }
+
+    // No try/catch — a failure here IS the answer being sought.
+    const pdf = grad ? await _generateGradPetitionPdf(rec, user)
+                     : await _generatePetitionPdf(rec, user);
+    if (!pdf || !pdf.fileId) {
+      throw new Error('PDF generation returned no file. Check the Executions log for details.');
+    }
+
+    DataService.update(SHEET(), tab, 'PetitionID', rec.PetitionID, {
+      DriveFileID: pdf.fileId, DocumentLink: pdf.url || '', FileName: pdf.fileName || '',
+    });
+    _grantViewers(pdf.fileId, [rec.StudentEmail, rec.SponsorEmail]
+      .concat(grad ? _gradAdvisorEmails() : _advisorEmails()));
+
+    const fresh = _rowById(tab, id);
+    if (grad) _gradNotifyComplete(fresh, pdf); else _notifyComplete(fresh, pdf);
+
+    EventBus.emit(MODULE + '.pdf_regenerated', { recordId: rec.PetitionID }, { user: user });
+    return { petitionId: rec.PetitionID, documentLink: pdf.url || '' };
+  }
+
   /** Advisor returns the petition to the sponsor, clearing the decision.
    *  Audience-aware: grad records require the graduate advisor. */
   function advisorReturn(payload, user, roles) {
@@ -1249,8 +1329,8 @@ const IndividualStudiesModule = (() => {
     const finalSponsorEmail = TestMode.substitute(MODULE, 'gradSponsor', sponsorEmail);
     fields.SponsorEmail = finalSponsorEmail;
     fields.TestMode = TestMode.recordFlag();
-    fields.TestSelections = (finalSponsorEmail !== sponsorEmail)
-      ? ('TEST: selected sponsor ' + sponsorEmail) : '';
+    fields.TestSelections = TestMode.selectionNote(
+      (finalSponsorEmail !== sponsorEmail) ? { gradSponsor: sponsorEmail } : {});
 
     // ── Resubmission: the caller's own RETURNED grad record ──
     if (existingId) {
@@ -1264,6 +1344,7 @@ const IndividualStudiesModule = (() => {
         Stage: STAGE.SUBMITTED,
         ReturnNote: '',
       }));
+      _assertTestStamp(GRAD_TAB(), existingId, /*freshInsert*/ false);
       _maybeSaveOutline(existingId, payload, user);
       Tasks.resolveForSource(MODULE, existingId, { resolvedBy: user });
       _gradRouteToSponsor(existingId, finalSponsorEmail, profile, pair.course, /*resubmitted*/ true, '', late, dl);
@@ -1294,6 +1375,8 @@ const IndividualStudiesModule = (() => {
       DriveFileID: '', DocumentLink: '', FileName: '',
       ReturnNote: '',
     }, fields));
+
+    _assertTestStamp(GRAD_TAB(), petitionId, /*freshInsert*/ true);
 
     _maybeSaveOutline(petitionId, payload, user);
     _gradRouteToSponsor(petitionId, finalSponsorEmail, profile, pair.course, /*resubmitted*/ false, '', late, dl);
@@ -1360,7 +1443,9 @@ const IndividualStudiesModule = (() => {
     const units = _toNum(rec.Units);
     let preassigned = null, sections = [], matched = true;
     try {
-      const pre = ClassSchedule.findPreassigned(term, course, rec.SponsorEmail);
+      // Test-mode look-through — see _advisorContext; gradSponsor slot.
+      const scheduleSponsor = TestMode.selectedFor(rec, 'gradSponsor') || rec.SponsorEmail;
+      const pre = ClassSchedule.findPreassigned(term, course, scheduleSponsor);
       preassigned = pre ? _classRow(pre) : null;
       const res = ClassSchedule.sectionsForCourse(term, course, { units: units || null });
       matched = res.matchedCredits;
@@ -1557,10 +1642,12 @@ const IndividualStudiesModule = (() => {
     };
   }
 
-  /** Eligible grad sponsors: active GRAD_SPONSOR_ROLE holders. */
+  /** Eligible grad sponsors: active GRAD_SPONSOR_ROLE holders, minus
+   *  reserved test accounts — see _eligibleSponsors. */
   function _eligibleGradSponsors() {
     return Auth.listUsers()
       .filter(u => u.active && (u.roles || []).indexOf(GRAD_SPONSOR_ROLE) !== -1)
+      .filter(u => !TestMode.isReservedAccount(u.email))
       .map(u => ({ email: u.email, name: u.nameLastFirst || u.name || u.email }))
       .sort((a, b) => String(a.name).localeCompare(String(b.name)));
   }
@@ -2279,9 +2366,18 @@ const IndividualStudiesModule = (() => {
 
     // Class-number options from the ClassSchedule service, for the
     // EFFECTIVE course (the petition's own, or the candidate correction).
+    // Test-mode look-through (TestMode.gs): a test record's SponsorEmail
+    // is the substituted functional account, which has no sections in the
+    // registrar's schedule — the lookup would come up empty on every test
+    // run. Use the ORIGINALLY selected sponsor (preserved in
+    // TestSelections) so the advisor sees the same preassigned suggestion
+    // a real run would. Simulation FIDELITY only: routing, tasks, and
+    // every permission check still use the record's real fields, which
+    // honestly name the functional account.
     let preassigned = null, allSections = [], sectionsMatchedCredits = true;
     try {
-      const pre = ClassSchedule.findPreassigned(term, course, rec.SponsorEmail);
+      const scheduleSponsor = TestMode.selectedFor(rec, 'sponsor') || rec.SponsorEmail;
+      const pre = ClassSchedule.findPreassigned(term, course, scheduleSponsor);
       preassigned = pre ? _classRow(pre) : null;
 
       // The authoritative menu: every section for this course at the
@@ -2419,11 +2515,19 @@ const IndividualStudiesModule = (() => {
   // PRIVATE — eligibility, duplicate guard, record shaping, helpers
   // ============================================================
 
-  /** Eligible sponsors: active holders of the SPONSOR_ROLE. Implemented
-   *  with Auth.listUsers() (Auth exposes no usersWithRole helper). */
+  /** Eligible sponsors: active holders of the SPONSOR_ROLE, MINUS
+   *  accounts reserved for testing (TestMode roster/map) — a functional
+   *  account keeps the role so it can open the module and act its part,
+   *  but never belongs in a person-picker. Because _isEligibleSponsor is
+   *  implemented through this list, the exclusion also closes the
+   *  hand-crafted-payload path: nobody can SELECT a test account as
+   *  sponsor. Substitution still writes one at save time regardless,
+   *  which is the design. Implemented with Auth.listUsers() (Auth
+   *  exposes no usersWithRole helper). */
   function _eligibleSponsors() {
     return Auth.listUsers()
       .filter(u => u.active && (u.roles || []).indexOf(SPONSOR_ROLE) !== -1)
+      .filter(u => !TestMode.isReservedAccount(u.email))
       .map(u => ({ email: u.email, name: u.nameLastFirst || u.name || u.email }))
       .sort((a, b) => String(a.name).localeCompare(String(b.name)));
   }
@@ -2973,7 +3077,7 @@ const IndividualStudiesModule = (() => {
     // sponsor
     sponsorQueue, sponsored, sponsorApprove, sponsorReturn, requestRoomAccess,
     // advisor
-    advisorQueue, allPetitions, remindResponsible, advisorContext, advisorComplete, advisorReturn,
+    advisorQueue, allPetitions, remindResponsible, advisorContext, advisorComplete, advisorReturn, regeneratePdf,
     // import + export (advisor admin)
     importPreview, importResolve, importCommit, importHistory, scheduleTerms, exportTerm,
     // graduate audience (shared actions above branch on the GIS prefix)

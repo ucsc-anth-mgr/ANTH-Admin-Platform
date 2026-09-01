@@ -19,7 +19,8 @@
 //   internal). PROPOSED is the NOMINATIONS SLATE for the cycle's
 //   target year — the tentative pool (volunteered = OPEN, confirmed =
 //   ACCEPTED shown as "Assigned"), distinct from Current's confirmed
-//   selections. It is visible ONLY to super_admin and the
+//   selections. It is visible ONLY to super_admin, the staff_manager
+//   role holder, and the
 //   department_chair role holder: nomination notes carry things like
 //   sabbatical timing written for the chair/admin, so the audience is
 //   restricted rather than the fields redacted — the slate includes
@@ -56,12 +57,13 @@
 //                                 allowlist). Staff have NO implicit
 //                                 full-history view — grant this role
 //                                 individually where wanted.
-//       department_chair role   → the Proposed slate (nominations with
+//       department_chair /
+//       staff_manager roles     → the Proposed slate (nominations with
 //                                 priorities and notes for the cycle's
-//                                 target year). A functional position-
-//                                 role like staff_undergrad: created in
+//                                 target year). Functional position-
+//                                 roles like staff_undergrad: created in
 //                                 Admin → Roles, assigned to whoever
-//                                 holds the chair, kept OFF the
+//                                 holds the position, kept OFF the
 //                                 ImportPolicy allowlist.
 //       super_admin             → all management: catalog, assignments,
 //                                 corrections queue, import, nomination
@@ -143,6 +145,7 @@ const ServiceModule = (() => {
   const MODULE = 'service';
   const HISTORY_ROLE = 'service_history';      // full-history grant (super_admin-assigned)
   const CHAIR_ROLE = 'department_chair';       // Proposed-slate access (position role)
+  const MANAGER_ROLE = 'staff_manager';        // Proposed-slate access (department manager position role)
   const CORRECTION_SOURCE_TYPE = 'service_correction';
 
   const QUARTERS = ['Fall', 'Winter', 'Spring'];
@@ -151,6 +154,11 @@ const ServiceModule = (() => {
   // a faculty function; anyone else (emeriti, one-off cases) can still be
   // recorded via the "person without a portal profile" RawName path.
   const ASSIGNABLE_ROLES = ['senate_faculty', 'lecturer'];
+  // Who is EXPECTED to self-nominate each cycle — drives the Proposed
+  // tab's "Not yet nominated" card. Deliberately its own constant, NOT
+  // ASSIGNABLE_ROLES: lecturers can be assigned service, but only
+  // senate faculty are chased for nominations.
+  const NOMINATION_EXPECTED_ROLES = ['senate_faculty'];
 
   // ── Tab manifest (TabRegistry) ─────────────────────────────
   // Code-declared defaults for the module's tab bar; Admin → Modules →
@@ -166,8 +174,8 @@ const ServiceModule = (() => {
   const TABS = [
     { key: 'directory', label: 'Current Assignments', icon: 'ti-users-group', roles: ['*'],
       actions: ['currentAssignments'] },
-    { key: 'proposed', label: 'Proposed', icon: 'ti-calendar', roles: [CHAIR_ROLE],
-      actions: ['proposedSlate'] },
+    { key: 'proposed', label: 'Proposed', icon: 'ti-calendar', roles: [CHAIR_ROLE, MANAGER_ROLE],
+      actions: ['proposedSlate', 'setNominationAvailability'] },
     { key: 'mine', label: 'My History', icon: 'ti-history', roles: ['*'],
       actions: ['myHistory', 'submitCorrection'] },
     { key: 'nominate', label: 'Nominate', icon: 'ti-star', roles: ['*'],
@@ -184,6 +192,8 @@ const ServiceModule = (() => {
       actions: ['setNominationWindow', 'listNominations', 'acceptNomination', 'declineNomination'] },
     { key: 'import', label: 'Import', icon: 'ti-file-upload', roles: [], floor: 'super_admin',
       actions: ['importPreview', 'resolveImportName', 'importCommit', 'importNominationsPreview', 'importNominationsCommit'] },
+    { key: 'settings', label: 'Settings', icon: 'ti-settings', roles: [], floor: 'super_admin',
+      actions: ['settingsInfo'] },
   ];
 
   // ── Configuration access (read lazily so load order is irrelevant) ──
@@ -213,11 +223,11 @@ const ServiceModule = (() => {
     if (!_isAdmin(roles)) throw new Error('Only a portal super admin can perform this action.');
   }
   function _canSeeProposed(roles) {
-    return _isAdmin(roles) || roles.indexOf(CHAIR_ROLE) !== -1;
+    return _isAdmin(roles) || roles.indexOf(CHAIR_ROLE) !== -1 || roles.indexOf(MANAGER_ROLE) !== -1;
   }
   function _assertProposed(roles) {
     if (!_canSeeProposed(roles)) {
-      throw new Error('The proposed slate is visible to the department chair and super admins.');
+      throw new Error('The proposed slate is visible to the department chair, the staff manager, and super admins.');
     }
   }
   function _assertSeeAll(roles) {
@@ -834,6 +844,29 @@ const ServiceModule = (() => {
     };
   }
 
+  // ── Per-cycle availability (the "Not yet nominated" excuse list) ──
+  // One ServiceSettings row per cycle — UNAVAILABLE_<year> holding a
+  // JSON array of { email, note } — NOT a sheet tab: leave is
+  // inherently per-year (a new cycle starts everyone available), the
+  // list is read/written atomically, and no Setup.gs schema change
+  // means no addMissingColumns() dependency and no silent column-miss
+  // failure mode.
+  function _unavailSettingKey(year) { return 'UNAVAILABLE_' + String(year || '').trim(); }
+  function _getUnavailable(year) {
+    const raw = _getSetting(_unavailSettingKey(year), '');
+    if (!raw) return [];
+    try {
+      const list = JSON.parse(raw);
+      return Array.isArray(list) ? list.filter(u => u && String(u.email || '').trim()) : [];
+    } catch (e) {
+      Logger.log('ServiceModule._getUnavailable: unparseable ' + _unavailSettingKey(year) + ': ' + e);
+      return [];
+    }
+  }
+  function _setUnavailable(year, list) {
+    _setSetting(_unavailSettingKey(year), JSON.stringify(list || []));
+  }
+
   function _myNominationRows(email, year) {
     return DataService.query(SHEET(), NOMS_TAB(), 'PersonEmail', email)
       .filter(r => String(r.Year || '').trim() === String(year));
@@ -956,41 +989,167 @@ const ServiceModule = (() => {
   }
 
   /**
-   * The Proposed slate (super_admin + department_chair ONLY): the
-   * nomination pool for the cycle's target year. OPEN (volunteered)
-   * and ACCEPTED (confirmed — "Assigned" in the UI) only; DECLINED and
-   * WITHDRAWN never appear. Includes each nominee's priority and note —
+   * The Proposed slate (super_admin + staff_manager + department_chair
+   * ONLY): the tentative next-year directory for the cycle's target
+   * year. Entries are of two kinds — the year's ASSIGNMENTS ("Assigned"
+   * badges; the single, truthful source of confirmed) and OPEN
+   * nominations (volunteered). ACCEPTED nominations are not rendered
+   * (their assignment appears instead); DECLINED and WITHDRAWN never
+   * appear. Nomination entries include the nominee's priority and note —
    * that content was written for the chair/admin, which is exactly why
    * this action's audience is restricted rather than its fields.
+   *
+   * Also returns `nudge` — the "Not yet nominated" data: active
+   * NOMINATION_EXPECTED_ROLES profiles with no non-withdrawn nomination
+   * AND no assignment for the target year, minus anyone marked
+   * unavailable, plus the reconciling `assigned` list (expected people
+   * already holding a target-year assignment). canToggle mirrors
+   * _isAdmin: the chair and staff manager read the card; only
+   * super_admin flips availability.
    */
   function proposedSlate(payload, user, roles) {
     _assertProposed(roles);
     const state = _nominationState();
-    if (!state.targetYear) return { year: '', open: state.open, rows: [] };
+    if (!state.targetYear) return { year: '', open: state.open, rows: [], nudge: null };
     const catMap = _catalogMap();
-    const rows = DataService.getAll(SHEET(), NOMS_TAB())
-      .filter(r => String(r.Year || '').trim() === state.targetYear
-        && (String(r.Status) === 'OPEN' || String(r.Status) === 'ACCEPTED'))
-      .map(r => {
-        const cat = catMap[String(r.CategoryKey || '').trim()] || null;
+    const allNoms = DataService.getAll(SHEET(), NOMS_TAB());
+
+    // ── Slate entries. Target-year ASSIGNMENTS are the single source
+    //    of "Assigned" (truthful: delete the assignment and the slate
+    //    stops claiming it); OPEN nominations are the volunteered
+    //    pool. ACCEPTED nominations no longer render — their
+    //    assignment shows instead, which also kills the double-render.
+    //    A person holding a committee's assignment has their OPEN
+    //    nomination for that committee suppressed ON THE CARD ONLY —
+    //    the queue keeps it for a formal decision. ──
+    const rows = [];
+    const asnKeys = {};          // who|categoryKey → true (suppression)
+    const assignedByEmail = {};  // email → { committee label: true } (nudge)
+    _assignmentRows().forEach(r => {
+      if (String(r.Year || '').trim() !== state.targetYear) return;
+      const catKey = String(r.CategoryKey || '').trim();
+      const cat = catMap[catKey] || null;
+      const email = _normEmail(r.PersonEmail);
+      const who = email || _norm(r.RawName);
+      if (who) asnKeys[who + '|' + catKey] = true;
+      if (email) {
+        (assignedByEmail[email] = assignedByEmail[email] || {})[cat ? String(cat.Label) : catKey] = true;
+      }
+      let name = String(r.RawName || '').trim();
+      let nameLastFirst = name;
+      if (String(r.PersonEmail || '').trim()) {
         const p = Auth.getProfile(r.PersonEmail);
-        return {
-          nominationId: r.NominationID,
-          personEmail: String(r.PersonEmail || ''),
-          name: p ? (p.name || p.email) : String(r.PersonEmail || ''),
-          nameLastFirst: p ? (p.nameLastFirst || p.name || p.email) : String(r.PersonEmail || ''),
-          categoryKey: String(r.CategoryKey || ''),
-          categoryLabel: cat ? String(cat.Label) : String(r.CategoryKey || ''),
-          isLeadership: cat ? _isTrue(cat.IsLeadership) : false,
-          sortWeight: cat ? _numOr(cat.SortWeight, 100) : 100,
-          role: String(r.Role || ''),
-          quarter: String(r.Quarter || ''),
-          priority: _numOr(r.Priority, 999),
-          note: String(r.Note || ''),
-          status: String(r.Status || 'OPEN'),
-        };
+        name = p ? (p.name || p.email) : String(r.PersonEmail);
+        nameLastFirst = p ? (p.nameLastFirst || p.name || p.email) : String(r.PersonEmail);
+      }
+      rows.push({
+        kind: 'assignment',
+        entryId: String(r.AssignmentID || ''),
+        personEmail: String(r.PersonEmail || ''),
+        name: name, nameLastFirst: nameLastFirst,
+        categoryKey: catKey,
+        categoryLabel: cat ? String(cat.Label) : catKey,
+        isLeadership: cat ? _isTrue(cat.IsLeadership) : false,
+        sortWeight: cat ? _numOr(cat.SortWeight, 100) : 100,
+        role: String(r.Role || ''),
+        quarter: String(r.Quarter || ''),
+        isAdHoc: _isTrue(r.IsAdHoc),
+        status: 'ASSIGNED',
       });
-    return { year: state.targetYear, open: state.open, rows: rows };
+    });
+
+    allNoms.forEach(r => {
+      if (String(r.Year || '').trim() !== state.targetYear) return;
+      if (String(r.Status) !== 'OPEN') return;
+      const catKey = String(r.CategoryKey || '').trim();
+      const email = _normEmail(r.PersonEmail);
+      if (email && asnKeys[email + '|' + catKey]) return;   // assignment wins on the card
+      const cat = catMap[catKey] || null;
+      const p = Auth.getProfile(r.PersonEmail);
+      rows.push({
+        kind: 'nomination',
+        entryId: String(r.NominationID || ''),
+        nominationId: r.NominationID,
+        personEmail: String(r.PersonEmail || ''),
+        name: p ? (p.name || p.email) : String(r.PersonEmail || ''),
+        nameLastFirst: p ? (p.nameLastFirst || p.name || p.email) : String(r.PersonEmail || ''),
+        categoryKey: catKey,
+        categoryLabel: cat ? String(cat.Label) : catKey,
+        isLeadership: cat ? _isTrue(cat.IsLeadership) : false,
+        sortWeight: cat ? _numOr(cat.SortWeight, 100) : 100,
+        role: String(r.Role || ''),
+        quarter: String(r.Quarter || ''),
+        priority: _numOr(r.Priority, 999),
+        note: String(r.Note || ''),
+        status: 'OPEN',
+      });
+    });
+
+    // "Not yet nominated": accounted = a non-withdrawn nomination for
+    // the target year (they responded, even if later declined) OR a
+    // target-year assignment (appointed directly — no chasing needed).
+    // WITHDRAWN does NOT count: they currently have nothing in.
+    const accounted = {};
+    allNoms.forEach(r => {
+      if (String(r.Year || '').trim() === state.targetYear && String(r.Status) !== 'WITHDRAWN') {
+        const e = _normEmail(r.PersonEmail);
+        if (e) accounted[e] = true;
+      }
+    });
+    Object.keys(assignedByEmail).forEach(e => { accounted[e] = true; });
+
+    const unavailEntries = _getUnavailable(state.targetYear);
+    const unavailSet = {};
+    unavailEntries.forEach(u => { unavailSet[_normEmail(u.email)] = true; });
+
+    const missing = [];
+    const assigned = [];
+    let expectedCount = 0;
+    Auth.listUsers().forEach(u => {
+      if (!u.active) return;
+      if (!(u.roles || []).some(r => NOMINATION_EXPECTED_ROLES.indexOf(r) !== -1)) return;
+      expectedCount++;
+      const e = _normEmail(u.email);
+      // Precedence: assigned > nominated > unavailable > missing —
+      // someone with both an assignment and a nomination lists once,
+      // under "Already assigned".
+      if (assignedByEmail[e]) {
+        assigned.push({
+          email: u.email,
+          name: u.nameLastFirst || u.name || u.email,
+          committees: Object.keys(assignedByEmail[e]).sort(),
+        });
+        return;
+      }
+      if (accounted[e] || unavailSet[e]) return;
+      missing.push({
+        email: u.email,
+        name: u.name || u.email,
+        nameLastFirst: u.nameLastFirst || u.name || u.email,
+      });
+    });
+    missing.sort((a, b) => String(a.nameLastFirst).localeCompare(String(b.nameLastFirst)));
+    assigned.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+
+    const unavailable = unavailEntries.map(u => {
+      const p = Auth.getProfile(u.email);
+      return {
+        email: u.email,
+        name: p ? (p.nameLastFirst || p.name || p.email) : String(u.email),
+        note: String(u.note || ''),
+      };
+    }).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+
+    return {
+      year: state.targetYear, open: state.open, rows: rows,
+      nudge: {
+        expectedCount: expectedCount,
+        missing: missing,
+        assigned: assigned,
+        unavailable: unavailable,
+        canToggle: _isAdmin(roles),
+      },
+    };
   }
 
 
@@ -1116,6 +1275,63 @@ const ServiceModule = (() => {
     });
     _renumberOpen(String(rows[0].PersonEmail), String(rows[0].Year));
     return { nominationId: id, status: 'DECLINED' };
+  }
+
+  /**
+   * Marks one expected nominator unavailable (or available again) for
+   * the CURRENT cycle's target year — faculty on leave drop out of the
+   * "Not yet nominated" list without faking a nomination. Stored
+   * per-cycle in ServiceSettings (UNAVAILABLE_<year>), so opening next
+   * year's window starts everyone available again. super_admin only;
+   * the chair and staff manager see the result read-only. Returns the
+   * refreshed proposedSlate payload so the client re-renders in one
+   * round trip.
+   */
+  function setNominationAvailability(payload, user, roles) {
+    _assertAdmin(roles);
+    payload = payload || {};
+    const state = _nominationState();
+    if (!state.targetYear) throw new Error('Open a nomination cycle first — availability is tracked per target year.');
+    const email = String(payload.email || '').trim();
+    if (!email) throw new Error('No person specified.');
+    if (!Auth.getProfile(email)) throw new Error('No portal profile found for ' + email + '.');
+
+    const key = _normEmail(email);
+    const list = _getUnavailable(state.targetYear).filter(u => _normEmail(u.email) !== key);
+    if (payload.unavailable === true) {
+      list.push({ email: email, note: String(payload.note || '').trim() });
+    }
+    _setUnavailable(state.targetYear, list);
+    return proposedSlate({}, user, roles);
+  }
+
+
+  // ============================================================
+  // MANAGEMENT — settings (super_admin only)
+  // ============================================================
+
+  /**
+   * Data for the Settings tab: shareable deep links into this module,
+   * built server-side by Links.gs — the SAME logic every module's
+   * emails use (thesis precedent: the enroll link in getSettings).
+   * Links come back '' when no base URL is available (PUBLIC_BASE_URL
+   * unset AND the web-app URL unreadable); the client renders a
+   * configure-hint instead of a broken link.
+   */
+  function settingsInfo(payload, user, roles) {
+    _assertAdmin(roles);
+    const link = function (focus) {
+      try {
+        if (typeof Links !== 'undefined' && Links && Links.deepLink) {
+          return Links.deepLink(MODULE, focus) || '';
+        }
+      } catch (e) { /* link is a nicety, never required */ }
+      return '';
+    };
+    return {
+      nominateLink: link('nominate'),
+      proposedLink: link('proposed'),
+    };
   }
 
 
@@ -1879,18 +2095,20 @@ const ServiceModule = (() => {
     moveNomination: ['*'],
 
     // Grant- and position-gated (mirrors _canSeeProposed / _canSeeAll)
-    proposedSlate: [CHAIR_ROLE],
+    proposedSlate: [CHAIR_ROLE, MANAGER_ROLE],
     fullHistory: [HISTORY_ROLE],
 
     // super_admin only
     listCorrections: [], resolveCorrection: [],
     setNominationWindow: [], listNominations: [],
     acceptNomination: [], declineNomination: [],
+    setNominationAvailability: [],
     listCatalog: [], upsertCategory: [], removeCategory: [],
     listPeople: [], addAssignment: [], updateAssignment: [],
     deleteAssignment: [], reapplyAutoAssigns: [],
     importPreview: [], resolveImportName: [], importCommit: [],
     importNominationsPreview: [], importNominationsCommit: [],
+    settingsInfo: [],
   };
 
 
@@ -1906,10 +2124,12 @@ const ServiceModule = (() => {
     // super_admin only
     listCorrections, resolveCorrection,
     setNominationWindow, listNominations, acceptNomination, declineNomination,
+    setNominationAvailability,
     listCatalog, upsertCategory, removeCategory,
     listPeople, addAssignment, updateAssignment, deleteAssignment, reapplyAutoAssigns,
     importPreview, resolveImportName, importCommit,
     importNominationsPreview, importNominationsCommit,
+    settingsInfo,
   };
 
 })();

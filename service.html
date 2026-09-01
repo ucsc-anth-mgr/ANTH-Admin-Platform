@@ -34,15 +34,32 @@
        is visible to this user (server-resolved above) ── -->
   <? if (svcHas.proposed) { ?>
   <div id="svc-tab-proposed" class="tab-panel" role="tabpanel" style="display:none;">
+    <!-- "Not yet nominated" nudge card — hidden until a cycle exists;
+         populated from proposedSlate's nudge block. Toggle buttons
+         render only for super_admin (nudge.canToggle). -->
+    <div class="card" id="svc-nudge-card" style="margin-top:20px;max-width:640px;display:none;">
+      <div class="card-title between">
+        <span><i class="ti ti-user-question"></i> <span id="svc-nudge-title">Not yet nominated</span></span>
+        <button class="btn btn-secondary btn-sm" onclick="ServiceUI.copyNudgeEmails()" aria-label="Copy missing nominators' email addresses"><i class="ti ti-mail"></i> Copy emails</button>
+      </div>
+      <p class="text-muted text-sm" style="margin:-8px 0 12px;">
+        Senate faculty with no nomination and no assignment for the target year. Marking someone
+        unavailable (e.g. on leave) excuses them for this cycle only — next year's window starts
+        everyone available again.
+      </p>
+      <div id="svc-nudge-body"></div>
+    </div>
+
     <div class="card" style="margin-top:20px;">
       <div class="card-title between">
         <span><i class="ti ti-calendar"></i> <span id="svc-proposed-title">Proposed Slate</span></span>
         <button class="btn btn-secondary btn-sm" onclick="ServiceUI.loadProposed()" aria-label="Refresh Proposed Slate"><i class="ti ti-refresh"></i></button>
       </div>
       <p class="text-muted text-sm" style="margin:-8px 0 16px;">
-        The nomination pool for the cycle's target year — volunteered names plus those already
-        confirmed (<span class="badge badge-success">Assigned</span>). Visible to the department
-        chair and super admins only. Click a name to see their priority and note.
+        The tentative directory for the cycle's target year — confirmed assignments
+        (<span class="badge badge-success">Assigned</span>) plus volunteered nominations.
+        Visible to the department chair, the staff manager, and super admins only.
+        Click a name for details (a nominee's priority and note, or an assignee's role).
       </p>
       <div id="svc-proposed-body"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
     </div>
@@ -417,6 +434,11 @@
     </div>
   </div>
 
+  <!-- ── Tab: Settings (manage) ─────────────────────────── -->
+  <div id="svc-tab-settings" class="tab-panel" role="tabpanel" style="display:none;">
+    <div id="svc-settings-body"><div class="module-loading"><div class="spinner"></div><span>Loading…</span></div></div>
+  </div>
+
   <datalist id="svc-role-list"></datalist>
   <datalist id="svc-catalog-list"></datalist>
 </div>
@@ -472,6 +494,7 @@ window.ServiceUI = (() => {
     proposed: null, myNoms: null, nomQueue: null,
     editingAssignmentId: '', editingCategoryKey: '',
     importData: null, nomImportData: null,
+    settings: null,
     focusCorrectionId: '',
   };
 
@@ -644,11 +667,26 @@ window.ServiceUI = (() => {
   // ── Init / bootstrap ──────────────────────────────────────
   function init() {
     _wireCollapsibles();
-    // Activate the first visible tab — the server-resolved list decides
-    // which that is ('directory' may be hidden for this user).
-    if (_tabs.length) switchTab(_tabs[0].key);
+    // Deep-link focus (window.__focus, set by the shell before this
+    // script runs). Two token kinds:
+    //   - a TAB KEY ('nominate', 'proposed', …) → open that tab, when
+    //     visible to this user; unknown/forbidden tokens fall through
+    //     to the normal first tab (graceful degradation, no error).
+    //   - a correction id (SVCORR…) → highlight it in the Corrections
+    //     queue. Matched by sourceType (dashboard tasks) OR by id
+    //     prefix, because the admin notification email's deep link
+    //     carries no focusType parameter.
     const f = window.__focus;
-    if (f && f.sourceType === 'service_correction' && f.sourceId) S.focusCorrectionId = f.sourceId;
+    const token = (f && f.sourceId) ? String(f.sourceId) : '';
+    if (token && (f.sourceType === 'service_correction' || /^SVCORR/.test(token))) {
+      S.focusCorrectionId = token;
+    }
+    // Activate the initial tab — the deep-linked one when it names a
+    // visible tab, else the first visible tab (the server-resolved
+    // list decides which that is; 'directory' may be hidden for this
+    // user).
+    if (token && _hasTab[token]) switchTab(token);
+    else if (_tabs.length) switchTab(_tabs[0].key);
 
     App.call('service', 'bootstrap', {}, boot => {
       S.boot = boot;
@@ -706,6 +744,7 @@ window.ServiceUI = (() => {
     if (tab === 'categories' && S.catalog === null) loadCatalog();
     if (tab === 'corrections' && S.corrections === null) loadCorrections();
     if (tab === 'nominations' && S.nomQueue === null) loadNomQueue();
+    if (tab === 'settings' && S.settings === null) loadSettings();
   }
 
   // ── Directory ─────────────────────────────────────────────
@@ -725,7 +764,7 @@ window.ServiceUI = (() => {
       if (res.skippedUnknownTargets) msg += ' (' + res.skippedUnknownTargets + ' rule target(s) unknown — check the Categories rules.)';
       Toast.show(msg, 'success');
       if (res.created.length) {
-        S.asnRows = null; S.fullRows = null; S.mineRows = null;
+        S.asnRows = null; S.fullRows = null; S.mineRows = null; S.proposed = null;
         loadManageAssignments();
         refreshDirectory();
       }
@@ -740,10 +779,103 @@ window.ServiceUI = (() => {
   function loadProposed() {
     $('svc-proposed-body').innerHTML = LOADING;
     App.call('service', 'proposedSlate', {}, res => {
-      S.proposed = res || { year: '', open: false, rows: [] };
+      S.proposed = res || { year: '', open: false, rows: [], nudge: null };
       $('svc-proposed-title').textContent = 'Proposed Slate' + (S.proposed.year ? ' (' + S.proposed.year + ')' : '');
       _renderProposedSlate();
+      _renderNudge();
     });
+  }
+
+  /**
+   * The "Not yet nominated" card. Hidden when no cycle exists (or the
+   * server sent no nudge block). Toggle buttons only for super_admin
+   * (nudge.canToggle) — the chair and staff manager read it.
+   */
+  function _renderNudge() {
+    const card = $('svc-nudge-card');
+    if (!card) return;   // tab (and card) not rendered for this user
+    const nudge = S.proposed && S.proposed.nudge;
+    if (!S.proposed || !S.proposed.year || !nudge) { card.style.display = 'none'; return; }
+    card.style.display = '';
+
+    $('svc-nudge-title').textContent =
+      'Not yet nominated (' + nudge.missing.length + ' of ' + nudge.expectedCount + ' senate faculty)';
+
+    const canT = !!nudge.canToggle;
+    const row = (left, email, makeUnavail, btnLabel) =>
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:3px 0;">'
+      + '<span>' + left + '</span>'
+      + (canT
+          ? '<button class="btn btn-secondary btn-sm" onclick="ServiceUI.toggleAvailability(\'' + _esc(email) + '\', ' + (makeUnavail ? 'true' : 'false') + ')">' + btnLabel + '</button>'
+          : '')
+      + '</div>';
+
+    const missHtml = nudge.missing.length
+      ? nudge.missing.map(m => row(_esc(m.nameLastFirst), m.email, true, 'Mark unavailable')).join('')
+      : '<div class="empty-state">All senate faculty are accounted for — a nomination or an assignment for ' + _esc(S.proposed.year) + '.</div>';
+
+    const asg = nudge.assigned || [];
+    const asgHtml = asg.length
+      ? '<div style="margin-top:14px;padding-top:10px;border-top:1px solid var(--color-border,#ccc);">'
+        + '<div class="form-label">Already assigned (' + asg.length + ')</div>'
+        + asg.map(a => '<div style="padding:3px 0;"><span class="text-muted">' + _esc(a.name)
+            + ' — ' + _esc((a.committees || []).join(', ')) + '</span></div>').join('')
+        + '</div>'
+      : '';
+
+    const un = nudge.unavailable || [];
+    const unHtml = un.length
+      ? '<div style="margin-top:14px;padding-top:10px;border-top:1px solid var(--color-border,#ccc);">'
+        + '<div class="form-label">Unavailable this cycle (' + un.length + ')</div>'
+        + un.map(u => row(
+            '<span class="text-muted">' + _esc(u.name) + (u.note ? ' — ' + _esc(u.note) : '') + '</span>',
+            u.email, false, 'Mark available')).join('')
+        + '</div>'
+      : '';
+
+    $('svc-nudge-body').innerHTML = missHtml + asgHtml + unHtml;
+  }
+
+  /** super_admin: flip one person's availability for the current cycle. */
+  function toggleAvailability(email, makeUnavailable) {
+    let note = '';
+    if (makeUnavailable) {
+      note = prompt('Optional note (e.g. "Sabbatical, full year"):', '');
+      if (note === null) return;   // cancelled
+    }
+    App.call('service', 'setNominationAvailability',
+      { email: email, unavailable: makeUnavailable === true, note: note }, res => {
+        S.proposed = res || S.proposed;
+        $('svc-proposed-title').textContent = 'Proposed Slate' + (S.proposed.year ? ' (' + S.proposed.year + ')' : '');
+        _renderProposedSlate();
+        _renderNudge();
+        Toast.show(makeUnavailable ? 'Marked unavailable for this cycle.' : 'Marked available.', 'success');
+      });
+  }
+
+  /** Copies the missing nominators' addresses for the nudge email. */
+  function copyNudgeEmails() {
+    const nudge = S.proposed && S.proposed.nudge;
+    const emails = ((nudge && nudge.missing) || []).map(m => m.email).filter(Boolean);
+    if (!emails.length) { Toast.show('No one to copy — everyone is accounted for.', 'success'); return; }
+    _copyText(emails.join(', '), emails.length + ' email address(es) copied.');
+  }
+
+  /** Clipboard write with an execCommand fallback (no input element required). */
+  function _copyText(text, okMsg) {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function () { Toast.show(okMsg, 'success'); });
+        return;
+      }
+    } catch (e) { /* fall through to the textarea path */ }
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); Toast.show(okMsg, 'success'); }
+    catch (e) { Toast.show('Copy failed — select and copy manually.', 'error'); }
+    document.body.removeChild(ta);
   }
 
   function _renderProposedSlate() {
@@ -754,7 +886,7 @@ window.ServiceUI = (() => {
       return;
     }
     if (!rows.length) {
-      body.innerHTML = '<div class="empty-state"><i class="ti ti-calendar" style="font-size:32px;display:block;margin-bottom:8px;"></i>No nominations yet for ' + _esc(S.proposed.year) + '.</div>';
+      body.innerHTML = '<div class="empty-state"><i class="ti ti-calendar" style="font-size:32px;display:block;margin-bottom:8px;"></i>No nominations or assignments yet for ' + _esc(S.proposed.year) + '.</div>';
       return;
     }
     // Enumerate the nominable catalog (plus any category that somehow
@@ -781,22 +913,32 @@ window.ServiceUI = (() => {
 
     body.innerHTML = '<div class="svc-grid">' + keys.map(k => {
       const g = groups[k] || [];
-      g.sort((a, b) => ((a.status === 'ACCEPTED' ? 0 : 1) - (b.status === 'ACCEPTED' ? 0 : 1))
+      g.sort((a, b) => ((a.kind === 'assignment' ? 0 : 1) - (b.kind === 'assignment' ? 0 : 1))
         || String(a.nameLastFirst).localeCompare(String(b.nameLastFirst)));
       const members = g.length ? g.map(m => {
+        const isAsn = m.kind === 'assignment';
         const qbadges = (m.quarter && m.quarter !== 'AY')
           ? m.quarter.split('/').map(q => '<span class="badge badge-gold">' + _esc(q.trim()) + '</span>').join('') : '';
-        const assigned = m.status === 'ACCEPTED' ? ' <span class="badge badge-success">Assigned</span>' : '';
+        const assigned = isAsn ? ' <span class="badge badge-success">Assigned</span>' : '';
+        const adhoc = (isAsn && m.isAdHoc) ? ' <span class="badge badge-neutral">ad hoc</span>' : '';
         const nm = (!cards[k].isLeadership && /chair/i.test(m.role)) ? '<strong>' + _esc(m.name) + '</strong>' : _esc(m.name);
-        const detail = '<div id="svc-prop-detail-' + _esc(m.nominationId) + '" class="text-muted text-sm" style="display:none;padding:2px 0 4px;">'
-          + 'Priority #' + _esc(m.priority)
-          + (m.note ? ' — ' + _esc(m.note) : '')
+        // Expandable detail: nominations show priority + note;
+        // assignments show the role. A roleless assignment has nothing
+        // to reveal, so it renders as a plain (non-clickable) line.
+        const detailText = isAsn
+          ? (m.role ? 'Role: ' + _esc(m.role) : '')
+          : 'Priority #' + _esc(m.priority) + (m.note ? ' — ' + _esc(m.note) : '');
+        if (!detailText) {
+          return '<div class="svc-member">' + nm + qbadges + assigned + adhoc + '</div>';
+        }
+        const detail = '<div id="svc-prop-detail-' + _esc(m.entryId) + '" class="text-muted text-sm" style="display:none;padding:2px 0 4px;">'
+          + detailText
           + '</div>';
         return '<div class="svc-member" style="cursor:pointer;" role="button" tabindex="0" aria-expanded="false"'
-          + ' onclick="ServiceUI.toggleProposedDetail(\'' + _esc(m.nominationId) + '\', this)"'
-          + ' onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();ServiceUI.toggleProposedDetail(\'' + _esc(m.nominationId) + '\', this);}">'
+          + ' onclick="ServiceUI.toggleProposedDetail(\'' + _esc(m.entryId) + '\', this)"'
+          + ' onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();ServiceUI.toggleProposedDetail(\'' + _esc(m.entryId) + '\', this);}">'
           + '<i class="ti ti-chevron-right svc-chevron" aria-hidden="true" style="font-size:12px;"></i>'
-          + nm + qbadges + assigned + '</div>' + detail;
+          + nm + qbadges + assigned + adhoc + '</div>' + detail;
       }).join('') : '<div class="svc-empty-cat">No nominations yet</div>';
       const span = (k === spanKey) ? ' svc-span' : '';
       return '<div class="svc-cat-card' + span + '"><div class="svc-cat-title">' + _esc(cards[k].label) + '</div>' + members + '</div>';
@@ -1090,7 +1232,7 @@ window.ServiceUI = (() => {
     const done = res => {
       Toast.show('Assignment saved.' + _autoSummary(res && res.autoAssigned), 'success');
       cancelAssignment();
-      S.asnRows = null; S.fullRows = null; S.mineRows = null;
+      S.asnRows = null; S.fullRows = null; S.mineRows = null; S.proposed = null;
       loadManageAssignments();
       refreshDirectory();
     };
@@ -1108,7 +1250,7 @@ window.ServiceUI = (() => {
     if (!confirm('Delete this assignment?\n\n' + r.nameLastFirst + ' — ' + r.categoryLabel + ' (' + r.year + ')')) return;
     App.call('service', 'deleteAssignment', { assignmentId: id }, () => {
       Toast.show('Assignment deleted.', 'success');
-      S.asnRows = null; S.fullRows = null; S.mineRows = null;
+      S.asnRows = null; S.fullRows = null; S.mineRows = null; S.proposed = null;
       loadManageAssignments();
       refreshDirectory();
     });
@@ -1506,7 +1648,7 @@ window.ServiceUI = (() => {
               + ((res.skipped.length > 20) ? '<li>…and ' + (res.skipped.length - 20) + ' more</li>' : '') + '</ul>'
             : '');
       S.importData = null;
-      S.asnRows = null; S.fullRows = null; S.mineRows = null; S.catalog = null;
+      S.asnRows = null; S.fullRows = null; S.mineRows = null; S.catalog = null; S.proposed = null;
       _reloadBootCatalog();
     }, () => { _renderImportPreview(); });
   }
@@ -1828,6 +1970,72 @@ window.ServiceUI = (() => {
     }, () => { _renderNomImportPreview(); });
   }
 
+  // ── Settings (manage: shareable deep links, super_admin) ─
+  function loadSettings() {
+    $('svc-settings-body').innerHTML = LOADING;
+    App.call('service', 'settingsInfo', {}, info => {
+      S.settings = info || {};
+      _renderSettings();
+    });
+  }
+
+  /**
+   * Two deep-link cards, hand-rendered with UNIQUE input ids
+   * (svc-dl-<focus>) rather than via App.deepLinkCard, whose hardcoded
+   * dl-<moduleKey> id would collide when one module shows two cards —
+   * same precedent as thesis.html's _renderEnrollDeepLinkCard. The
+   * links are server-built (settingsInfo → Links.gs), so email links
+   * and these cards always agree.
+   */
+  function _renderSettings() {
+    const cards = [
+      { focus: 'nominate', icon: 'ti-star',
+        title: 'Faculty nomination link',
+        note: 'Sends people straight to the Nominate tab — the link to mail out when the nomination window opens. They will sign in first if needed.',
+        works: 'Works for: everyone in the module',
+        url: S.settings.nominateLink || '' },
+      { focus: 'proposed', icon: 'ti-calendar',
+        title: 'Proposed slate link',
+        note: 'Opens the Proposed slate directly — for the department chair to bookmark. Anyone else who follows it lands on their normal first tab.',
+        works: 'Works for: department_chair, super_admin',
+        url: S.settings.proposedLink || '' },
+    ];
+    $('svc-settings-body').innerHTML = cards.map(c => {
+      const fieldId = 'svc-dl-' + c.focus;
+      const body = c.url
+        ? '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">'
+          + '<label class="visually-hidden" for="' + fieldId + '">' + _esc(c.title) + '</label>'
+          + '<input class="form-input" id="' + fieldId + '" readonly value="' + _esc(c.url) + '"'
+          + ' style="flex:1 1 280px;font-family:monospace;font-size:12.5px;" onclick="this.select();">'
+          + '<button class="btn btn-secondary btn-sm" onclick="ServiceUI.copySettingsLink(\'' + c.focus + '\')">'
+          + '<i class="ti ti-copy" aria-hidden="true"></i> Copy</button>'
+          + '</div>'
+          + '<p class="text-sm text-muted" style="margin:8px 0 0;">' + _esc(c.works) + '</p>'
+        : '<p class="text-sm text-muted" style="margin:0;">No portal base URL is available yet — set '
+          + 'PUBLIC_BASE_URL in Config.gs (or deploy the web app) to enable shareable links.</p>';
+      return '<div class="card" style="margin-top:20px;max-width:640px;">'
+        + '<div class="card-title"><i class="ti ' + c.icon + '" aria-hidden="true"></i> ' + _esc(c.title) + '</div>'
+        + '<p class="text-sm text-muted" style="margin:-4px 0 10px;">' + _esc(c.note) + '</p>'
+        + body
+        + '</div>';
+    }).join('');
+  }
+
+  /** Copies one settings card's link (mirrors App.copyDeepLink's fallbacks). */
+  function copySettingsLink(focus) {
+    const el = $('svc-dl-' + focus);
+    if (!el) return;
+    el.select();
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(el.value).then(function () { Toast.show('Link copied.', 'success'); });
+      } else {
+        document.execCommand('copy');
+        Toast.show('Link copied.', 'success');
+      }
+    } catch (e) { Toast.show('Press Ctrl/Cmd+C to copy.', 'info'); }
+  }
+
   // ── Exports (every onclick/onchange/onkeyup handler) ──────
   return {
     init, switchTab, sortBy, refreshDirectory, loadProposed,
@@ -1842,6 +2050,8 @@ window.ServiceUI = (() => {
     resolveCorrection,
     onImportFile, runImportPreview, linkImportRow, commitImport,
     onNomImportFile, runNomImportPreview, linkNomImportRow, commitNomImport,
+    loadSettings, copySettingsLink,
+    toggleAvailability, copyNudgeEmails,
   };
 
 })();

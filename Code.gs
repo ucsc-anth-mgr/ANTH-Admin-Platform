@@ -503,3 +503,10 @@ function debugTemplateBytes() {
   Logger.log(f.getName() + ' | mime=' + f.getMimeType() +
     ' | firstBytes=' + b.getBytes().slice(0, 5).join(','));
 }
+
+function debugFileCheck() {
+  const h = HtmlService.createHtmlOutputFromFile('individual_studies').getContent();
+  Logger.log('regeneratePdf at: ' + h.indexOf('regeneratePdf') +
+             ' | is-testmode-wrap at: ' + h.indexOf('is-testmode-wrap') +
+             ' | length: ' + h.length);
+}

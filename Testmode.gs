@@ -174,6 +174,90 @@ const TestMode = (() => {
 
 
   // ============================================================
+  // SELECTION NOTES — the TestSelections column's canonical format
+  // ============================================================
+  // Substitution replaces the tester's real pick on the record; these
+  // helpers preserve and recover it. Canonical form: 'slot=value' pairs
+  // joined by '; ' (e.g. 'sponsor=fdeakin@ucsc.edu') — human-readable in
+  // the sheet, machine-parseable for simulation-fidelity look-throughs
+  // (e.g. running a schedule lookup against the REAL selection, because
+  // the functional account has no sections). Modules write and read via
+  // these two functions only — never hand-rolled prose, never ad-hoc
+  // parsing — so every module's TestSelections speaks one language.
+
+  // Execution-scoped cache for isReservedAccount. Unlike the safe-set
+  // (which hangs off _ctx), this is called OUTSIDE test executions —
+  // every student's formData builds dropdowns — so it caches at file
+  // scope; Apps Script evaluates globals fresh per execution.
+  let _reservedCache = null;
+
+  /**
+   * Whether an account is RESERVED FOR TESTING: on the TestModeAccounts
+   * roster or assigned in any TestModeMap row — active or not, because
+   * reservation is about the account's NATURE (a functional test inbox),
+   * not its current activation. Reserved accounts keep their roles and
+   * capabilities — they must, to act their parts in the workflow — but
+   * human-selection lists should exclude them: a functional account
+   * never belongs in a person-picker, in any module, ever. This is LIST
+   * HYGIENE, not authorization — never call it inside a permission
+   * check. Always-on (no active test required) and execution-cached, so
+   * per-candidate calls from a dropdown build cost one sheet read total.
+   * Removing an account from BOTH the roster and the map returns it to
+   * selection lists, which is correct: fully removed means it is no
+   * longer a test account.
+   */
+  function isReservedAccount(email) {
+    const key = String(email || '').trim().toLowerCase();
+    if (!key) return false;
+    if (!_reservedCache) {
+      const s = new Set();
+      const add = function (e) { e = String(e || '').trim().toLowerCase(); if (e) s.add(e); };
+      _accountRowsSafe().forEach(function (a) { add(a.email); });
+      _mapRowsSafe().forEach(function (m) { add(m.account); });
+      _reservedCache = s;
+    }
+    return _reservedCache.has(key);
+  }
+
+  /**
+   * Builds the TestSelections value from { slotKey: originalValue }.
+   * Blank keys/values are dropped; an empty object returns '' (so a
+   * non-test write, or a substitution that changed nothing, clears the
+   * column cleanly).
+   */
+  function selectionNote(entries) {
+    entries = entries || {};
+    const parts = [];
+    Object.keys(entries).forEach(function (k) {
+      const key = String(k || '').trim();
+      const v = String(entries[k] == null ? '' : entries[k]).trim();
+      if (key && v) parts.push(key + '=' + v);
+    });
+    return parts.join('; ');
+  }
+
+  /**
+   * Reads one slot's originally-selected value back off a record's
+   * TestSelections column. Record-carried, so it needs no active test
+   * execution — a read-only context view can call it too. Returns ''
+   * when the record is not a test, the slot wasn't noted, or the value
+   * predates the canonical format.
+   */
+  function selectedFor(rec, slotKey) {
+    const raw = String((rec && rec.TestSelections) || '').trim();
+    const want = String(slotKey || '').trim();
+    if (!raw || !want) return '';
+    const parts = raw.split(';');
+    for (let i = 0; i < parts.length; i++) {
+      const p = parts[i].trim();
+      const eq = p.indexOf('=');
+      if (eq > 0 && p.slice(0, eq).trim() === want) return p.slice(eq + 1).trim();
+    }
+    return '';
+  }
+
+
+  // ============================================================
   // AUTHORIZATION — who may invoke test mode
   // ============================================================
 
@@ -703,6 +787,10 @@ const TestMode = (() => {
   return {
     // activation (dispatch + handlers)
     begin, end, active, context, activateForRecord, recordFlag,
+    // selection notes (TestSelections read/write)
+    selectionNote, selectedFor,
+    // list hygiene (dropdown builds — never permission checks)
+    isReservedAccount,
     // authorization
     isTestAccount,
     // slots + resolution (handlers)

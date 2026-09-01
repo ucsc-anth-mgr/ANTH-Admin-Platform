@@ -1636,6 +1636,20 @@ window.IndividualStudiesUI = (() => {
         + '</div>');
     }
 
+    // Advisor/super_admin: (re)generate the final PDF on a COMPLETE
+    // record — recovery for a best-effort generation failure at
+    // completion, and it surfaces the REAL error when generation is
+    // broken (advisorComplete deliberately swallows it).
+    if (rec.stage === 'COMPLETE' && (_isAdvisor || _isSuper)) {
+      out.push('<div style="margin-top:10px;">'
+        + '<button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.regeneratePdf(\'' + esc(rec.petitionId) + '\')">'
+        + '<i class="ti ti-file-type-pdf"></i> ' + (rec.documentLink ? 'Regenerate PDF' : 'Generate PDF') + '</button>'
+        + ' <span class="text-muted" style="font-size:12px;">'
+        + (rec.documentLink ? 'Rebuilds the document and re-sends the completion email.'
+                            : 'The completion PDF is missing — generate it and re-send the completion email.')
+        + '</span></div>');
+    }
+
     // super_admin test cleanup: delete at any stage. Server-enforced too.
     if (_isSuper) {
       out.push('<div style="margin-top:16px;border-top:1px solid var(--color-border);padding-top:12px;">'
@@ -1832,6 +1846,21 @@ window.IndividualStudiesUI = (() => {
     _busy('Withdrawing…');
     App.call('individual_studies', 'withdraw', { petitionId: petitionId }, function () {
       _idle(); closeModal(); Toast.show('Petition withdrawn.', 'success'); _afterAction();
+    }, function () { _idle(); });
+  }
+
+  // (Re)generate the completion PDF — errors surface the server's real
+  // message via the standard App.call error toast, which is the point.
+  function regeneratePdf(petitionId) {
+    _busy('Generating PDF…');
+    App.call('individual_studies', 'regeneratePdf', { petitionId: petitionId }, function (res) {
+      _idle();
+      Toast.show('PDF generated and completion email re-sent.', 'success');
+      App.call('individual_studies', 'get', { petitionId: petitionId }, function (rec) {
+        if (rec && rec.petitionId) {
+          if (String(rec.petitionId).indexOf('GIS') === 0) _openGradDetail(rec); else _openDetail(rec);
+        }
+      }, function () {});
     }, function () { _idle(); });
   }
 
@@ -2718,6 +2747,15 @@ window.IndividualStudiesUI = (() => {
         + ' <span class="text-muted" style="font-size:12px;">Reuse these fields for future studies.</span>'
         + '</div>');
     }
+    if (rec.stage === 'COMPLETE' && (_isGradStaff || _isSuper)) {
+      out.push('<div style="margin-top:10px;">'
+        + '<button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.regeneratePdf(\'' + esc(rec.petitionId) + '\')">'
+        + '<i class="ti ti-file-type-pdf"></i> ' + (rec.documentLink ? 'Regenerate PDF' : 'Generate PDF') + '</button>'
+        + ' <span class="text-muted" style="font-size:12px;">'
+        + (rec.documentLink ? 'Rebuilds the document and re-sends the completion email.'
+                            : 'The completion PDF is missing — generate it and re-send the completion email.')
+        + '</span></div>');
+    }
     if (_isSuper) {
       out.push('<div style="margin-top:16px;border-top:1px solid var(--color-border);padding-top:12px;">'
         + '<button class="btn btn-danger btn-sm" onclick="IndividualStudiesUI.deletePetition(\'' + esc(rec.petitionId) + '\')">'
@@ -2984,7 +3022,7 @@ window.IndividualStudiesUI = (() => {
     loadTemplates, newTemplate, editTemplate, cancelTemplate, saveTemplate,
     setTemplateDefault, deleteTemplate, onTplReportToggle, saveAsTemplate,
     open, rowKey, closeModal,
-    withdraw, deletePetition, onSponsorSyllabusChange, onRoomReqToggle, onSponsorHoursChange, onSponsorReportToggle, sponsorApprove, sponsorReturn, requestRoomAccess,
+    withdraw, deletePetition, regeneratePdf, onSponsorSyllabusChange, onRoomReqToggle, onSponsorHoursChange, onSponsorReportToggle, sponsorApprove, sponsorReturn, requestRoomAccess,
     pickClass, advisorComplete, advisorReturn, advisorCourseChanged,
     onCsvChange, previewImport, resolveInstructor, commitImport, loadImportHistory,
     loadExportTerms, exportTermCsv,
