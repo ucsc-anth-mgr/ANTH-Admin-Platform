@@ -275,6 +275,17 @@ const CONFIG = {
   // but works without it.
   INDIVIDUAL_STUDIES: {
     DRIVE_FOLDER_ID: '1goPXXH3b0v4k4Pn_qyonPJHZW67jOfLn',
+    // Drive FILE id of the BLANK fillable undergraduate petition AcroForm
+    // (the campus "Petition for Undergraduate Individual Studies Course"
+    // with the 32 named fields _undergradFillValues writes — StudentName,
+    // StudentID, Quarter … StudentSignature; ReportRequired radio with
+    // Will/WillNot states). Filled at COMPLETE by ReportService.fillTemplate,
+    // exactly like the grad form. If blank, undergrad completion PDFs are
+    // skipped (best-effort) and "Generate PDF" reports this as the cause.
+    // Set-once infrastructure pointer, like the grad one below. This is
+    // the FILE id of USP_form.pdf (48 fields: the 32 the module writes,
+    // plus rows 2-3 and the *SignDate fields, which stay blank).
+    TEMPLATE_FILE_ID: '1iQgkdif3vA_q-f5WeLwoX_-QvL2GfOq6',
   },
 
   // ── Graduate Individual Studies module ─────────────────────
@@ -293,7 +304,11 @@ const CONFIG = {
     // Drive ids here — NOT a UI-managed setting. If campus revises the
     // form, regenerate the AcroForm with the SAME field names and swap
     // this id; no code change.
-    TEMPLATE_FILE_ID: '10ahVmEgKwXa8rKJwu_PsVWGt-EDvu7kS',
+    // NOTE: this must be the FILE id of GISP_form.pdf (from its Drive
+    // link, the part between /d/ and /view) — not the folder that holds
+    // it. It was previously set to the folder id, which is why grad PDF
+    // generation failed at completion.
+    TEMPLATE_FILE_ID: '1av9vtE86xBPgWd9na7xL0MNzr6rKesHy',
   },
 
   // ── Coursework Petition module ─────────────────────────────

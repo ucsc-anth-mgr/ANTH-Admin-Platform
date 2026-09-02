@@ -510,3 +510,10 @@ function debugFileCheck() {
              ' | is-testmode-wrap at: ' + h.indexOf('is-testmode-wrap') +
              ' | length: ' + h.length);
 }
+
+function debugThesisHtml() {
+  const h = HtmlService.createHtmlOutputFromFile('thesis').getContent();
+  Logger.log('th-testmode-wrap at: ' + h.indexOf('th-testmode-wrap') +
+             ' | testModeAvailable at: ' + h.indexOf('testModeAvailable') +
+             ' | length: ' + h.length);
+}

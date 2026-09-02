@@ -122,6 +122,18 @@ const ThesisModule = (() => {
   const COMMENT_FOLDER_ID = '1QUZTBfhLV2BXjsHHI55G6_O8PpeHwT_2';
   const COMMENT_SEE_ATTACHED = 'see attached document';
 
+  // Test-mode slot manifest (TestMode.gs) — the workflow POSITIONS a test
+  // routes through, consumed like TABS: code declares the slots, Admin →
+  // Testing assigns the accounts. 'sponsor' serves BOTH workflows (thesis
+  // and 195S enrollment — the same person sponsors both); 'reader' is the
+  // honors branch only, substituted mid-workflow in sponsorDecision;
+  // 'advisor' inherits whatever account fills the staff_undergrad global.
+  const TEST_SLOTS = [
+    { key: 'sponsor', label: 'Faculty Sponsor',        defaultRole: 'thesis_sponsor' },
+    { key: 'reader',  label: 'Honors Reader',          defaultRole: 'thesis_reader' },
+    { key: 'advisor', label: 'Undergraduate Advisor',  defaultRole: ADVISOR_ROLE },
+  ];
+
 
   // ── Public actions (callable via dispatch) ─────────────────
 
@@ -135,7 +147,50 @@ const ThesisModule = (() => {
   function listEligible(payload) {
     const capability = String((payload || {}).capability || 'sponsor');
     const role = capability === 'reader' ? 'thesis_reader' : 'thesis_sponsor';
-    return Auth.usersWithRole(role);
+    // Accounts reserved for testing (TestMode roster/map) keep the role —
+    // they must, to act their parts — but never appear in person-pickers.
+    return Auth.usersWithRole(role)
+      .filter(u => !TestMode.isReservedAccount(u.email));
+  }
+
+
+  /**
+   * Whether the caller may submit in TEST MODE right now: an authorized
+   * test account (or super_admin) AND every declared slot resolved. UI
+   * convenience only — dispatch ignores _test from anyone unauthorized,
+   * and submit's assertReady refusal is the real gate.
+   */
+  function testModeAvailable(payload, user, roles) {
+    const r = TestMode.readiness('thesis');
+    return { available: TestMode.isTestAccount(user, roles) && r.ready,
+             unresolved: r.unresolved };
+  }
+
+
+  /**
+   * Post-write verification that the TestMode stamp persisted (see the
+   * IndividualStudies twin). A fresh thesis insert that fails the check
+   * is removed AND its just-uploaded PDF is trashed — unlike petitions,
+   * the file lands in Drive before the row. Nothing has been routed
+   * when this throws. No-op outside a test.
+   */
+  function _assertTestStamp(tab, idCol, id, freshInsert, fileIdToTrash) {
+    if (!TestMode.active()) return;
+    const rows = DataService.query(CONFIG.SHEETS.THESIS, tab, idCol, id);
+    const stored = rows && rows[0];
+    if (stored && String(stored.TestMode || '').trim().toUpperCase() === 'TRUE') return;
+    if (freshInsert) {
+      try { DataService.remove(CONFIG.SHEETS.THESIS, tab, idCol, id); }
+      catch (e) { Logger.log('_assertTestStamp cleanup of ' + id + ' failed: ' + e); }
+      if (fileIdToTrash) {
+        try { DriveApp.getFileById(fileIdToTrash).setTrashed(true); }
+        catch (e) { Logger.log('_assertTestStamp file cleanup failed: ' + e); }
+      }
+    }
+    throw new Error('TEST MODE refused: the test flag could not be recorded — the TestMode/'
+      + 'TestSelections columns are likely missing from the ' + tab + ' tab. Run '
+      + 'addMissingColumns() from the Apps Script editor, then submit the test again. '
+      + 'Nothing was routed.');
   }
 
 
@@ -191,6 +246,22 @@ const ThesisModule = (() => {
 
     const existingId = String(payload.thesisId || '').trim();
 
+    // ── Test mode (TestMode.gs): re-enter from a flagged record on
+    // resubmission, refuse if any slot is unmapped, substitute the mapped
+    // sponsor AT WRITE TIME (the real pick already passed the eligibility
+    // check above). No-ops outside a test.
+    if (existingId) {
+      const prior = _byId(existingId);
+      if (prior) TestMode.activateForRecord(prior, user);
+    }
+    TestMode.assertReady('thesis');
+    const finalSponsorEmail = TestMode.substitute('thesis', 'sponsor', sponsorEmail);
+    const testStamp = {
+      TestMode: TestMode.recordFlag(),
+      TestSelections: TestMode.selectionNote(
+        (finalSponsorEmail !== sponsorEmail) ? { sponsor: sponsorEmail } : {}),
+    };
+
     // ── Resubmission path: must target the caller's own RETURNED record ──
     if (existingId) {
       const rec = _byId(existingId);
@@ -210,14 +281,17 @@ const ThesisModule = (() => {
         Quarter: quarter, Year: year, Title: title, Abstract: abstract,
         Regions: JSON.stringify(regions),
         ShareConsent: shareConsent ? 'TRUE' : 'FALSE',
-        SponsorEmail: sponsorEmail,
+        SponsorEmail: finalSponsorEmail,
         DriveFileID: replaced.fileId, FileName: fileName, DocumentLink: replaced.url,
         Stage: STAGE.SUBMITTED,
+        TestMode: testStamp.TestMode, TestSelections: testStamp.TestSelections,
         // Clear any prior return note so the record reads cleanly.
         ReturnNote: '',
       });
+      _assertTestStamp(TAB, 'ThesisID', existingId, /*freshInsert*/ false, '');
+      _logStage(TAB, 'ThesisID', existingId, STAGE.RETURNED, STAGE.SUBMITTED, user, 'Resubmitted', '');
 
-      _routeToSponsor(existingId, sponsorEmail, profile, title, user, /*resubmitted*/ true);
+      _routeToSponsor(existingId, finalSponsorEmail, profile, title, user, /*resubmitted*/ true);
       return { thesisId: existingId, stage: STAGE.SUBMITTED, resubmitted: true };
     }
 
@@ -252,17 +326,20 @@ const ThesisModule = (() => {
       Quarter: quarter, Year: year, Title: title, Abstract: abstract,
       Regions: JSON.stringify(regions),
       ShareConsent: shareConsent ? 'TRUE' : 'FALSE',
-      SponsorEmail: sponsorEmail,
+      SponsorEmail: finalSponsorEmail,
       DriveFileID: link.fileId, FileName: fileName, DocumentLink: link.url,
       Stage: STAGE.SUBMITTED,
+      TestMode: testStamp.TestMode, TestSelections: testStamp.TestSelections,
       SponsorDecision: '', SponsorComments: '', SponsorDecidedBy: '', SponsorDecidedAt: '',
       SponsorCommentFileID: '', SponsorCommentLink: '',
       ReaderEmail: '', HonorsDecision: '', ReaderComments: '', ReaderDecidedBy: '', ReaderDecidedAt: '',
       ReaderCommentFileID: '', ReaderCommentLink: '',
       AdvisorProcessedBy: '', AdvisorProcessedAt: '', ReturnNote: '',
     });
+    _assertTestStamp(TAB, 'ThesisID', thesisId, /*freshInsert*/ true, link.fileId);
+    _logStage(TAB, 'ThesisID', thesisId, '', STAGE.SUBMITTED, user, 'Submitted', '');
 
-    _routeToSponsor(thesisId, sponsorEmail, profile, title, user, /*resubmitted*/ false);
+    _routeToSponsor(thesisId, finalSponsorEmail, profile, title, user, /*resubmitted*/ false);
     return { thesisId: thesisId, stage: STAGE.SUBMITTED };
   }
 
@@ -351,6 +428,7 @@ const ThesisModule = (() => {
   function sponsorDecision(payload, user, roles) {
     payload = payload || {};
     const rec = _requireStage(payload.thesisId, STAGE.SUBMITTED);
+    TestMode.activateForRecord(rec, user);   // test records re-enter test mode
     if (_norm(rec.SponsorEmail) !== _norm(user) && roles.indexOf('super_admin') === -1) {
       throw new Error('Only the assigned faculty sponsor can decide this thesis.');
     }
@@ -400,34 +478,64 @@ const ThesisModule = (() => {
       if (!_holdsRole(readerEmail, 'thesis_reader')) {
         throw new Error('That person is not currently eligible to be an honors reader.');
       }
-      if (_norm(readerEmail) === _norm(user)) throw new Error('The honors reader must be someone other than the sponsor.');
+      // Sponsor ≠ reader, compared REAL-to-REAL. The record's sponsor is
+      // authoritative (not `user` — a super_admin deciding on a sponsor's
+      // behalf must not evade the check), and on a test record the
+      // sponsor to compare against is the ORIGINALLY selected one
+      // (TestSelections look-through) — a test must reject the same
+      // self-selection a real run would.
+      const realSponsor = TestMode.selectedFor(rec, 'sponsor') || rec.SponsorEmail;
+      if (_norm(readerEmail) === _norm(realSponsor)) {
+        throw new Error('The honors reader must be someone other than the sponsor.');
+      }
 
-      updates.ReaderEmail = readerEmail;
+      // Test mode: mid-workflow substitution — the reader slot is filled
+      // here, not at submit. Refuse if unmapped; then a data-integrity
+      // guard: distinct real people must stay distinct after substitution
+      // (both slots mapped to one account would silently merge them).
+      TestMode.assertReady('thesis');
+      const finalReaderEmail = TestMode.substitute('thesis', 'reader', readerEmail);
+      if (TestMode.active() && _norm(finalReaderEmail) === _norm(rec.SponsorEmail)) {
+        throw new Error('TEST MODE refused: the sponsor and reader slots map to the same '
+          + 'account, which would merge two distinct workflow parts. Assign different '
+          + 'accounts in Admin → Testing.');
+      }
+      if (finalReaderEmail !== readerEmail) {
+        const noteNow = String(rec.TestSelections || '').trim();
+        const readerNote = TestMode.selectionNote({ reader: readerEmail });
+        updates.TestSelections = noteNow ? (noteNow + '; ' + readerNote) : readerNote;
+      }
+
+      updates.ReaderEmail = finalReaderEmail;
       updates.Stage = STAGE.PENDING_HONORS;
       DataService.update(CONFIG.SHEETS.THESIS, TAB, 'ThesisID', rec.ThesisID, updates);
 
+      _logStage(TAB, 'ThesisID', rec.ThesisID, STAGE.SUBMITTED, STAGE.PENDING_HONORS, user,
+        'Referred for honors', 'Reader: ' + _facultyLabel(finalReaderEmail) + (comments ? ' — ' + comments : ''));
       const student = Auth.getProfile(rec.StudentEmail);
       Tasks.create({
         module: 'thesis', sourceType: 'thesis_honors', sourceId: rec.ThesisID,
         label: 'Honors review: ' + _studentLabel(student) + ' — ' + rec.Title,
-        assignedTo: readerEmail, staleAfterDays: 14,
+        assignedTo: finalReaderEmail, staleAfterDays: 14,
       });
       const honorsRec = _byId(rec.ThesisID);  // reflects reader + new stage
       const honorsHeading = 'You have been named honors reader for a senior thesis. ' +
         'Sponsor: ' + _facultyLabel(user) + '.';
-      _notify(readerEmail, 'Thesis honors review requested',
+      _notify(finalReaderEmail, 'Thesis honors review requested',
         honorsHeading + '\n\nStudent: ' + _studentLabel(student) + '\nTitle: ' + rec.Title +
         _actionTextFallback(rec.ThesisID, 'Review this thesis'),
         _summaryHtml(honorsRec, { heading: honorsHeading }) +
         _actionButtonHtml(rec.ThesisID, 'Review this thesis'));
       EventBus.emit('thesis.sponsor_decided',
-        { thesisId: rec.ThesisID, decision: decision, readerEmail: readerEmail }, { user: user });
+        { thesisId: rec.ThesisID, decision: decision, readerEmail: finalReaderEmail }, { user: user });
       return { thesisId: rec.ThesisID, stage: STAGE.PENDING_HONORS };
     }
 
     // Pass or No Pass — both flow to the advisor for final processing.
     updates.Stage = STAGE.PENDING_ADVISOR;
     DataService.update(CONFIG.SHEETS.THESIS, TAB, 'ThesisID', rec.ThesisID, updates);
+    _logStage(TAB, 'ThesisID', rec.ThesisID, STAGE.SUBMITTED, STAGE.PENDING_ADVISOR, user,
+      'Sponsor decided: ' + decision, comments);
     const decidedRec = _byId(rec.ThesisID);  // reflects the decision just recorded
     _routeToAdvisor(rec.ThesisID, decidedRec, user);
     if (decision === SPONSOR.PASS) {
@@ -458,6 +566,7 @@ const ThesisModule = (() => {
   function readerDecision(payload, user, roles) {
     payload = payload || {};
     const rec = _requireStage(payload.thesisId, STAGE.PENDING_HONORS);
+    TestMode.activateForRecord(rec, user);   // test records re-enter test mode
     if (_norm(rec.ReaderEmail) !== _norm(user) && roles.indexOf('super_admin') === -1) {
       throw new Error('Only the assigned faculty reader can decide this honors review.');
     }
@@ -487,6 +596,8 @@ const ThesisModule = (() => {
       ReaderCommentLink: readerCommentFile.url,
       Stage: STAGE.PENDING_ADVISOR,
     });
+    _logStage(TAB, 'ThesisID', rec.ThesisID, STAGE.PENDING_HONORS, STAGE.PENDING_ADVISOR, user,
+      'Honors approved', comments);
     const decidedRec = _byId(rec.ThesisID);  // reflects the honors approval
     _routeToAdvisor(rec.ThesisID, decidedRec, user);
 
@@ -517,6 +628,7 @@ const ThesisModule = (() => {
   function advisorComplete(payload, user, roles) {
     payload = payload || {};
     const rec = _requireStage(payload.thesisId, STAGE.PENDING_ADVISOR);
+    TestMode.activateForRecord(rec, user);   // test records re-enter test mode
     if (!_isUndergradAdvisor(user) && roles.indexOf('super_admin') === -1) {
       throw new Error('Only the undergraduate advisor can complete a thesis.');
     }
@@ -542,6 +654,8 @@ const ThesisModule = (() => {
     if (approved && String(rec.ShareConsent).toUpperCase() === 'TRUE') {
       _setPdfLinkSharing(rec.DriveFileID, true);
     }
+    _logStage(TAB, 'ThesisID', rec.ThesisID, STAGE.PENDING_ADVISOR, STAGE.COMPLETE, user,
+      'Completed', _outcomeSummary(rec));
     const student = Auth.getProfile(rec.StudentEmail);
     const doneRec = _byId(rec.ThesisID);
     // Outcome wording from the STUDENT's view — a denied honors referral
@@ -591,6 +705,7 @@ const ThesisModule = (() => {
     }
     const rec = _byId(String((payload || {}).thesisId || '').trim());
     if (!rec) throw new Error('Thesis not found.');
+    TestMode.activateForRecord(rec, user);   // test records re-enter test mode
 
     let to, ask;
     if (rec.Stage === STAGE.SUBMITTED) {
@@ -612,6 +727,8 @@ const ThesisModule = (() => {
       _summaryHtml(rec, { heading: heading, studentView: rec.Stage === STAGE.RETURNED }) +
       _actionButtonHtml(rec.ThesisID, 'Open this thesis'),
       /*force*/ true);
+    _logStage(TAB, 'ThesisID', rec.ThesisID, rec.Stage, rec.Stage, user, 'Reminder sent',
+      'to ' + (_facultyLabel(to) || to));
     EventBus.emit('thesis.reminded', { thesisId: rec.ThesisID, remindedTo: to }, { user: user });
     return { thesisId: rec.ThesisID, remindedTo: to };
   }
@@ -696,6 +813,7 @@ const ThesisModule = (() => {
     payload = payload || {};
     const rec = _byId(String(payload.thesisId || '').trim());
     if (!rec) throw new Error('Thesis not found.');
+    TestMode.activateForRecord(rec, user);   // test records re-enter test mode
     const note = String(payload.note || '').trim();
     if (!note) throw new Error('Add a note telling the student what to fix.');
 
@@ -716,6 +834,8 @@ const ThesisModule = (() => {
       label: 'Thesis returned — revise and resubmit: ' + rec.Title,
       assignedTo: rec.StudentEmail, staleAfterDays: 14,
     });
+    _logStage(TAB, 'ThesisID', rec.ThesisID, STAGE.SUBMITTED, STAGE.RETURNED, user,
+      'Returned to student', note);
     const returnedRec = _byId(rec.ThesisID);
     const returnHeading = 'Your ' + rec.Quarter + ' ' + rec.Year + ' senior thesis "' + rec.Title +
       '" was returned by ' + _facultyLabel(user) + ' for revision.';
@@ -746,6 +866,7 @@ const ThesisModule = (() => {
     payload = payload || {};
     const rec = _byId(String(payload.thesisId || '').trim());
     if (!rec) throw new Error('Thesis not found.');
+    TestMode.activateForRecord(rec, user);   // test records re-enter test mode
     const isSuper = roles.indexOf('super_admin') !== -1;
 
     const advisorReturn = (rec.Stage === STAGE.PENDING_ADVISOR || rec.Stage === STAGE.PENDING_HONORS) &&
@@ -773,6 +894,8 @@ const ThesisModule = (() => {
       ReaderCommentFileID: '', ReaderCommentLink: '',
     });
 
+    _logStage(TAB, 'ThesisID', rec.ThesisID, rec.Stage, STAGE.SUBMITTED, user,
+      'Returned to sponsor', note);
     const student = Auth.getProfile(rec.StudentEmail);
     Tasks.create({
       module: 'thesis', sourceType: 'thesis_review', sourceId: rec.ThesisID,
@@ -852,7 +975,14 @@ const ThesisModule = (() => {
     const htmlBody = _summaryHtml(rec, { heading: heading }) +
       _actionButtonHtml(thesisId, 'Complete this thesis');
 
-    if (!advisors.length) {
+    // Test mode (TestMode.gs): the advisor stage is a ROLE-POOL hop —
+    // during a test the task is assigned to the mapped advisor slot
+    // account and mail goes only to it (never real staff dashboards).
+    // The no-advisor super_admin warning is skipped in tests: the slot
+    // account IS the advisor for this run.
+    const testAdvisor = TestMode.active() ? TestMode.substitute('thesis', 'advisor', '') : '';
+
+    if (!advisors.length && !testAdvisor) {
       // No one holds the advisor role right now. The shared role-assigned
       // task below still gets created — it will appear on the dashboard of
       // whoever is granted the role later, so the situation self-heals.
@@ -874,15 +1004,80 @@ const ThesisModule = (() => {
     // Every holder sees it on their dashboard, including people granted the
     // role after this thesis routed, so the dashboard always reflects the
     // graduation queue. Resolution by any holder clears it for all.
-    Tasks.create({
+    const finalTask = {
       module: 'thesis', sourceType: 'thesis_final', sourceId: thesisId,
-      label: label, assignedRole: ADVISOR_ROLE, staleAfterDays: 14,
-    });
+      label: label, staleAfterDays: 14,
+    };
+    if (testAdvisor) finalTask.assignedTo = testAdvisor;
+    else finalTask.assignedRole = ADVISOR_ROLE;
+    Tasks.create(finalTask);
 
-    // Notification emails still go to each current holder individually.
-    advisors.forEach(adv => {
+    // Notification emails still go to each current holder individually
+    // (or, in a test, only to the advisor slot account).
+    if (testAdvisor) _notify(testAdvisor, subject, textBody, htmlBody);
+    else advisors.forEach(adv => {
       _notify(adv.email, subject, textBody, htmlBody);
     });
+  }
+
+
+  // ── Stage history (the detail-modal timeline) ─────────────
+  // Append-only log column, one ' | '-joined line per transition/event:
+  //   ISO time | FROM → TO | actor email | label | note
+  // Shared by BOTH tabs (Thesis and ThesisEnrollment) — the id column
+  // differs, so callers pass it. Best-effort: a history failure must
+  // never break the transition it describes. Same in test mode and real
+  // use; the log records whoever really acted.
+  const STAGE_SEP = ' | ';
+
+  function _logStage(tab, idCol, id, from, to, user, label, note) {
+    try {
+      const clean = s => String(s == null ? '' : s).replace(/[\r\n|]+/g, ' ').trim();
+      const line = [new Date().toISOString(), clean(from) + ' → ' + clean(to),
+                    clean(user), clean(label), clean(note)].join(STAGE_SEP);
+      const rows = DataService.query(CONFIG.SHEETS.THESIS, tab, idCol, id);
+      const rec = rows && rows[0];
+      if (!rec) return;
+      const priorLog = String(rec.StageHistory || '').trim();
+      const upd = {}; upd.StageHistory = priorLog ? (priorLog + '\n' + line) : line;
+      DataService.update(CONFIG.SHEETS.THESIS, tab, idCol, id, upd);
+    } catch (e) { Logger.log('ThesisModule._logStage failed for ' + id + ': ' + e); }
+  }
+
+  /** StageHistory → timeline entries (plain strings), with a milestone
+   *  fallback for records that predate the column. */
+  function _stageHistory(r, fallbacks) {
+    const out = [];
+    const raw = String(r.StageHistory || '').trim();
+    if (raw) {
+      raw.split('\n').forEach(line => {
+        const p = line.split(STAGE_SEP);
+        if (p.length < 4) return;
+        const arrow = String(p[1] || '').split('→');
+        const who = String(p[2] || '').trim();
+        out.push({ at: String(p[0] || '').trim(), atLabel: _fmtDateTime(String(p[0] || '').trim()),
+                   from: String(arrow[0] || '').trim(), to: String(arrow[1] || '').trim(),
+                   user: who, actor: who ? (_facultyLabel(who) || who) : '',
+                   label: String(p[3] || '').trim(), note: String(p[4] || '').trim() });
+      });
+      return out;
+    }
+    (fallbacks || []).forEach(f => {
+      if (!f.at) return;
+      const d = (f.at instanceof Date) ? f.at : new Date(f.at);
+      if (isNaN(d.getTime())) return;
+      out.push({ at: d.toISOString(), atLabel: _fmtDateTime(d), from: '', to: f.to,
+                 user: f.who || '', actor: f.who ? (_facultyLabel(f.who) || f.who) : '',
+                 label: f.label, note: '', legacy: true });
+    });
+    return out;
+  }
+
+  function _fmtDateTime(v) {
+    if (!v) return '';
+    const d = (v instanceof Date) ? v : new Date(v);
+    if (isNaN(d.getTime())) return String(v);
+    return Utilities.formatDate(d, Session.getScriptTimeZone(), 'MMM d, yyyy h:mm a');
   }
 
 
@@ -1156,6 +1351,14 @@ const ThesisModule = (() => {
       readerDecidedAt: r.ReaderDecidedAt ? Utils.formatDate(r.ReaderDecidedAt) : '',
       advisorProcessedAt: r.AdvisorProcessedAt ? Utils.formatDate(r.AdvisorProcessedAt) : '',
       returnNote:   r.ReturnNote,
+      testMode:     String(r.TestMode).toUpperCase() === 'TRUE',
+      stageHistory: _stageHistory(r, [
+        { at: r.CreatedAt, to: STAGE.SUBMITTED, who: r.StudentEmail, label: 'Submitted' },
+        { at: r.SponsorDecidedAt, to: r.ReaderEmail ? STAGE.PENDING_HONORS : STAGE.PENDING_ADVISOR,
+          who: r.SponsorDecidedBy, label: 'Sponsor decided' },
+        { at: r.ReaderDecidedAt, to: STAGE.PENDING_ADVISOR, who: r.ReaderDecidedBy, label: 'Honors approved' },
+        { at: r.AdvisorProcessedAt, to: STAGE.COMPLETE, who: r.AdvisorProcessedBy, label: 'Completed' },
+      ]),
       createdAt:    r.CreatedAt ? Utils.formatDate(r.CreatedAt) : '',
       _created:     r.CreatedAt ? new Date(r.CreatedAt).getTime() : 0,
     };
@@ -1561,7 +1764,8 @@ const ThesisModule = (() => {
       terms: terms,
       course: ENROLL_COURSE,
       gradeOptions: ENROLL_GRADE_OPTIONS.slice(),
-      sponsors: Auth.usersWithRole(ENROLL_SPONSOR_ROLE),
+      sponsors: Auth.usersWithRole(ENROLL_SPONSOR_ROLE)
+        .filter(function (u) { return !TestMode.isReservedAccount(u.email); }),
       confirmText: ENROLL_STUDENT_CONFIRM_TEXT,
       profile: {
         name: profile.name || '',
@@ -1686,6 +1890,19 @@ const ThesisModule = (() => {
 
     const existingId = String(payload.enrollmentId || '').trim();
 
+    // ── Test mode (TestMode.gs): same kit as thesis submit — the
+    // 'sponsor' slot is shared (the same person sponsors both halves).
+    if (existingId) {
+      const priorEnr = _enrById(existingId);
+      if (priorEnr) TestMode.activateForRecord(priorEnr, user);
+    }
+    TestMode.assertReady('thesis');
+    const finalSponsorEmail = TestMode.substitute('thesis', 'sponsor', sponsorEmail);
+    fields.SponsorEmail = finalSponsorEmail;
+    fields.TestMode = TestMode.recordFlag();
+    fields.TestSelections = TestMode.selectionNote(
+      (finalSponsorEmail !== sponsorEmail) ? { sponsor: sponsorEmail } : {});
+
     // ── Resubmission: must be the caller's own RETURNED record ──
     if (existingId) {
       const rec = _enrById(existingId);
@@ -1700,12 +1917,14 @@ const ThesisModule = (() => {
       DataService.update(CONFIG.SHEETS.THESIS, ENROLL_TAB(), 'EnrollmentID', existingId,
         Object.assign({}, fields, { Stage: STAGE.SUBMITTED, ReturnNote: '' }));
 
+      _assertTestStamp(ENROLL_TAB(), 'EnrollmentID', existingId, /*freshInsert*/ false, '');
+      _logStage(ENROLL_TAB(), 'EnrollmentID', existingId, STAGE.RETURNED, STAGE.SUBMITTED, user, 'Resubmitted', '');
       _enrMaybeSaveSyllabus(existingId, payload);
 
       Tasks.resolveForSource('thesis', existingId, { resolvedBy: user });
-      _enrRouteToSponsor(existingId, sponsorEmail, profile, /*resubmitted*/ true);
+      _enrRouteToSponsor(existingId, finalSponsorEmail, profile, /*resubmitted*/ true);
       EventBus.emit('thesis.enrollment_resubmitted',
-        { enrollmentId: existingId, sponsorEmail: sponsorEmail }, { user: user });
+        { enrollmentId: existingId, sponsorEmail: finalSponsorEmail }, { user: user });
       return { enrollmentId: existingId, stage: STAGE.SUBMITTED, resubmitted: true };
     }
 
@@ -1736,11 +1955,13 @@ const ThesisModule = (() => {
       ReturnNote: '',
     }, fields));
 
+    _assertTestStamp(ENROLL_TAB(), 'EnrollmentID', enrollmentId, /*freshInsert*/ true, '');
+    _logStage(ENROLL_TAB(), 'EnrollmentID', enrollmentId, '', STAGE.SUBMITTED, user, 'Submitted', '');
     _enrMaybeSaveSyllabus(enrollmentId, payload);
 
-    _enrRouteToSponsor(enrollmentId, sponsorEmail, profile, /*resubmitted*/ false);
+    _enrRouteToSponsor(enrollmentId, finalSponsorEmail, profile, /*resubmitted*/ false);
     EventBus.emit('thesis.enrollment_submitted',
-      { enrollmentId: enrollmentId, sponsorEmail: sponsorEmail }, { user: user });
+      { enrollmentId: enrollmentId, sponsorEmail: finalSponsorEmail }, { user: user });
     return { enrollmentId: enrollmentId, stage: STAGE.SUBMITTED };
   }
 
@@ -1812,6 +2033,7 @@ const ThesisModule = (() => {
     payload = payload || {};
     const rec = _enrById(payload.enrollmentId);
     if (!rec) throw new Error('Enrollment petition not found.');
+    TestMode.activateForRecord(rec, user);   // test records re-enter test mode
     _enrAssertSponsor(rec, user, roles);
     if (rec.Stage !== STAGE.SUBMITTED) throw new Error('This petition is not awaiting a sponsor decision.');
 
@@ -1856,6 +2078,8 @@ const ThesisModule = (() => {
 
     Tasks.resolveForSource('thesis', rec.EnrollmentID, { resolvedBy: user });
     _enrRouteToAdvisor(rec.EnrollmentID, _enrById(rec.EnrollmentID));
+    _logStage(ENROLL_TAB(), 'EnrollmentID', rec.EnrollmentID, STAGE.SUBMITTED, STAGE.PENDING_ADVISOR, user,
+      'Sponsor approved', String(payload.comments || '').trim());
     EventBus.emit('thesis.enrollment_sponsor_approved', { enrollmentId: rec.EnrollmentID }, { user: user });
     return { enrollmentId: rec.EnrollmentID, stage: STAGE.PENDING_ADVISOR };
   }
@@ -1864,6 +2088,7 @@ const ThesisModule = (() => {
   function enrollSponsorReturn(payload, user, roles) {
     const rec = _enrById((payload || {}).enrollmentId);
     if (!rec) throw new Error('Enrollment petition not found.');
+    TestMode.activateForRecord(rec, user);   // test records re-enter test mode
     _enrAssertSponsor(rec, user, roles);
     if (rec.Stage !== STAGE.SUBMITTED) throw new Error('This petition is not awaiting a sponsor decision.');
 
@@ -1887,6 +2112,8 @@ const ThesisModule = (() => {
       'If you are still conducting research and will not finish the thesis this term, ' +
       'file for ANTH 198 in the Individual Studies module instead.' +
       _actionTextFallback(rec.EnrollmentID, 'Revise and resubmit'));
+    _logStage(ENROLL_TAB(), 'EnrollmentID', rec.EnrollmentID, STAGE.SUBMITTED, STAGE.RETURNED, user,
+      'Returned to student', note);
     EventBus.emit('thesis.enrollment_returned', { enrollmentId: rec.EnrollmentID }, { user: user });
     return { enrollmentId: rec.EnrollmentID, stage: STAGE.RETURNED };
   }
@@ -1914,6 +2141,7 @@ const ThesisModule = (() => {
     payload = payload || {};
     const rec = _enrById(payload.enrollmentId);
     if (!rec) throw new Error('Enrollment petition not found.');
+    TestMode.activateForRecord(rec, user);   // test records re-enter test mode
     if (rec.Stage !== STAGE.PENDING_ADVISOR) throw new Error('This petition is not awaiting advisor processing.');
 
     const classNumber = String(payload.classNumber || '').trim();
@@ -1983,6 +2211,8 @@ const ThesisModule = (() => {
     _notify(rec.StudentEmail, 'Your ANTH 195S petition is complete',
       lines.join('\n') + _actionTextFallback(rec.EnrollmentID, 'View your enrollment'));
 
+    _logStage(ENROLL_TAB(), 'EnrollmentID', rec.EnrollmentID, STAGE.PENDING_ADVISOR, STAGE.COMPLETE, user,
+      'Completed', 'Class ' + classNumber);
     EventBus.emit('thesis.enrollment_completed', { enrollmentId: rec.EnrollmentID }, { user: user });
     return { enrollmentId: rec.EnrollmentID, stage: STAGE.COMPLETE,
              documentLink: pdf ? pdf.url : '' };
@@ -1994,6 +2224,7 @@ const ThesisModule = (() => {
     _enrAssertAdvisor(roles);
     const rec = _enrById((payload || {}).enrollmentId);
     if (!rec) throw new Error('Enrollment petition not found.');
+    TestMode.activateForRecord(rec, user);   // test records re-enter test mode
     if (rec.Stage !== STAGE.PENDING_ADVISOR) throw new Error('This petition is not awaiting advisor processing.');
 
     const note = String((payload || {}).note || '').trim();
@@ -2020,6 +2251,8 @@ const ThesisModule = (() => {
       'Note: ' + note + '\n\n' +
       'Student: ' + _studentLabel(profile) +
       _actionTextFallback(rec.EnrollmentID, 'Re-review this petition'));
+    _logStage(ENROLL_TAB(), 'EnrollmentID', rec.EnrollmentID, STAGE.PENDING_ADVISOR, STAGE.SUBMITTED, user,
+      'Returned to sponsor', note);
     EventBus.emit('thesis.enrollment_advisor_returned', { enrollmentId: rec.EnrollmentID }, { user: user });
     return { enrollmentId: rec.EnrollmentID, stage: STAGE.SUBMITTED };
   }
@@ -2033,6 +2266,7 @@ const ThesisModule = (() => {
     _enrAssertAdvisor(roles);
     const rec = _enrById(String((payload || {}).enrollmentId || '').trim());
     if (!rec) throw new Error('Enrollment petition not found.');
+    TestMode.activateForRecord(rec, user);   // test records re-enter test mode
 
     let to, ask;
     if (rec.Stage === STAGE.SUBMITTED) {
@@ -2054,6 +2288,8 @@ const ThesisModule = (() => {
         _actionTextFallback(rec.EnrollmentID, 'Open this petition'),
         null, /*force*/ true);
     });
+    _logStage(ENROLL_TAB(), 'EnrollmentID', rec.EnrollmentID, rec.Stage, rec.Stage, user, 'Reminder sent',
+      'to ' + to.map(function (e) { return _facultyLabel(e) || e; }).join(', '));
     EventBus.emit('thesis.enrollment_reminded', { enrollmentId: rec.EnrollmentID, remindedTo: to }, { user: user });
     return { enrollmentId: rec.EnrollmentID, remindedTo: to };
   }
@@ -2107,16 +2343,22 @@ const ThesisModule = (() => {
   }
 
   function _enrRouteToAdvisor(enrollmentId, rec) {
-    Tasks.create({
+    // Test mode: same role-pool interception as _routeToAdvisor.
+    const testAdvisor = TestMode.active() ? TestMode.substitute('thesis', 'advisor', '') : '';
+    const enrTask = {
       module: 'thesis', sourceType: ENROLL_SOURCE_TYPE, sourceId: enrollmentId,
       label: 'ANTH 195S enrollment awaiting class number: ' + _facultyLabel(rec.StudentEmail),
-      assignedRole: ADVISOR_ROLE, staleAfterDays: 14,
-    });
-    _advisors().forEach(function (adv) {
-      _notify(adv.email, 'ANTH 195S enrollment awaiting class number',
-        'An ANTH 195S enrollment petition has been approved by its sponsor and is ready for a class number.\n\n' +
-        'Student: ' + _facultyLabel(rec.StudentEmail) +
-        _actionTextFallback(enrollmentId, 'Process this petition'));
+      staleAfterDays: 14,
+    };
+    if (testAdvisor) enrTask.assignedTo = testAdvisor;
+    else enrTask.assignedRole = ADVISOR_ROLE;
+    Tasks.create(enrTask);
+    const enrBody = 'An ANTH 195S enrollment petition has been approved by its sponsor and is ready for a class number.\n\n' +
+      'Student: ' + _facultyLabel(rec.StudentEmail) +
+      _actionTextFallback(enrollmentId, 'Process this petition');
+    if (testAdvisor) _notify(testAdvisor, 'ANTH 195S enrollment awaiting class number', enrBody);
+    else _advisors().forEach(function (adv) {
+      _notify(adv.email, 'ANTH 195S enrollment awaiting class number', enrBody);
     });
   }
 
@@ -2172,7 +2414,10 @@ const ThesisModule = (() => {
     // Class-number options for ANTH 195S from the ClassSchedule service.
     let preassigned = null, allSections = [], sectionsMatchedCredits = true;
     try {
-      const pre = ClassSchedule.findPreassigned(term, ENROLL_COURSE, rec.SponsorEmail);
+      // Test-mode look-through: the substituted sponsor has no sections;
+      // use the ORIGINALLY selected sponsor for the schedule suggestion.
+      const scheduleSponsor = TestMode.selectedFor(rec, 'sponsor') || rec.SponsorEmail;
+      const pre = ClassSchedule.findPreassigned(term, ENROLL_COURSE, scheduleSponsor);
       preassigned = pre ? {
         classNbr: pre.ClassNbr, section: pre.Section, course: pre.Course,
         instructorRaw: pre.InstructorRaw, instructorEmail: pre.InstructorEmail,
@@ -2538,6 +2783,12 @@ const ThesisModule = (() => {
       syllabusLink: r.SyllabusLink || '',
       syllabusName: r.SyllabusName || '',
       returnNote: r.ReturnNote || '',
+      testMode: _isTrueStr(r.TestMode),
+      stageHistory: _stageHistory(r, [
+        { at: r.CreatedAt, to: STAGE.SUBMITTED, who: r.StudentEmail, label: 'Submitted' },
+        { at: r.SponsorDecidedAt, to: STAGE.PENDING_ADVISOR, who: r.SponsorDecidedBy, label: 'Sponsor approved' },
+        { at: r.AdvisorProcessedAt, to: STAGE.COMPLETE, who: r.AdvisorProcessedBy, label: 'Completed' },
+      ]),
       createdAt: r.CreatedAt ? _enrFmtDate(r.CreatedAt) : '',
       _created: r.CreatedAt ? new Date(r.CreatedAt).getTime() : 0,
     };
@@ -2607,7 +2858,10 @@ const ThesisModule = (() => {
 
   return {
     TABS: TABS,
-    listEligible, listCountries, submit, mySubmissions, sponsored, queue, get,
+    // TEST_SLOTS is the test-mode slot manifest consumed by TestMode.gs
+    // (not a dispatchable action); Admin → Testing assigns the accounts.
+    TEST_SLOTS: TEST_SLOTS,
+    listEligible, listCountries, submit, mySubmissions, sponsored, queue, get, testModeAvailable,
     sponsorDecision, readerDecision, advisorComplete, returnToStudent, returnToSponsor,
     gradQueue, remindResponsible, repairAdvisorTasks, deleteThesis,
     getSettings, saveSettings,

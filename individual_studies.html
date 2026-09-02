@@ -702,7 +702,21 @@
     display: flex; align-items: flex-start; justify-content: center;
     padding: 40px 16px; z-index: 1000; overflow-y: auto;
   }
-  .is-modal-card { max-width: 660px; width: 100%; margin: 0; }
+  .is-modal-card { max-width: 660px; width: 100%; margin: 0; max-height: calc(100vh - 80px); overflow-y: auto; }
+  /* Stage timeline (StageHistory) at the bottom of the detail modal */
+  .is-tl { border-top: 1px solid var(--color-border); margin-top: 16px; padding-top: 12px; }
+  .is-tl-head { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:10px; font-weight:600; font-size:13.5px; }
+  .is-tl-row { display:grid; grid-template-columns:16px 1fr; column-gap:12px; }
+  .is-tl-rail { display:flex; flex-direction:column; align-items:center; }
+  .is-tl-dot { width:10px; height:10px; border-radius:50%; margin-top:5px; flex:none; }
+  .is-tl-line { flex:1; width:1px; background:var(--color-border); }
+  .is-tl-dot.tl-fwd { background: var(--ucsc-navy); }
+  .is-tl-dot.tl-bad { background: var(--color-danger); }
+  .is-tl-dot.tl-ok  { background: var(--color-success, #2e8b57); }
+  .is-tl-dot.tl-ev  { background: #b4b2a9; }
+  .is-tl-body { padding-bottom:14px; font-size:13.5px; }
+  .is-tl-meta { font-size:12px; color: var(--color-muted); font-weight: normal; }
+  .is-tl-note { font-size:12.5px; color: var(--color-muted); margin-top:3px; padding-left:8px; border-left:2px solid var(--color-border); }
   .is-detail-grid { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; font-size: 13.5px; margin: 4px 0 16px; }
   .is-detail-grid dt { color: var(--color-muted); }
   .is-detail-grid dd { margin: 0; }
@@ -1554,6 +1568,50 @@ window.IndividualStudiesUI = (() => {
     return '<dt>' + esc(label) + '</dt><dd>' + (value || '&mdash;') + '</dd>';
   }
 
+  // ── Stage timeline (rec.stageHistory, from the StageHistory column) ──
+  // One row per transition or event, oldest first: what happened, where it
+  // landed, when, who — with time-in-stage measured from the previous
+  // TRANSITION (events like reminders don't reset the clock). Identical
+  // in test mode and real use; the actors are simply whoever acted.
+  function _fmtDur(ms) {
+    const m = Math.round(ms / 60000);
+    if (m < 1) return '<1 min';
+    if (m < 60) return m + ' min';
+    const h = Math.floor(m / 60), rm = m % 60;
+    if (h < 24) return h + ' hr' + (rm ? ' ' + rm + ' min' : '');
+    const d = Math.floor(h / 24), rh = h % 24;
+    return d + ' d' + (rh ? ' ' + rh + ' hr' : '');
+  }
+  function _timelineHtml(rec) {
+    const h = (rec && rec.stageHistory) || [];
+    if (!h.length) return '';
+    let rows = '', lastTransition = NaN;
+    h.forEach(function (e, i) {
+      const isEvent = !!e.from && e.from === e.to;
+      const isReturn = e.to === 'RETURNED' || (e.from === 'PENDING_ADVISOR' && e.to === 'SUBMITTED');
+      const dot = isEvent ? 'tl-ev' : (e.to === 'COMPLETE' ? 'tl-ok' : (isReturn ? 'tl-bad' : 'tl-fwd'));
+      const t = Date.parse(e.at);
+      const inStage = (!isEvent && isFinite(t) && isFinite(lastTransition)) ? _fmtDur(t - lastTransition) : '';
+      if (!isEvent && isFinite(t)) lastTransition = t;
+      const dest = (!isEvent && e.to && STAGE_META[e.to]) ? ' → ' + STAGE_META[e.to].label : '';
+      rows += '<div class="is-tl-row"><div class="is-tl-rail"><span class="is-tl-dot ' + dot + '"></span>'
+        + (i < h.length - 1 ? '<span class="is-tl-line"></span>' : '') + '</div>'
+        + '<div class="is-tl-body"><div><strong>' + esc(e.label) + '</strong>'
+        + '<span class="text-muted">' + esc(dest) + '</span>'
+        + (inStage ? ' <span class="is-tl-meta">· ' + esc(inStage) + ' in stage</span>' : '') + '</div>'
+        + '<div class="is-tl-meta">' + esc(e.atLabel) + (e.actor ? ' · ' + esc(e.actor) : '') + '</div>'
+        + (e.note ? '<div class="is-tl-note">' + esc(e.note) + '</div>' : '')
+        + '</div></div>';
+    });
+    const t0 = Date.parse(h[0].at), tN = Date.parse(h[h.length - 1].at);
+    const span = (isFinite(t0) && isFinite(tN) && tN > t0)
+      ? _fmtDur(tN - t0) + (rec.stage === 'COMPLETE' ? ' submitted to complete' : ' so far') : '';
+    return '<div class="is-tl"><div class="is-tl-head">'
+      + '<span><i class="ti ti-timeline"></i> Timeline</span>'
+      + '<span class="is-tl-meta">' + h.length + ' event' + (h.length === 1 ? '' : 's') + (span ? ' · ' + esc(span) : '') + '</span>'
+      + '</div>' + rows + '</div>';
+  }
+
   function _openDetail(rec) {
     if (rec && rec.audience === 'grad') { _openGradDetail(rec); return; }
     _lastFocus = document.activeElement;
@@ -1586,6 +1644,7 @@ window.IndividualStudiesUI = (() => {
       + '</dl>';
 
     html += _actionsFor(rec);
+    html += _timelineHtml(rec);
     document.getElementById('is-modal-body').innerHTML = html;
     document.getElementById('is-modal').style.display = 'flex';
   }
@@ -2650,8 +2709,9 @@ window.IndividualStudiesUI = (() => {
       rows.forEach(function (r) {
         const meta = STAGE_META[r.stage] || { cls: 'badge-neutral', label: r.stage };
         const canNudge = r.stage !== 'COMPLETE';
-        body += '<tr>'
-          + '<td style="cursor:pointer;" onclick="IndividualStudiesUI.open(\'' + esc(r.petitionId) + '\')">'
+        body += '<tr tabindex="0" style="cursor:pointer;" onclick="IndividualStudiesUI.open(\'' + esc(r.petitionId) + '\')" '
+          + 'onkeydown="IndividualStudiesUI.rowKey(event,\'' + esc(r.petitionId) + '\')">'
+          + '<td>'
           +   '<strong>' + esc(r.course) + '</strong>'
           +   (r.testMode ? ' <span class="badge badge-warning" title="Test record — routed to functional accounts">TEST</span>' : '')
           +   (r.late ? ' <span class="badge badge-danger">Late</span>' : '')
@@ -2659,7 +2719,7 @@ window.IndividualStudiesUI = (() => {
           + '<td>' + esc(r.studentName) + '</td>'
           + '<td>' + esc(r.sponsorName) + '</td>'
           + '<td><span class="badge ' + meta.cls + '">' + esc(meta.label) + '</span></td>'
-          + '<td>' + (canNudge
+          + '<td onclick="event.stopPropagation();">' + (canNudge
               ? '<button class="btn btn-secondary btn-sm" onclick="IndividualStudiesUI.gradRemind(\'' + esc(r.petitionId) + '\')"><i class="ti ti-bell"></i> Nudge</button>'
               : '') + '</td>'
           + '</tr>';
@@ -2713,6 +2773,7 @@ window.IndividualStudiesUI = (() => {
       + '</dl>';
 
     html += _gradActionsFor(rec);
+    html += _timelineHtml(rec);
     document.getElementById('is-modal-body').innerHTML = html;
     document.getElementById('is-modal').style.display = 'flex';
   }

@@ -202,6 +202,7 @@ const SETUP_SCHEMA = {
               'ReaderEmail', 'HonorsDecision', 'ReaderComments', 'ReaderCommentFileID', 'ReaderCommentLink',
               'ReaderDecidedBy', 'ReaderDecidedAt',
               'AdvisorProcessedBy', 'AdvisorProcessedAt', 'MilestoneEntered', 'ReturnNote',
+              'TestMode', 'TestSelections', 'StageHistory',
               'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
     seed: [],
   },
@@ -234,6 +235,7 @@ const SETUP_SCHEMA = {
               'AdvisorComments', 'AdvisorProcessedBy', 'AdvisorProcessedAt',
               'SyllabusFileID', 'SyllabusLink', 'SyllabusName',
               'DriveFileID', 'FileName', 'DocumentLink', 'ReturnNote',
+              'TestMode', 'TestSelections', 'StageHistory',
               'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
     seed: [],
   },
@@ -368,8 +370,11 @@ const SETUP_SCHEMA = {
     // petition PDF is generated at COMPLETE (DriveFileID/DocumentLink).
     // TestMode ('TRUE' on records created by a test-mode submission) and
     // TestSelections (what the tester REALLY selected before the TestMode
-    // slot substitution) support the platform TestMode service; run
-    // addMissingColumns() to append them to an existing tab.
+    // slot substitution) support the platform TestMode service. StageHistory
+    // is the append-only stage/event log (one line per transition, room
+    // request, reminder, or PDF generation: ISO time | FROM → TO | actor |
+    // label | note) rendered as the detail-modal timeline. Run
+    // addMissingColumns() to append these to an existing tab.
     headers: ['PetitionID', 'StudentEmail', 'TermCode', 'Quarter', 'Year', 'Course', 'SponsorEmail',
               'StudySiteAddress', 'Title', 'CourseDescription', 'EvidenceOfPreparation',
               'WorkToBeSubmitted', 'ReportRequired', 'ReportDueDate',
@@ -384,7 +389,7 @@ const SETUP_SCHEMA = {
               'RoomAccessRequested', 'RoomAccessRoom', 'RoomAccessNote',
               'RoomAccessRequestedBy', 'RoomAccessRequestedAt',
               'DriveFileID', 'FileName', 'DocumentLink', 'ReturnNote',
-              'TestMode', 'TestSelections',
+              'TestMode', 'TestSelections', 'StageHistory',
               'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
     seed: [],
   },
@@ -428,8 +433,9 @@ const SETUP_SCHEMA = {
     // LateSubmission flags a submission after it (calendar failure
     // degrades to blank/FALSE). The canonical PDF is generated at
     // COMPLETE via ReportService. Meta columns filled by DataService.
-    // TestMode / TestSelections mirror the undergrad tab (platform
-    // TestMode service); run addMissingColumns() for an existing tab.
+    // TestMode / TestSelections / StageHistory mirror the undergrad tab
+    // (TestMode service; timeline log); addMissingColumns() for an
+    // existing tab.
     headers: ['PetitionID', 'StudentEmail', 'TermCode', 'Quarter', 'Year', 'Course', 'Units', 'SponsorEmail',
               'StudySite', 'Subject', 'WorkOutline',
               'WeeklyContactHours', 'FinalPaperRequired',
@@ -441,7 +447,7 @@ const SETUP_SCHEMA = {
               'RoomAccessRequested', 'RoomAccessRoom', 'RoomAccessNote',
               'RoomAccessRequestedBy', 'RoomAccessRequestedAt',
               'DriveFileID', 'FileName', 'DocumentLink', 'ReturnNote',
-              'TestMode', 'TestSelections',
+              'TestMode', 'TestSelections', 'StageHistory',
               'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
     seed: [],
   },

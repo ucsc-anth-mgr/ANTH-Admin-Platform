@@ -102,9 +102,21 @@
           <div class="form-hint" id="th-share-hint">If unchecked, your thesis is kept within the department ("Don't share").</div>
         </div>
 
+        <!-- Test mode (TestMode.gs): hidden unless the server says the
+             caller is an authorized test account AND every thesis slot is
+             mapped. The box goes hot and the button relabels while on. -->
+        <div id="th-testmode-wrap" class="th-testmode-box" style="display:none;">
+          <label style="display:flex;align-items:flex-start;gap:10px;font-weight:normal;cursor:pointer;margin:0;">
+            <input type="checkbox" id="th-testmode" onchange="ThesisUI.onTestModeToggle(this.checked)" style="margin-top:3px;">
+            <span><strong><i class="ti ti-flask" aria-hidden="true"></i> Test mode</strong><span id="th-testmode-note"> —
+              route this thesis to the department's functional test accounts;
+              no real faculty or staff will be contacted.</span></span>
+          </label>
+        </div>
+
         <div class="form-actions">
           <button class="btn btn-primary" id="th-submit-btn" onclick="ThesisUI.submit()">
-            <i class="ti ti-send" aria-hidden="true"></i> Submit thesis
+            <i class="ti ti-send" aria-hidden="true"></i> <span id="th-submit-label">Submit thesis</span>
           </button>
           <button class="btn btn-secondary" id="th-cancel-resubmit" style="display:none;" onclick="ThesisUI.cancelResubmit()">Cancel</button>
         </div>
@@ -280,9 +292,19 @@
           <div class="form-error"></div>
         </div>
 
+        <!-- Test mode: enrollment twin of th-testmode-wrap above. -->
+        <div id="en-testmode-wrap" class="th-testmode-box" style="display:none;">
+          <label style="display:flex;align-items:flex-start;gap:10px;font-weight:normal;cursor:pointer;margin:0;">
+            <input type="checkbox" id="en-testmode" onchange="ThesisUI.onEnrollTestModeToggle(this.checked)" style="margin-top:3px;">
+            <span><strong><i class="ti ti-flask" aria-hidden="true"></i> Test mode</strong><span id="en-testmode-note"> —
+              route this petition to the department's functional test accounts;
+              no real faculty or staff will be contacted.</span></span>
+          </label>
+        </div>
+
         <div class="form-actions">
           <button class="btn btn-primary" id="en-submit-btn" onclick="ThesisUI.submitEnroll()">
-            <i class="ti ti-send" aria-hidden="true"></i> Submit enrollment petition
+            <i class="ti ti-send" aria-hidden="true"></i> <span id="en-submit-label">Submit enrollment petition</span>
           </button>
           <button class="btn btn-secondary" id="en-cancel-resubmit" style="display:none;" onclick="ThesisUI.cancelEnrollResubmit()">Cancel</button>
         </div>
@@ -450,7 +472,24 @@
   display: flex; align-items: flex-start; justify-content: center;
   padding: 40px 16px; z-index: 1000; overflow-y: auto;
 }
-.th-modal-card { max-width: 640px; width: 100%; margin: 0; }
+.th-modal-card { max-width: 640px; width: 100%; margin: 0; max-height: calc(100vh - 80px); overflow-y: auto; }
+.th-testmode-box { border:1px dashed #d9a406; background:#fdf6e3; border-radius:8px;
+  padding:10px 12px; margin:0 0 14px; font-size:13.5px; }
+.th-testmode-box.on { border:2px solid #d9a406; background:#fdeecb; }
+.th-testmode-box .ti-flask { vertical-align:-2px; }
+.th-tl { border-top: 1px solid var(--color-border); margin-top: 16px; padding-top: 12px; }
+.th-tl-head { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:10px; font-weight:600; font-size:13.5px; }
+.th-tl-row { display:grid; grid-template-columns:16px 1fr; column-gap:12px; }
+.th-tl-rail { display:flex; flex-direction:column; align-items:center; }
+.th-tl-dot { width:10px; height:10px; border-radius:50%; margin-top:5px; flex:none; }
+.th-tl-line { flex:1; width:1px; background:var(--color-border); }
+.th-tl-dot.tl-fwd { background: var(--ucsc-navy); }
+.th-tl-dot.tl-bad { background: var(--color-danger); }
+.th-tl-dot.tl-ok  { background: var(--color-success, #2e8b57); }
+.th-tl-dot.tl-ev  { background: #b4b2a9; }
+.th-tl-body { padding-bottom:14px; font-size:13.5px; }
+.th-tl-meta { font-size:12px; color: var(--color-muted); font-weight: normal; }
+.th-tl-note { font-size:12.5px; color: var(--color-muted); margin-top:3px; padding-left:8px; border-left:2px solid var(--color-border); }
 .th-detail-grid { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; font-size: 13.5px; margin: 4px 0 16px; }
 .th-detail-grid dt { color: var(--color-muted); }
 .th-detail-grid dd { margin: 0; }
@@ -534,6 +573,10 @@ window.ThesisUI = (() => {
   let _enrollSyllabus = null;  // student form syllabus { base64, name, mime }
   let _enrollSpSyllabus = null;// sponsor-panel syllabus attachment
   let _enrollResubmitId = null;// set when revising a returned enrollment
+  let _testMode = false;           // thesis-form test checkbox state
+  let _enrollTestMode = false;     // enrollment-form twin
+  let _resubmitIsTest = false;     // revising a TEST thesis: stays a test
+  let _enrollResubmitIsTest = false;
   let _enrollPrefill = null;   // COMPLETE-enrollment prefill for the thesis form
   const _roles = <?!= userRoles ?>;
   // Visible tabs for this user, injected by the server (TabRegistry).
@@ -550,6 +593,16 @@ window.ThesisUI = (() => {
 
   // ── Init ─────────────────────────────────────────────
   function init() {
+    // Test mode (TestMode.gs): reveal both banners only for authorized
+    // test accounts with every thesis slot mapped. UI convenience only.
+    App.call('thesis', 'testModeAvailable', {}, res => {
+      if (res && res.available) {
+        const a = document.getElementById('th-testmode-wrap');
+        const b = document.getElementById('en-testmode-wrap');
+        if (a) a.style.display = '';
+        if (b) b.style.display = '';
+      }
+    }, () => {});
     App.call('thesis', 'listEligible', { capability: 'sponsor' }, list => {
       _sponsors = list || [];
       _fillFacultySelect(document.getElementById('th-sponsor'), _sponsors);
@@ -908,6 +961,76 @@ window.ThesisUI = (() => {
   }
 
   // ── Submit / resubmit ────────────────────────────────
+  // Test mode: checkbox handlers set state, sync the banner's hot styling
+  // and the submit caption. The payload tag attaches at submit time.
+  function onTestModeToggle(checked) { _testMode = checked === true; _syncTestUi(); }
+  function onEnrollTestModeToggle(checked) { _enrollTestMode = checked === true; _syncEnrollTestUi(); }
+
+  function _syncTestUi() {
+    const locked = !!_resubmitId && _resubmitIsTest;
+    const on = _testMode || locked;
+    const box = document.getElementById('th-testmode-wrap');
+    if (box) box.classList.toggle('on', on);
+    const note = document.getElementById('th-testmode-note');
+    if (note) note.textContent = locked
+      ? ' — resubmitting a test thesis; it stays a test and routes to the functional accounts.'
+      : ' — route this thesis to the department\'s functional test accounts; no real faculty or staff will be contacted.';
+    const lbl = document.getElementById('th-submit-label');
+    if (lbl) lbl.textContent = on ? 'Submit test thesis' : 'Submit thesis';
+  }
+  function _syncEnrollTestUi() {
+    const locked = !!_enrollResubmitId && _enrollResubmitIsTest;
+    const on = _enrollTestMode || locked;
+    const box = document.getElementById('en-testmode-wrap');
+    if (box) box.classList.toggle('on', on);
+    const note = document.getElementById('en-testmode-note');
+    if (note) note.textContent = locked
+      ? ' — resubmitting a test petition; it stays a test and routes to the functional accounts.'
+      : ' — route this petition to the department\'s functional test accounts; no real faculty or staff will be contacted.';
+    const lbl = document.getElementById('en-submit-label');
+    if (lbl) lbl.textContent = on ? 'Submit test enrollment petition' : 'Submit enrollment petition';
+  }
+
+  // ── Stage timeline (rec.stageHistory) — see individual_studies twin. ──
+  function _fmtDur(ms) {
+    const m = Math.round(ms / 60000);
+    if (m < 1) return '<1 min';
+    if (m < 60) return m + ' min';
+    const h = Math.floor(m / 60), rm = m % 60;
+    if (h < 24) return h + ' hr' + (rm ? ' ' + rm + ' min' : '');
+    const d = Math.floor(h / 24), rh = h % 24;
+    return d + ' d' + (rh ? ' ' + rh + ' hr' : '');
+  }
+  function _timelineHtml(rec, meta) {
+    const h = (rec && rec.stageHistory) || [];
+    if (!h.length) return '';
+    let rows = '', lastTransition = NaN;
+    h.forEach(function (e, i) {
+      const isEvent = !!e.from && e.from === e.to;
+      const isReturn = e.to === 'RETURNED' || (e.from !== 'SUBMITTED' && e.to === 'SUBMITTED' && !!e.from);
+      const dot = isEvent ? 'tl-ev' : (e.to === 'COMPLETE' ? 'tl-ok' : (isReturn ? 'tl-bad' : 'tl-fwd'));
+      const t = Date.parse(e.at);
+      const inStage = (!isEvent && isFinite(t) && isFinite(lastTransition)) ? _fmtDur(t - lastTransition) : '';
+      if (!isEvent && isFinite(t)) lastTransition = t;
+      const dest = (!isEvent && e.to && meta[e.to]) ? ' → ' + meta[e.to].label : '';
+      rows += '<div class="th-tl-row"><div class="th-tl-rail"><span class="th-tl-dot ' + dot + '"></span>'
+        + (i < h.length - 1 ? '<span class="th-tl-line"></span>' : '') + '</div>'
+        + '<div class="th-tl-body"><div><strong>' + _esc(e.label) + '</strong>'
+        + '<span class="text-muted">' + _esc(dest) + '</span>'
+        + (inStage ? ' <span class="th-tl-meta">· ' + _esc(inStage) + ' in stage</span>' : '') + '</div>'
+        + '<div class="th-tl-meta">' + _esc(e.atLabel) + (e.actor ? ' · ' + _esc(e.actor) : '') + '</div>'
+        + (e.note ? '<div class="th-tl-note">' + _esc(e.note) + '</div>' : '')
+        + '</div></div>';
+    });
+    const t0 = Date.parse(h[0].at), tN = Date.parse(h[h.length - 1].at);
+    const span = (isFinite(t0) && isFinite(tN) && tN > t0)
+      ? _fmtDur(tN - t0) + (rec.stage === 'COMPLETE' ? ' submitted to complete' : ' so far') : '';
+    return '<div class="th-tl"><div class="th-tl-head">'
+      + '<span><i class="ti ti-timeline" aria-hidden="true"></i> Timeline</span>'
+      + '<span class="th-tl-meta">' + h.length + ' event' + (h.length === 1 ? '' : 's') + (span ? ' · ' + _esc(span) : '') + '</span>'
+      + '</div>' + rows + '</div>';
+  }
+
   function submit() {
     const { data, isValid } = FormHelper.collect('thesis-form');
     if (!isValid) { Toast.show('Please fix the highlighted fields.', 'error'); return; }
@@ -924,6 +1047,7 @@ window.ThesisUI = (() => {
       file: _filePayload,
     };
     if (_resubmitId) payload.thesisId = _resubmitId;
+    if (_testMode || (_resubmitId && _resubmitIsTest)) payload._test = true;   // TestMode.gs
 
     FormHelper.setLoading('th-submit-btn', true, _resubmitId ? 'Resubmitting…' : 'Submitting…');
     _busy(_resubmitId ? 'Uploading your revised thesis…' : 'Uploading your thesis…');
@@ -946,6 +1070,9 @@ window.ThesisUI = (() => {
     document.getElementById('th-file').value = '';
     document.getElementById('th-share').checked = false;
     _filePayload = null; _resubmitId = null;
+    _resubmitIsTest = false; _testMode = false;
+    const tm = document.getElementById('th-testmode'); if (tm) { tm.checked = false; tm.disabled = false; }
+    _syncTestUi();
     _regions = []; _renderRegionChips();
     document.getElementById('resubmit-banner').style.display = 'none';
     document.getElementById('th-cancel-resubmit').style.display = 'none';
@@ -955,6 +1082,11 @@ window.ThesisUI = (() => {
 
   function startResubmit(rec) {
     _resubmitId = rec.thesisId;
+    // A test thesis revises as a test: lock the banner checkbox on.
+    _resubmitIsTest = !!rec.testMode;
+    const rtm = document.getElementById('th-testmode');
+    if (rtm) { rtm.checked = rtm.checked || _resubmitIsTest; rtm.disabled = _resubmitIsTest; }
+    _syncTestUi();
     switchTab('submit');
     document.getElementById('th-quarter').value = rec.quarter || '';
     document.getElementById('th-year').value = rec.year || '';
@@ -1104,6 +1236,7 @@ window.ThesisUI = (() => {
     const showRemind = context === 'queue' && _isAdvisorUser;
     const body = rows.map(r => {
       const m = STAGE_META[r.stage] || { cls: 'badge-neutral', label: r.stage };
+      const testBadge = r.testMode ? ' <span class="badge badge-warning" title="Test record — routed to functional accounts">TEST</span>' : '';
       const who = showStudent ? _esc(r.studentName) : _esc(r.sponsorName);
       const whoLabel = showStudent ? 'Student' : 'Sponsor';
       const remindTarget = r.stage === 'SUBMITTED' ? 'sponsor'
@@ -1123,7 +1256,7 @@ window.ThesisUI = (() => {
         + '<td>' + _esc(r.term) + '</td>'
         + '<td>' + _esc(r.title) + '</td>'
         + '<td><span class="text-muted" style="font-size:11px;">' + whoLabel + '</span><br>' + who + '</td>'
-        + '<td><span class="badge ' + m.cls + ' th-stage">' + m.label + '</span></td>'
+        + '<td><span class="badge ' + m.cls + ' th-stage">' + m.label + '</span>' + testBadge + '</td>'
         + remindCell
         + '<td onclick="event.stopPropagation();"><button type="button" class="th-open-btn" '
         + 'onclick="ThesisUI.open(\'' + _esc(r.thesisId) + '\',\'' + _esc(r.stage) + '\')" '
@@ -1170,10 +1303,11 @@ window.ThesisUI = (() => {
 
   function _openDetail(rec) {
     const m = STAGE_META[rec.stage] || { cls: 'badge-neutral', label: rec.stage };
+    const testBadge = rec.testMode ? ' <span class="badge badge-warning" title="Test record — routed to functional accounts">TEST</span>' : '';
     document.getElementById('th-modal-title').textContent = rec.title || 'Thesis';
 
     let html = '<dl class="th-detail-grid">'
-      + _row('Stage', '<span class="badge ' + m.cls + '">' + m.label + '</span>')
+      + _row('Stage', '<span class="badge ' + m.cls + '">' + m.label + '</span>' + testBadge)
       + _row('Student', _esc(rec.studentName))
       + _row('Term', _esc(rec.term))
       + (rec.abstract ? _row('Abstract', _esc(rec.abstract)) : '')
@@ -1193,6 +1327,7 @@ window.ThesisUI = (() => {
       + '</dl>';
 
     html += _actionsFor(rec);
+    html += _timelineHtml(rec, STAGE_META);
     document.getElementById('th-modal-body').innerHTML = html;
     document.getElementById('th-modal').style.display = 'flex';
     // Trap focus in the dialog. A11y.release() (in closeModal) restores
@@ -1622,6 +1757,7 @@ window.ThesisUI = (() => {
       payload.syllabusMimeType = _enrollSyllabus.mime;
     }
     if (_enrollResubmitId) payload.enrollmentId = _enrollResubmitId;
+    if (_enrollTestMode || (_enrollResubmitId && _enrollResubmitIsTest)) payload._test = true;   // TestMode.gs
 
     FormHelper.setLoading('en-submit-btn', true, _enrollResubmitId ? 'Resubmitting…' : 'Submitting…');
     _busy(_enrollResubmitId ? 'Resubmitting your petition…' : 'Submitting your petition…');
@@ -1654,6 +1790,9 @@ window.ThesisUI = (() => {
     const syl = document.getElementById('en-syllabus'); if (syl) syl.value = '';
     const conf = document.getElementById('en-confirm'); if (conf) conf.checked = false;
     _enrollSyllabus = null; _enrollResubmitId = null;
+    _enrollResubmitIsTest = false; _enrollTestMode = false;
+    const etm = document.getElementById('en-testmode'); if (etm) { etm.checked = false; etm.disabled = false; }
+    _syncEnrollTestUi();
     const banner = document.getElementById('en-resubmit-banner');
     if (banner) banner.style.display = 'none';
     const cancel = document.getElementById('en-cancel-resubmit');
@@ -1670,6 +1809,10 @@ window.ThesisUI = (() => {
 
   function startEnrollResubmit(rec) {
     _enrollResubmitId = rec.enrollmentId;
+    _enrollResubmitIsTest = !!rec.testMode;
+    const etm = document.getElementById('en-testmode');
+    if (etm) { etm.checked = etm.checked || _enrollResubmitIsTest; etm.disabled = _enrollResubmitIsTest; }
+    _syncEnrollTestUi();
     // The Enroll tab is hidden while a petition is in flight; the Revise
     // button is the sanctioned way back in, so reveal it for this pass.
     const btn = document.getElementById('tab-btn-enroll');
@@ -1740,6 +1883,7 @@ window.ThesisUI = (() => {
     const showRemind = context === 'advisor' && _isAdvisorUser;
     const body = rows.map(r => {
       const m = ENROLL_STAGE_META[r.stage] || { cls: 'badge-neutral', label: r.stage };
+      const testBadge = r.testMode ? ' <span class="badge badge-warning" title="Test record — routed to functional accounts">TEST</span>' : '';
       const who = showStudent ? _esc(r.studentName) : _esc(r.sponsorName);
       const whoLabel = showStudent ? 'Student' : 'Sponsor';
       const classCell = r.classNumber
@@ -1758,7 +1902,7 @@ window.ThesisUI = (() => {
         + '<td><span class="text-muted" style="font-size:11px;">' + whoLabel + '</span><br>' + who + '</td>'
         + '<td>' + _esc(r.credits || '') + '</td>'
         + '<td>' + classCell + '</td>'
-        + '<td><span class="badge ' + m.cls + ' th-stage">' + m.label + '</span></td>'
+        + '<td><span class="badge ' + m.cls + ' th-stage">' + m.label + '</span>' + testBadge + '</td>'
         + remindCell
         + '<td onclick="event.stopPropagation();"><button type="button" class="th-open-btn" '
         + 'onclick="ThesisUI.openEnroll(\'' + _esc(r.enrollmentId) + '\',\'' + _esc(r.stage) + '\')" '
@@ -1793,11 +1937,12 @@ window.ThesisUI = (() => {
   // ── Detail modal ──
   function _openEnrollDetail(rec) {
     const m = ENROLL_STAGE_META[rec.stage] || { cls: 'badge-neutral', label: rec.stage };
+    const testBadge = rec.testMode ? ' <span class="badge badge-warning" title="Test record — routed to functional accounts">TEST</span>' : '';
     document.getElementById('th-modal-title').textContent =
       'ANTH 195S enrollment — ' + (rec.term || '');
 
     let html = '<dl class="th-detail-grid">'
-      + _row('Stage', '<span class="badge ' + m.cls + '">' + m.label + '</span>')
+      + _row('Stage', '<span class="badge ' + m.cls + '">' + m.label + '</span>' + testBadge)
       + _row('Student', _esc(rec.studentName))
       + _row('Term', _esc(rec.term))
       + _row('Course', _esc(rec.course) + (rec.credits ? ' · ' + _esc(rec.credits) + ' credits' : ''))
@@ -1829,6 +1974,7 @@ window.ThesisUI = (() => {
       + '</dl>';
 
     html += _enrollActionsFor(rec);
+    html += _timelineHtml(rec, ENROLL_STAGE_META);
     document.getElementById('th-modal-body').innerHTML = html;
     document.getElementById('th-modal').style.display = 'flex';
     A11y.trap(document.getElementById('th-modal'), {
@@ -2299,6 +2445,7 @@ window.ThesisUI = (() => {
 
   return {
     init, switchTab, tabKey, submit, cancelResubmit, startResubmit,
+    onTestModeToggle, onEnrollTestModeToggle,
     addRegion, removeRegion,
     loadMine, loadQueue, loadSponsored, loadGradQueue, markDocViewed, remind, rowKey, deleteThesis, open, closeModal,
     submitSponsor, submitReader, advisorComplete, returnThesis, returnToSponsor,

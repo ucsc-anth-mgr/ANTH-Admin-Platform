@@ -565,6 +565,7 @@ const IndividualStudiesModule = (() => {
       }));
 
       _assertTestStamp(TAB(), existingId, /*freshInsert*/ false);
+      _logStage(TAB(), existingId, STAGE.RETURNED, STAGE.SUBMITTED, user, 'Resubmitted', '');
 
       // Optional syllabus (replace-in-place keeps the same Drive file id).
       _maybeSaveSyllabus(existingId, payload, user);
@@ -599,6 +600,7 @@ const IndividualStudiesModule = (() => {
     }, fields));
 
     _assertTestStamp(TAB(), petitionId, /*freshInsert*/ true);
+    _logStage(TAB(), petitionId, '', STAGE.SUBMITTED, user, 'Submitted', '');
 
     // Optional syllabus upload.
     _maybeSaveSyllabus(petitionId, payload, user);
@@ -755,6 +757,8 @@ const IndividualStudiesModule = (() => {
 
     Tasks.resolveForSource(MODULE, rec.PetitionID, { resolvedBy: user });
     _routeToAdvisor(rec.PetitionID, rec);
+    _logStage(TAB(), rec.PetitionID, STAGE.SUBMITTED, STAGE.PENDING_ADVISOR, user, 'Sponsor approved',
+      String(payload.comments || '').trim());
     EventBus.emit(MODULE + '.sponsor_approved', { recordId: rec.PetitionID }, { user: user });
     return { petitionId: rec.PetitionID, stage: STAGE.PENDING_ADVISOR };
   }
@@ -804,6 +808,8 @@ const IndividualStudiesModule = (() => {
 
     Tasks.resolveForSource(MODULE, rec.PetitionID, { resolvedBy: user });
     _gradRouteToAdvisor(rec.PetitionID, _rowById(GRAD_TAB(), rec.PetitionID));
+    _logStage(GRAD_TAB(), rec.PetitionID, STAGE.SUBMITTED, STAGE.PENDING_ADVISOR, user, 'Sponsor approved',
+      String(payload.comments || '').trim());
     EventBus.emit(MODULE + '.grad_sponsor_approved', { recordId: rec.PetitionID }, { user: user });
     return { petitionId: rec.PetitionID, stage: STAGE.PENDING_ADVISOR };
   }
@@ -829,6 +835,7 @@ const IndividualStudiesModule = (() => {
     });
 
     Tasks.resolveForSource(MODULE, rec.PetitionID, { resolvedBy: user });
+    _logStage(tab, rec.PetitionID, STAGE.SUBMITTED, STAGE.RETURNED, user, 'Returned to student', note);
     if (grad) _gradRouteToStudent(rec.PetitionID, rec, note);
     else _routeToStudent(rec.PetitionID, rec, note);
     EventBus.emit(MODULE + (grad ? '.grad_returned' : '.returned'), { recordId: rec.PetitionID }, { user: user });
@@ -920,6 +927,8 @@ const IndividualStudiesModule = (() => {
       replyTo: Settings.replyTo('individual_studies', grad ? 'grad' : ''),
       cc: Settings.cc('individual_studies', grad ? 'grad' : ''),
     });
+    _logStage(grad ? GRAD_TAB() : TAB(), rec.PetitionID, rec.Stage, rec.Stage, user, 'Reminder sent',
+      'to ' + to.map(e => _facultyLabel(e) || e).join(', '));
     EventBus.emit(MODULE + '.reminded', { recordId: rec.PetitionID, remindedTo: to }, { user: user });
     return { petitionId: rec.PetitionID, remindedTo: to };
   }
@@ -1053,6 +1062,8 @@ const IndividualStudiesModule = (() => {
     Tasks.resolveForSource(MODULE, rec.PetitionID, { resolvedBy: user });
     _notifyComplete(finalRec, pdf);
     if (courseChanged) _notifySponsorCourseChanged(finalRec, originalCourse, user);
+    _logStage(TAB(), rec.PetitionID, STAGE.PENDING_ADVISOR, STAGE.COMPLETE, user, 'Completed',
+      'Class ' + classNumber + (courseChanged ? ' · course corrected from ' + originalCourse + ' to ' + course : ''));
     EventBus.emit(MODULE + '.completed',
       { recordId: rec.PetitionID, courseChangedFrom: courseChanged ? originalCourse : '' }, { user: user });
     return { petitionId: rec.PetitionID, stage: STAGE.COMPLETE, documentLink: pdf ? pdf.url : '',
@@ -1105,6 +1116,7 @@ const IndividualStudiesModule = (() => {
     const fresh = _rowById(tab, id);
     if (grad) _gradNotifyComplete(fresh, pdf); else _notifyComplete(fresh, pdf);
 
+    _logStage(tab, rec.PetitionID, STAGE.COMPLETE, STAGE.COMPLETE, user, 'PDF generated', '');
     EventBus.emit(MODULE + '.pdf_regenerated', { recordId: rec.PetitionID }, { user: user });
     return { petitionId: rec.PetitionID, documentLink: pdf.url || '' };
   }
@@ -1138,6 +1150,7 @@ const IndividualStudiesModule = (() => {
     } else {
       _routeToSponsor(rec.PetitionID, rec.SponsorEmail, Auth.getProfile(rec.StudentEmail) || {}, rec.Course, /*resubmitted*/ false, note);
     }
+    _logStage(tab, rec.PetitionID, STAGE.PENDING_ADVISOR, STAGE.SUBMITTED, user, 'Returned to sponsor', note);
     EventBus.emit(MODULE + (grad ? '.grad_advisor_returned' : '.advisor_returned'), { recordId: rec.PetitionID }, { user: user });
     return { petitionId: rec.PetitionID, stage: STAGE.SUBMITTED };
   }
@@ -1345,6 +1358,7 @@ const IndividualStudiesModule = (() => {
         ReturnNote: '',
       }));
       _assertTestStamp(GRAD_TAB(), existingId, /*freshInsert*/ false);
+      _logStage(GRAD_TAB(), existingId, STAGE.RETURNED, STAGE.SUBMITTED, user, 'Resubmitted', '');
       _maybeSaveOutline(existingId, payload, user);
       Tasks.resolveForSource(MODULE, existingId, { resolvedBy: user });
       _gradRouteToSponsor(existingId, finalSponsorEmail, profile, pair.course, /*resubmitted*/ true, '', late, dl);
@@ -1377,6 +1391,7 @@ const IndividualStudiesModule = (() => {
     }, fields));
 
     _assertTestStamp(GRAD_TAB(), petitionId, /*freshInsert*/ true);
+    _logStage(GRAD_TAB(), petitionId, '', STAGE.SUBMITTED, user, 'Submitted', '');
 
     _maybeSaveOutline(petitionId, payload, user);
     _gradRouteToSponsor(petitionId, finalSponsorEmail, profile, pair.course, /*resubmitted*/ false, '', late, dl);
@@ -1518,6 +1533,7 @@ const IndividualStudiesModule = (() => {
 
     Tasks.resolveForSource(MODULE, rec.PetitionID, { resolvedBy: user });
     _gradNotifyComplete(finalRec, pdf);
+    _logStage(GRAD_TAB(), rec.PetitionID, STAGE.PENDING_ADVISOR, STAGE.COMPLETE, user, 'Completed', 'Class ' + classNumber);
     EventBus.emit(MODULE + '.grad_completed', { recordId: rec.PetitionID }, { user: user });
     return { petitionId: rec.PetitionID, stage: STAGE.COMPLETE, documentLink: pdf ? pdf.url : '' };
   }
@@ -1637,6 +1653,7 @@ const IndividualStudiesModule = (() => {
       roomAccessNote: r.RoomAccessNote || '',
       returnNote: r.ReturnNote || '',
       testMode: _isTrueStr(r.TestMode),
+      stageHistory: _stageHistory(r),
       createdAt: r.CreatedAt ? _fmtDate(r.CreatedAt) : '',
       _created: r.CreatedAt ? new Date(r.CreatedAt).getTime() : 0,
     };
@@ -2124,6 +2141,8 @@ const IndividualStudiesModule = (() => {
         RoomAccessRequestedBy: user,
         RoomAccessRequestedAt: new Date().toISOString(),
       });
+      _logStage(_isGradId(rec.PetitionID) ? GRAD_TAB() : TAB(), rec.PetitionID, rec.Stage, rec.Stage, user,
+        'Room access requested', room + (note ? ' — ' + note : ''));
 
       const sourceId = _roomAccessSourceId(rec.PetitionID);
       // Replace any prior request task so a re-request doesn't stack.
@@ -2604,6 +2623,7 @@ const IndividualStudiesModule = (() => {
       roomAccessNote: r.RoomAccessNote || '',
       returnNote: r.ReturnNote || '',
       testMode: _isTrueStr(r.TestMode),
+      stageHistory: _stageHistory(r),
       createdAt: r.CreatedAt ? _fmtDate(r.CreatedAt) : '',
       _created: r.CreatedAt ? new Date(r.CreatedAt).getTime() : 0,
     };
@@ -2784,6 +2804,92 @@ const IndividualStudiesModule = (() => {
   function _boolStr(v) { return (v === true || v === 'true' || v === 'TRUE') ? 'TRUE' : 'FALSE'; }
   function _isTrueStr(v) { return String(v).toUpperCase() === 'TRUE'; }
   function _norm(s) { return String(s == null ? '' : s).trim().toLowerCase(); }
+
+  // ── Stage history (the detail-modal timeline) ─────────────
+  // StageHistory is an APPEND-ONLY log on the record: one line per stage
+  // transition and per notable event (room-access request, reminder, PDF
+  // generation). Line shape, joined by ' | ':
+  //   ISO time | FROM → TO | actor email | label | note
+  // Events that don't change stage repeat the stage on both sides of the
+  // arrow. Emails only — names resolve from Auth at render time, like
+  // every other identity field. Same in test mode and real use: the log
+  // records whoever really acted (functional accounts included).
+  const STAGE_SEP = ' | ';
+
+  function _stageLine(from, to, user, label, note) {
+    const clean = s => String(s == null ? '' : s).replace(/[\r\n|]+/g, ' ').trim();
+    return [new Date().toISOString(), clean(from) + ' → ' + clean(to),
+            clean(user), clean(label), clean(note)].join(STAGE_SEP);
+  }
+
+  /**
+   * Appends one line to a record's StageHistory. Re-reads the row so two
+   * writes in one action (e.g. approve + room access) stack rather than
+   * clobber. Best-effort: a history failure must never break the
+   * transition it describes.
+   */
+  function _logStage(tab, petitionId, from, to, user, label, note) {
+    try {
+      const rec = _rowById(tab, petitionId);
+      if (!rec) return;
+      const prior = String(rec.StageHistory || '').trim();
+      const line = _stageLine(from, to, user, label, note);
+      DataService.update(SHEET(), tab, 'PetitionID', petitionId, {
+        StageHistory: prior ? (prior + '\n' + line) : line,
+      });
+    } catch (e) {
+      Logger.log('IndividualStudiesModule._logStage failed for ' + petitionId + ': ' + e);
+    }
+  }
+
+  /**
+   * StageHistory → timeline entries for the client (plain strings only —
+   * see the SERIALIZATION RULE). Records that predate the column fall
+   * back to the milestone columns (CreatedAt / SponsorDecidedAt /
+   * AdvisorProcessedAt), so an old petition still shows a timeline.
+   */
+  function _stageHistory(r) {
+    const out = [];
+    const raw = String(r.StageHistory || '').trim();
+    if (raw) {
+      raw.split('\n').forEach(line => {
+        const p = line.split(STAGE_SEP);
+        if (p.length < 4) return;
+        const arrow = String(p[1] || '').split('→');
+        const who = String(p[2] || '').trim();
+        out.push({
+          at: String(p[0] || '').trim(),
+          atLabel: _fmtDateTime(String(p[0] || '').trim()),
+          from: String(arrow[0] || '').trim(),
+          to: String(arrow[1] || '').trim(),
+          user: who,
+          actor: who ? (_facultyLabel(who) || who) : '',
+          label: String(p[3] || '').trim(),
+          note: String(p[4] || '').trim(),
+        });
+      });
+      return out;
+    }
+    const push = (v, to, who, label) => {
+      if (!v) return;
+      const d = (v instanceof Date) ? v : new Date(v);
+      if (isNaN(d.getTime())) return;
+      out.push({ at: d.toISOString(), atLabel: _fmtDateTime(d), from: '', to: to,
+                 user: who || '', actor: who ? (_facultyLabel(who) || who) : '',
+                 label: label, note: '', legacy: true });
+    };
+    push(r.CreatedAt, STAGE.SUBMITTED, r.StudentEmail, 'Submitted');
+    push(r.SponsorDecidedAt, STAGE.PENDING_ADVISOR, r.SponsorDecidedBy, 'Sponsor approved');
+    push(r.AdvisorProcessedAt, STAGE.COMPLETE, r.AdvisorProcessedBy, 'Completed');
+    return out;
+  }
+
+  function _fmtDateTime(v) {
+    if (!v) return '';
+    const d = (v instanceof Date) ? v : new Date(v);
+    if (isNaN(d.getTime())) return String(v);
+    return Utilities.formatDate(d, Session.getScriptTimeZone(), 'MMM d, yyyy h:mm a');
+  }
 
   function _fmtDate(v) {
     if (!v) return '';
