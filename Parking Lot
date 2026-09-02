@@ -1,0 +1,93 @@
+# Parking Lot — ANTH Admin Platform
+
+Aspirational and deferred ideas, captured with enough design context to pick
+them up cold. Not commitments, not open threads (those live in the project
+instructions) — this is the "someday, deliberately" list. When an item ships,
+delete it here and let the repo history remember.
+
+---
+
+## 1. Full portal impersonation ("View as", read-only)
+
+**What:** A super_admin opens any user's portal exactly as that user sees it —
+nav, modules, data — with all mutation blocked.
+
+**Why parked:** Platform project touching every module; the task-queue viewer
+and workload card cover the near-term need.
+
+**Design decisions already made (2026-09-02):**
+- **Read-only is the law, enforced at `dispatch`** — the single gateway is the
+  chokepoint. UI hiding (the `_canEdit` pattern, generalized as an
+  `App.isViewingAs` flag) is courtesy; the server refusal is the lock.
+- **Per-module read allowlists, opt-in rollout.** Each handler declares
+  `readOnlyActions`; while impersonating, only declared modules appear in the
+  nav. No naming-convention shortcuts — some "reads" secretly write (e.g. the
+  cycle auto-match persists what it finds), so every module needs a
+  sneaky-write review before it's annotated.
+- **Stateless:** the view-as target rides on each dispatch call; the server
+  re-verifies the REAL caller is super_admin on every call (never trust the
+  parameter). Page refresh exits impersonation — by design.
+- **Dual-identity audit:** every logged action records both ("fred, viewing as
+  jdoe"), or the audit log lies.
+- **Known fidelity limit:** Google-layer identity can't be impersonated
+  (`Session`, Gmail, Drive sharing views stay the real login). Mostly moot for
+  this sheet-backed platform, but say so in the banner docs.
+- **Entry/exit:** "View portal as" button per user in Admin → Users; unmissable
+  banner with Exit while active.
+- **Phase 1 pilot:** platform plumbing (Code.gs, Index.html/_Scripts.html,
+  AdminModule) + personnel module annotated first; other modules annotated in a
+  follow-up pass after review.
+
+## 2. Super_admin task-queue viewer ("what's on their dashboard")
+
+**What:** A per-user "open their task queue" affordance in Admin → Users,
+built on the same `Tasks.forUser(email, roles)` call the dashboard runs — so
+it matches what the person sees by construction (including role-pool tasks).
+
+**Why parked:** Superseded in ambition by impersonation (#1); the personnel
+workload card answers the module-specific version today. Worth building as a
+cheap standalone if #1 stays parked long — it's one gated server action and
+one panel.
+
+## 3. Cross-module "all open tasks" admin view
+
+**What:** One super_admin card (Admin module) listing every open task
+platform-wide, across modules. Needs a public `Tasks.allOpen()`-style read
+(the private `_allOpen` already exists, just unexported).
+
+**Why parked:** No demonstrated need yet; per-user views (#1/#2) were the real
+question when this came up.
+
+## 4. Personnel module Settings tab
+
+**What:** A `settings`-keyed tab for module configuration. The key is free —
+the old settings-keyed tab was renamed to `calendar` (deployed 2026-09-02).
+
+**Why parked:** Nothing to configure there yet; the assignment-history card
+found a better home on the Cases tab. Revisit when 2–3 genuine settings
+accumulate (letters-due default, history retention, etc.). NOTE: before
+reusing the `settings` key, clear any orphaned ModuleTabs visibility rows from
+the pre-rename era, or they'll silently apply to the new tab.
+
+## 5. Deadline moves in the assignment-history trail
+
+**What:** A third `Kind: 'deadline'` in the AssignmentHistory tab, written by
+the task-deadline reconcile, so schedule-driven due-date changes appear in the
+history panel alongside assignment and status moves.
+
+**Why parked:** Kept scope tight when building the reconcile (2026-09-02);
+deadline moves remain visible via the reconcile toast and the audit log's
+proposeDate/setCycleAnchors entries. Easy add: one insert in
+`_reconcileDraftTaskDueDates`, one render branch in the history panel.
+
+## 6. Instant reconcile for upstream calendar moves
+
+**What:** Today, a deadline moving IN THE DEPARTMENT CALENDAR shifts computed
+schedules immediately but re-dates dashboard tasks only at the next
+schedule-touching save in the personnel module (documented limit in
+`_reconcileDraftTaskDueDates`). Closing the gap means either a time-driven
+trigger running the reconcile nightly, or reconcile-on-read (rejected —
+side effects in read paths are against platform patterns).
+
+**Why parked:** The lag is acceptable for a test deployment; a nightly trigger
+is the likely shape if it ever isn't.
