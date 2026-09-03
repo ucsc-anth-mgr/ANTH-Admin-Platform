@@ -836,8 +836,20 @@ window.AdminUI = (() => {
         <td>${roleBadges}</td>
         <td>${idText}</td>
         <td><span class="badge ${u.active?'badge-success':'badge-neutral'}">${u.active?'Active':'Inactive'}</span></td>
-        <td><a class="edit-link" onclick='AdminUI.editUser(${JSON.stringify(u).replace(/'/g,"&#39;")})'><i class="ti ti-pencil"></i> Edit</a></td>
+        <td style="white-space:nowrap;">
+          <a class="edit-link" onclick='AdminUI.editUser(${JSON.stringify(u).replace(/'/g,"&#39;")})'><i class="ti ti-pencil"></i> Edit</a>
+          <a class="edit-link" onclick="AdminUI.viewTasks('${u.email}')" title="View this user's open task queue in the Task Manager"><i class="ti ti-checklist"></i> Tasks</a>
+        </td>
       </tr>`;
+  }
+
+  // Jump to the Task Manager focused on this user. The focus object is
+  // published as window.__focus by the shell BEFORE task_manager.html's
+  // scripts run — its init() consumes it and loads the queue. If the
+  // task_manager module isn't registered/enabled yet, the server-side
+  // registry check in getModuleHTML rejects the load harmlessly.
+  function viewTasks(email) {
+    App.loadModule('task_manager', { sourceType: 'user', sourceId: email });
   }
 
   function _updateUserCount(shown, total) {
@@ -1493,7 +1505,7 @@ window.AdminUI = (() => {
     });
   }
 
-  return { init, switchTab, loadModules, toggleModule, deleteModule, openModuleForm, editModule, closeModuleForm, checkHandler, pickIcon, onModuleChip, saveModule, toggleTabsRow, onTabChip, saveModuleTabs, loadUsers, onUserFilterChange, clearUserFilters, sortUsersBy, onChip, editUser, saveUser, clearUserForm, loadAudit, loadRoles, editRole, saveRole, clearRoleForm, deleteRole, explainBlocked, loadRequests, approveRequest, rejectRequest, loadImportPolicy, editPolicy, savePolicy, deletePolicy, loadNotifyRules, editNotifyRule, saveNotifyRule, deleteNotifyRule, loadModuleReplyTos, saveModuleAddresses, loadTesting, addTestAccount, toggleTestAccount, deleteTestAccount, saveTmGlobal, saveTmSlot, clearTmAssignment };
+  return { init, switchTab, loadModules, toggleModule, deleteModule, openModuleForm, editModule, closeModuleForm, checkHandler, pickIcon, onModuleChip, saveModule, toggleTabsRow, onTabChip, saveModuleTabs, loadUsers, onUserFilterChange, clearUserFilters, sortUsersBy, onChip, editUser, viewTasks, saveUser, clearUserForm, loadAudit, loadRoles, editRole, saveRole, clearRoleForm, deleteRole, explainBlocked, loadRequests, approveRequest, rejectRequest, loadImportPolicy, editPolicy, savePolicy, deletePolicy, loadNotifyRules, editNotifyRule, saveNotifyRule, deleteNotifyRule, loadModuleReplyTos, saveModuleAddresses, loadTesting, addTestAccount, toggleTestAccount, deleteTestAccount, saveTmGlobal, saveTmSlot, clearTmAssignment };
 
 })();
 

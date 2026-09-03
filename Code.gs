@@ -341,6 +341,10 @@ function getModuleHTML(moduleKey) {
  * GradStatusModule.gs (and grad_status.html) BEFORE saving this
  * Code.gs, or the app fails with "GradStatusModule is not defined".
  *
+ * NOTE: TaskManagerModule is likewise ACTIVE — save Taskmanagermodule.gs
+ * (and task_manager.html) BEFORE saving this Code.gs, or the app fails
+ * with "TaskManagerModule is not defined".
+ *
  * NOTE: TestMode.gs is a platform SERVICE, not a module handler — it is
  * referenced by dispatch() above, so save TestMode.gs BEFORE this
  * Code.gs, or the app fails with "TestMode is not defined".
@@ -358,6 +362,7 @@ function getModuleHandler(name) {
     CalendarModule:    CalendarModule,
     CourseworkPetitionModule: CourseworkPetitionModule,
     GradStatusModule:  GradStatusModule,
+    TaskManagerModule: TaskManagerModule,
     // HRModule:       HRModule,
   };
   if (!handlers[name]) throw new Error('Handler not found: ' + name);
@@ -370,7 +375,7 @@ function getModuleHandler(name) {
  * Used by the Module Manager to validate sheet entries.
  */
 function getRegisteredHandlers() {
-  return ['AdminModule', 'SubmissionsModule', 'UserManagerModule', 'ThesisModule', 'TranscriptModule', 'IndividualStudiesModule', 'PersonnelModule', 'ServiceModule', 'CalendarModule', 'CourseworkPetitionModule', 'GradStatusModule'];
+  return ['AdminModule', 'SubmissionsModule', 'UserManagerModule', 'ThesisModule', 'TranscriptModule', 'IndividualStudiesModule', 'PersonnelModule', 'ServiceModule', 'CalendarModule', 'CourseworkPetitionModule', 'GradStatusModule', 'TaskManagerModule'];
 }
 
 

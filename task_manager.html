@@ -1,0 +1,237 @@
+<!-- task_manager.html — Task Manager module UI (super_admin queue viewer) -->
+<!-- Read-only: shows any user's open task queue exactly as their dashboard  -->
+<!-- shows it (same Tasks.forUser call, same urgency ordering). Deep-link    -->
+<!-- aware: init() consumes window.__focus — a sourceId holding an email     -->
+<!-- pre-selects that person and loads immediately. Both the Admin roster's  -->
+<!-- "Tasks" link and ?page=task_manager&focus=<email> URLs arrive that way. -->
+
+<div id="taskmanager-module">
+
+  <div class="card" style="margin-top:20px;">
+    <div class="card-title between"><span><i class="ti ti-checklist"></i> Task queue viewer</span>
+      <button class="btn btn-secondary btn-sm" onclick="TaskManagerUI.refresh()"><i class="ti ti-refresh"></i> Refresh</button>
+    </div>
+    <p class="text-muted text-sm" style="margin:-8px 0 16px;">
+      A read-only view of any user's <strong>open</strong> task queue, exactly as their dashboard
+      shows it — including shared-pool tasks they receive through their roles, in the same urgency
+      order (overdue → due soon → stale → normal). Nothing here changes a task or touches the user;
+      every view is recorded in the audit log.
+    </p>
+
+    <!-- picker: search narrows the dropdown; choosing loads the queue -->
+    <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:14px;">
+      <div class="form-group" style="flex:1 1 240px;margin:0;">
+        <label class="form-label" for="tmv-search">Search</label>
+        <input class="form-input" type="text" id="tmv-search" placeholder="Name, email, ID, or role"
+               oninput="TaskManagerUI.onSearch()">
+      </div>
+      <div class="form-group" style="flex:1 1 280px;margin:0;">
+        <label class="form-label" for="tmv-select">User</label>
+        <select class="form-select" id="tmv-select" onchange="TaskManagerUI.onPick()">
+          <option value="">— Select a user —</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- who's loaded + the summary counts -->
+    <div id="tmv-target" style="display:none;margin-bottom:10px;"></div>
+
+    <!-- the queue itself -->
+    <div id="tmv-queue"><div class="empty-state text-sm">Pick a user to view their queue.</div></div>
+  </div>
+
+</div>
+
+<script>
+window.TaskManagerUI = (() => {
+
+  let _targets = [];        // full listTargets result (cache)
+  let _current = null;      // last viewUserTasks result, or null
+
+  function init() {
+    App.call('task_manager', 'listTargets', {}, function (list) {
+      _targets = list || [];
+      _renderOptions('');
+
+      // One-shot deep-link focus: { sourceType:'user', sourceId:<email> }
+      // from the Admin roster's "Tasks" link or a ?page=&focus= URL.
+      const f = window.__focus;
+      if (f && f.sourceId) {
+        window.__focus = null;            // consume — never replay
+        const email = String(f.sourceId).trim();
+        if (email) {
+          _setSelect(email);
+          load(email);
+        }
+      }
+    });
+  }
+
+  // ── Picker ─────────────────────────────────────────────────
+
+  function onSearch() {
+    const q = (document.getElementById('tmv-search') || {}).value || '';
+    _renderOptions(q);
+  }
+
+  function onPick() {
+    const sel = document.getElementById('tmv-select');
+    if (sel && sel.value) load(sel.value);
+  }
+
+  // Search haystack mirrors the Admin roster's (name, email, IDs) plus
+  // roles, so "staff_grad" surfaces everyone holding that role.
+  function _matches(u, needle) {
+    if (!needle) return true;
+    const hay = [u.name, u.email, u.studentId, u.employeeId]
+      .concat(u.roles || [])
+      .filter(Boolean).join(' ').toLowerCase();
+    return hay.indexOf(needle) !== -1;
+  }
+
+  function _renderOptions(q) {
+    const sel = document.getElementById('tmv-select');
+    if (!sel) return;
+    const prev = sel.value;
+    const needle = String(q || '').trim().toLowerCase();
+    const shown = _targets.filter(function (u) { return _matches(u, needle); });
+    sel.innerHTML = '<option value="">— Select a user' +
+      (needle ? ' (' + shown.length + ' match' + (shown.length === 1 ? '' : 'es') + ')' : '') +
+      ' —</option>'
+      + shown.map(function (u) {
+          return '<option value="' + _esc(u.email) + '">'
+            + _esc(u.name) + ' — ' + _esc(u.email) + '</option>';
+        }).join('');
+    // keep the loaded user selected if they survived the filter
+    if (prev && shown.some(function (u) { return u.email === prev; })) sel.value = prev;
+  }
+
+  // Select an email in the dropdown, adding the option if the current
+  // filter (or the active-only roster) doesn't include it — a deep link
+  // may name someone the picker can't otherwise reach.
+  function _setSelect(email) {
+    const sel = document.getElementById('tmv-select');
+    if (!sel) return;
+    if (!Array.prototype.some.call(sel.options, function (o) { return o.value === email; })) {
+      const opt = document.createElement('option');
+      opt.value = email;
+      opt.textContent = email;
+      sel.appendChild(opt);
+    }
+    sel.value = email;
+  }
+
+  // ── Load + render ──────────────────────────────────────────
+
+  function load(email) {
+    const box = document.getElementById('tmv-queue');
+    if (box) box.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading queue…</span></div>';
+    App.call('task_manager', 'viewUserTasks', { email: email }, function (res) {
+      // Bail if the admin navigated away while the call was in flight.
+      if (!document.getElementById('tmv-queue')) return;
+      _current = res || null;
+      _renderTarget();
+      _renderQueue();
+    }, function () {
+      const b = document.getElementById('tmv-queue');
+      if (b) b.innerHTML = '<div class="empty-state text-sm">Could not load this user\'s queue.</div>';
+    });
+  }
+
+  function refresh() {
+    // Re-pull the roster (people come and go) and the loaded queue.
+    App.call('task_manager', 'listTargets', {}, function (list) {
+      _targets = list || [];
+      onSearch();   // re-render options through the current filter
+    });
+    if (_current && _current.target) load(_current.target.email);
+  }
+
+  function _renderTarget() {
+    const el = document.getElementById('tmv-target');
+    if (!el) return;
+    if (!_current || !_current.target) { el.style.display = 'none'; return; }
+    const t = _current.target;
+    const tasks = _current.tasks || [];
+
+    const counts = { overdue: 0, due_soon: 0, stale: 0, normal: 0 };
+    tasks.forEach(function (x) {
+      if (counts[x.urgency] != null) counts[x.urgency]++;
+    });
+    const bits = [tasks.length + ' open'];
+    if (counts.overdue)  bits.push(counts.overdue  + ' overdue');
+    if (counts.due_soon) bits.push(counts.due_soon + ' due soon');
+    if (counts.stale)    bits.push(counts.stale    + ' stale');
+
+    const roleBadges = (t.roles || []).map(function (r) {
+      return '<span class="badge badge-navy" style="margin:1px;">' + _esc(r) + '</span>';
+    }).join(' ');
+    const unknownNote = t.known ? ''
+      : ' <span class="badge badge-warning">no profile</span>';
+    const inactiveNote = (t.known && !t.active)
+      ? ' <span class="badge badge-neutral">inactive</span>' : '';
+
+    el.innerHTML =
+      '<div><strong>' + _esc(t.name) + '</strong> '
+      + '<span class="text-muted text-sm">' + _esc(t.email) + '</span>'
+      + unknownNote + inactiveNote + '</div>'
+      + '<div style="margin:4px 0 2px;">' + roleBadges + '</div>'
+      + '<div class="text-sm text-muted">' + bits.join(' · ') + '</div>';
+    el.style.display = 'block';
+  }
+
+  function _renderQueue() {
+    const el = document.getElementById('tmv-queue');
+    if (!el) return;
+    const tasks = (_current && _current.tasks) || [];
+    if (!tasks.length) {
+      el.innerHTML = '<div class="empty-state"><i class="ti ti-checkbox" style="font-size:28px;display:block;margin-bottom:8px;"></i>'
+        + 'No open tasks — their dashboard shows all caught up.</div>';
+      return;
+    }
+    // Server order IS the dashboard order — render as received.
+    const rows = tasks.map(_taskRowHtml).join('');
+    el.innerHTML = '<div class="table-wrap"><table class="data-table">'
+      + '<thead><tr><th>Task</th><th>Module</th><th>Due</th><th>Urgency</th><th>Assigned via</th></tr></thead>'
+      + '<tbody>' + rows + '</tbody></table></div>';
+  }
+
+  function _taskRowHtml(t) {
+    const src = [t.sourceType, t.sourceId].filter(Boolean).join(' · ');
+    const via = t.assignedTo
+      ? '<span class="text-sm">' + _esc(t.assignedTo) + '</span><div class="text-sm text-muted">direct</div>'
+      : (t.assignedRole
+          ? '<span class="badge badge-navy">' + _esc(t.assignedRole) + '</span><div class="text-sm text-muted">role pool</div>'
+          : '<span class="text-muted">—</span>');
+    return '<tr>'
+      + '<td><strong>' + _esc(t.label || '(no label)') + '</strong>'
+      +   (t.note ? '<div class="text-sm text-muted">' + _esc(t.note) + '</div>' : '') + '</td>'
+      + '<td>' + _esc(t.module || '')
+      +   (src ? '<div class="text-sm text-muted">' + _esc(src) + '</div>' : '') + '</td>'
+      + '<td style="white-space:nowrap;">' + (t.dueAt ? _esc(t.dueAt) : '<span class="text-muted">—</span>') + '</td>'
+      + '<td>' + _urgencyBadge(t.urgency) + '</td>'
+      + '<td>' + via + '</td>'
+      + '</tr>';
+  }
+
+  function _urgencyBadge(u) {
+    switch (u) {
+      case 'overdue':  return '<span class="badge badge-danger">overdue</span>';
+      case 'due_soon': return '<span class="badge badge-warning">due soon</span>';
+      case 'stale':    return '<span class="badge badge-gold">stale</span>';
+      default:         return '<span class="badge badge-neutral">normal</span>';
+    }
+  }
+
+  function _esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  return { init: init, onSearch: onSearch, onPick: onPick, refresh: refresh };
+
+})();
+
+TaskManagerUI.init();
+</script>

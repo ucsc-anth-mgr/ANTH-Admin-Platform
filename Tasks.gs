@@ -136,6 +136,47 @@ const Tasks = (() => {
 
 
   /**
+   * Corrects an OPEN task's due date in place — the task keeps its
+   * identity, creation time, and last-activity clock, so staleness and
+   * urgency stay honest (unlike resolve-and-recreate, which resets them
+   * and litters the queue with churn). Called by the OWNING MODULE when
+   * the domain deadline behind a task moves (e.g. a review cycle's
+   * schedule is re-planned). DELIBERATELY NARROW: due date only, open
+   * tasks only — this is a correction valve, not a general editor.
+   * Same no-throw posture as resolve: missing or already-resolved tasks
+   * report what happened rather than breaking the caller's flow.
+   *
+   * @param {string} taskId
+   * @param {Date|string} dueAt - the new deadline ('' clears it)
+   * @returns {{ status: 'updated' | 'unchanged' | 'not_open' | 'not_found' }}
+   */
+  function updateDueDate(taskId, dueAt) {
+    const id = String(taskId || '').trim();
+    if (!id) return { status: 'not_found' };
+
+    const existing = _byId(id);
+    if (!existing) return { status: 'not_found' };
+    if (String(existing.Status).trim().toLowerCase() !== STATUS.OPEN) {
+      return { status: 'not_open' };
+    }
+
+    const next = _toDateOrBlank(dueAt);
+    const cur  = _toDateOrBlank(existing.DueAt);
+    const asKey = v => (v instanceof Date)
+      ? Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd') : '';
+    if (asKey(next) === asKey(cur)) return { status: 'unchanged' };
+
+    DataService.update(CONFIG.SHEETS.PLATFORM, CONFIG.TABS.TASKS, 'TaskID', id, {
+      DueAt: next,
+      // Deliberately NOT touching LastActivityAt: a schedule correction is
+      // not activity on the underlying work — bumping it would hide real
+      // neglect from the staleness check.
+    });
+    return { status: 'updated' };
+  }
+
+
+  /**
    * Resolves the OPEN task(s) tied to a specific source record, without
    * the caller needing to have stored the TaskID. Lets a module say
    * "this record is done — clear whatever task points at it."
@@ -203,6 +244,25 @@ const Tasks = (() => {
     if (!m || !sid) return [];
     return _allOpen()
       .filter(t => String(t.module) === m && String(t.sourceId) === sid)
+      .map(_publicShape);
+  }
+
+
+  /**
+   * All OPEN tasks owned by one module, in public shape. Lets the owning
+   * module audit its own queue footprint (e.g. sweep for orphaned tasks
+   * whose backing records changed) without reaching into the platform
+   * sheet. One read for the whole set — callers map by sourceId rather
+   * than calling openForSource per record.
+   *
+   * @param {string} module
+   * @returns {Array<Object>}
+   */
+  function openForModule(module) {
+    const m = String(module || '').trim();
+    if (!m) return [];
+    return _allOpen()
+      .filter(t => String(t.module) === m)
       .map(_publicShape);
   }
 
@@ -323,9 +383,22 @@ const Tasks = (() => {
   // ── Time-field coercion helpers ──────────────────────────────
 
   /** Returns a Date for valid date input, or '' (blank cell) otherwise. */
+  /** Returns a Date, or '' for blank/invalid.
+   *  A date-only string ('2026-10-19') is a DEADLINE DAY, not an instant:
+   *  JavaScript would parse it as UTC MIDNIGHT — which in this timezone is
+   *  5pm the PREVIOUS day, so every dashboard due date displayed one day
+   *  early. Date-only strings are therefore built as LOCAL dates, anchored
+   *  at 8:00 AM (the working convention for when a deadline day begins —
+   *  also kinder than local midnight, which would mark a task overdue one
+   *  minute into its own due day). Date objects and full timestamps pass
+   *  through untouched. */
   function _toDateOrBlank(v) {
     if (!v) return '';
-    const d = (v instanceof Date) ? v : new Date(v);
+    if (v instanceof Date) return isNaN(v.getTime()) ? '' : v;
+    const s = String(v).trim();
+    const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 8, 0, 0);
+    const d = new Date(s);
     return isNaN(d.getTime()) ? '' : d;
   }
 
@@ -337,6 +410,6 @@ const Tasks = (() => {
   }
 
 
-  return { create, resolve, resolveForSource, forUser, countForUser, openForSource };
+  return { create, resolve, resolveForSource, updateDueDate, forUser, countForUser, openForSource, openForModule };
 
 })();

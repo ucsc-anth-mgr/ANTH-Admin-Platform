@@ -148,6 +148,8 @@ const CONFIG = {
     COMPONENTS:        'Components',
     COMMUNICATIONS_LOG:'CommunicationsLog',
     LETTER_WRITERS:    'LetterWriters',
+    // Academic Personnel — drafting-assignment change trail
+    ASSIGNMENT_HISTORY:'AssignmentHistory',
     // Coursework Petition module tabs (live in SHEETS.COURSEWORK)
     COURSEWORK_PETITIONS:    'Petitions',
     COURSEWORK_ITEMS:        'PetitionItems',
@@ -360,6 +362,26 @@ const CONFIG = {
     // treated as a full email and used as-is. One Config edit changes the
     // domain; no code change.
     EMAIL_DOMAIN: 'ucsc.edu',
+
+    // ── Case workflow stages ───────────────────────────────────
+    // Where an OPEN case sits within "in progress" — descriptive stations,
+    // subordinate to the lifecycle Status (open/deferred/closed) which is
+    // what gating logic keys on. Stages gate NOTHING (yet); they exist so
+    // the Cases tab and exports can say where each file is. Ordered as the
+    // typical journey; a case may legitimately skip or revisit stations
+    // (e.g. non-promotion files never wait for letters). Stored by key;
+    // relabel here without touching code.
+    CASE_STAGES: [
+      { key: 'unsubmitted',              label: 'Unsubmitted' },
+      { key: 'presubmission_review',     label: 'Pre-submission Review' },
+      { key: 'returned_to_candidate',    label: 'Returned to Candidate' },
+      { key: 'accepted_by_department',   label: 'Accepted by Department' },
+      { key: 'waiting_external_letters', label: 'Waiting for External Letters' },
+      { key: 'ready_committee_review',   label: 'Ready for Committee Review' },
+      { key: 'draft_letters_submitted',  label: 'Draft Letters Submitted' },
+      { key: 'ready_department_review',  label: 'Ready for Department Review' },
+      { key: 'forwarded_deans_office',   label: "Forwarded to Dean's Office" },
+    ],
 
     // ── Case review types ──────────────────────────────────────
     // The canonical review types a case can carry. The type drives the

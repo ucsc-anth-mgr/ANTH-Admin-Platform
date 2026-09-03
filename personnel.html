@@ -35,7 +35,7 @@
       style="border:none;background:none;padding:8px 14px;border-bottom:2px solid transparent;cursor:pointer;font-weight:600;">
       <i class="ti ti-mail"></i> Communications
     </button>
-    <button class="btn btn-tab" id="tab-settings" onclick="PersonnelUI.showTab('settings')"
+    <button class="btn btn-tab" id="tab-calendar" onclick="PersonnelUI.showTab('calendar')"
       style="border:none;background:none;padding:8px 14px;border-bottom:2px solid transparent;cursor:pointer;font-weight:600;">
       <i class="ti ti-calendar-cog"></i> Calendar
     </button>
@@ -213,6 +213,8 @@
         <div style="display:flex;justify-content:space-between;align-items:center;">
           <div class="card-title" style="margin:0;"><i class="ti ti-clipboard-list"></i> Review cases</div>
           <div style="display:flex;gap:8px;">
+            <button class="btn btn-secondary" id="cases-resync-btn" title="Re-date open drafting tasks to the current schedule and clear stale ones — use after a deadline moves in the department calendar"
+                    onclick="PersonnelUI.resyncTasks()"><i class="ti ti-refresh-dot"></i> Re-sync dashboard tasks</button>
             <button class="btn btn-secondary" id="cases-add-btn" onclick="PersonnelUI.showAddCase()"><i class="ti ti-plus"></i> Add case</button>
             <button class="btn btn-secondary" onclick="PersonnelUI.showCallImport()"><i class="ti ti-file-upload"></i> Import from Call</button>
           </div>
@@ -504,7 +506,7 @@ Assistant Professor	Hernandez Garavito	Carla	5	o	6	2	17	Reappt with salary incre
       <p class="text-muted text-sm" style="margin:-8px 0 12px;">
         The starting text for each message kind. Tokens fill per recipient:
         <code>{Name}</code> <code>{FirstName}</code> <code>{Year}</code>
-        <code>{Assignments}</code> <code>{Schedule}</code> <code>{PolicyDocs}</code> <code>{PortalLink}</code>.
+        <code>{Assignments}</code> <code>{Schedule}</code> <code>{FileStages}</code> <code>{PolicyDocs}</code> <code>{PortalLink}</code>.
       </p>
       <div class="form-row" style="align-items:flex-end;">
         <div class="form-group" style="flex:1;">
@@ -555,8 +557,8 @@ Assistant Professor	Hernandez Garavito	Carla	5	o	6	2	17	Reappt with salary incre
 
   </div>
 
-  <!-- ============================ SETTINGS TAB ============================ -->
-  <div id="view-settings" style="display:none;">
+  <!-- ============================ CALENDAR TAB ============================ -->
+  <div id="view-calendar" style="display:none;">
 
     <!-- Cycle anchors -->
     <div class="card">
@@ -668,7 +670,7 @@ window.PersonnelUI = (() => {
       _visibleTabs = tabs.map(t => t.key);
       _canEdit = res.canEdit !== false;
       const allTabs = { roster: 'tab-roster', mycases: 'tab-mycases', import: 'tab-import', cases: 'tab-cases',
-                        letters: 'tab-letters', anticipated: 'tab-anticipated', comms: 'tab-comms', settings: 'tab-settings' };
+                        letters: 'tab-letters', anticipated: 'tab-anticipated', comms: 'tab-comms', calendar: 'tab-calendar' };
       Object.keys(allTabs).forEach(k => {
         if (_visibleTabs.indexOf(k) === -1) {
           const btn = document.getElementById(allTabs[k]);
@@ -703,9 +705,9 @@ window.PersonnelUI = (() => {
     // must not slip through either.
     if (_visibleTabs === null || _visibleTabs.indexOf(which) === -1) return;
     const views = { roster: 'view-roster', mycases: 'view-mycases', import: 'view-import', cases: 'view-cases', letters: 'view-letters',
-                    anticipated: 'view-anticipated', comms: 'view-comms', settings: 'view-settings' };
+                    anticipated: 'view-anticipated', comms: 'view-comms', calendar: 'view-calendar' };
     const tabs  = { roster: 'tab-roster', mycases: 'tab-mycases', import: 'tab-import', cases: 'tab-cases', letters: 'tab-letters',
-                    anticipated: 'tab-anticipated', comms: 'tab-comms', settings: 'tab-settings' };
+                    anticipated: 'tab-anticipated', comms: 'tab-comms', calendar: 'tab-calendar' };
     const on  = '2px solid var(--ucsc-navy, #003C6C)';
     const off = '2px solid transparent';
     Object.keys(views).forEach(k => {
@@ -717,13 +719,13 @@ window.PersonnelUI = (() => {
     if (which === 'roster') { backToRoster(); loadRoster(); }
     if (which === 'cases') { backToCases(); loadCases(); }
     if (which === 'anticipated') loadAnticipated();
-    if (which === 'settings') loadSettings();
+    if (which === 'calendar') loadSettings();
     if (which === 'comms') loadComms();
     if (which === 'mycases') loadMyAssignments();
     if (which === 'letters') loadLetterCases();
     // View-only roles: mutation entry points are not offered.
     if (!_canEdit) {
-      ['cases-add-btn', 'wl-export-btn', 'cyc-export-btn', 'lw-export-btn'].forEach(id => {
+      ['cases-add-btn', 'cases-resync-btn', 'wl-export-btn', 'cyc-export-btn', 'lw-export-btn'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.style.display = 'none';
       });
@@ -1724,9 +1726,10 @@ window.PersonnelUI = (() => {
       if (el) gaps[k] = el.value;
     });
     FormHelper.setLoading('gap-save-btn', true);
-    App.call('personnel', 'saveSchedulerSettings', { gaps: gaps }, () => {
+    App.call('personnel', 'saveSchedulerSettings', { gaps: gaps }, res => {
       FormHelper.setLoading('gap-save-btn', false);
-      Toast.show('Schedule spacing saved.', 'success');
+      const extra = _taskSyncNote(res);
+      Toast.show('Schedule spacing saved.' + extra, 'success');
       loadGaps();
       loadCycle();   // recompute the preview with the new spacing
     }, () => FormHelper.setLoading('gap-save-btn', false));
@@ -1781,7 +1784,8 @@ window.PersonnelUI = (() => {
     if (!year) return;
     App.call('personnel', 'setCycleAnchors',
       { academicYear: year, lettersDueDate: String(date || '').trim() }, res => {
-        Toast.show(date ? 'Letters-due date set.' : 'Reverted to the November 1 default.', 'success');
+        const extra = _taskSyncNote(res);
+        Toast.show((date ? 'Letters-due date set.' : 'Reverted to the November 1 default.') + extra, 'success');
         _cycle = res;
         _renderLetters(res.lettersDue);
         previewCycleSchedule();
@@ -1882,7 +1886,7 @@ window.PersonnelUI = (() => {
     else                              payload.lettersDueDeadlineId = deadlineId;
 
     App.call('personnel', 'setCycleAnchors', payload, res => {
-      Toast.show('Cycle deadline set.', 'success');
+      Toast.show('Cycle deadline set.' + _taskSyncNote(res), 'success');
       cancelPick();
       _cycle = res;
       _renderAnchor('merit', res.merit, res.meritDeadlineId, res.autoMatched);
@@ -1964,8 +1968,9 @@ window.PersonnelUI = (() => {
     const year = document.getElementById('cyc-year').value.trim();
     if (!year) return;
     App.call('personnel', 'proposeDate',
-      { academicYear: year, timeline: timelineKey, step: step, date: date || '' }, () => {
-        Toast.show(date ? 'Proposed date saved.' : 'Proposal cleared — back to the computed date.', 'success');
+      { academicYear: year, timeline: timelineKey, step: step, date: date || '' }, res => {
+        const extra = _taskSyncNote(res);
+        Toast.show((date ? 'Proposed date saved.' : 'Proposal cleared — back to the computed date.') + extra, 'success');
         previewCycleSchedule();
       });
   }
@@ -2241,7 +2246,30 @@ window.PersonnelUI = (() => {
   let _cases = [];
   let _reviewTypes = [];   // [{key,label,...}]
   let _statuses = [];
+  let _stages = [];        // [{key,label}] — workflow stations within 'open'
   let _callRows = [];      // preview rows from the server (mutable per confirm)
+
+  /** Toast suffix for schedule saves and re-syncs: what the reconcile did. */
+  function _taskSyncNote(res) {
+    const bits = [];
+    if (res.tasksReconciled)    bits.push(res.tasksReconciled + ' task deadline(s) updated');
+    if (res.tasksOrphanResolved) bits.push(res.tasksOrphanResolved + ' stale task(s) cleared');
+    return bits.length ? ' ' + bits.join(', ') + '.' : '';
+  }
+
+  /** Manual lever: re-date open drafting tasks and clear stale ones — for
+   *  upstream calendar moves and orphans the automatic hooks missed. */
+  function resyncTasks() {
+    const yearSel = document.getElementById('cases-year');
+    FormHelper.setLoading('cases-resync-btn', true);
+    App.call('personnel', 'resyncTasks', { academicYear: yearSel ? yearSel.value : '' }, res => {
+      FormHelper.setLoading('cases-resync-btn', false);
+      const note = _taskSyncNote(res);
+      Toast.show(note ? 'Dashboard tasks re-synced.' + note : 'Everything already in sync — nothing to change.', 'success', 6000);
+      loadWorkload();
+      loadAssignments();
+    }, () => FormHelper.setLoading('cases-resync-btn', false));
+  }
 
   function loadCases() {
     loadWorkload();
@@ -2261,6 +2289,7 @@ window.PersonnelUI = (() => {
     App.call('personnel', 'listReviewTypes', {}, res => {
       _reviewTypes = res.reviewTypes || [];
       _statuses = res.statuses || ['open', 'deferred'];
+      _stages = res.stages || [];
       afterTypes();
     }, afterTypes);
   }
@@ -2296,16 +2325,32 @@ window.PersonnelUI = (() => {
       `<option value="${s}" ${s === sel ? 'selected' : ''}>${s}</option>`).join('');
   }
 
+  /** The case-row status picker: one control, lifecycle + workflow stage.
+   *  "In progress" is an optgroup holding the plain open state and the
+   *  eight stations; deferred/closed/etc. sit beside it. Stage values are
+   *  encoded 'stage:<key>' so one onchange can route both shapes. */
+  function _statusStageOptions(c) {
+    const isOpen = c.status === 'open';
+    const plainOpen = `<option value="open" ${isOpen && !c.stage ? 'selected' : ''}>In progress (no stage)</option>`;
+    const stageOpts = _stages.map(s =>
+      `<option value="stage:${s.key}" ${isOpen && c.stage === s.key ? 'selected' : ''}>${s.label}</option>`).join('');
+    const others = _statuses.filter(s => s !== 'open').map(s =>
+      `<option value="${s}" ${c.status === s ? 'selected' : ''}>${s}</option>`).join('');
+    return `<optgroup label="In progress">${plainOpen}${stageOpts}</optgroup>${others}`;
+  }
+
   function _renderCases(rows) {
     const wrap = document.getElementById('cases-table-wrap');
     if (!rows.length) {
       wrap.innerHTML = '<p class="text-muted text-sm" style="margin-top:8px;">No cases yet. Use “Import from Call” to create them.</p>';
       return;
     }
-    const statusBadge = s => s === 'deferred'
+    const statusBadge = c => c.status === 'deferred'
       ? '<span class="badge badge-warning">deferred</span>'
-      : s === 'closed'
+      : c.status === 'closed'
       ? '<span class="badge badge-danger">closed</span>'
+      : c.stageLabel
+      ? `<span class="badge badge-success" title="In progress">${c.stageLabel}</span>`
       : '<span class="badge badge-success">open</span>';
     const flags = c => {
       const f = [];
@@ -2331,9 +2376,9 @@ window.PersonnelUI = (() => {
         <td class="text-sm">${c.subjectRank || '—'}${c.step ? ' · step ' + c.step : ''} ${flags(c)}</td>
         <td>${_canEdit
           ? `<select class="form-select" style="min-width:120px;" onchange="PersonnelUI.changeCaseStatus('${c.caseId}', this.value)">
-              ${_statusOptions(c.status)}
+              ${_statusStageOptions(c)}
             </select>`
-          : statusBadge(c.status)}
+          : statusBadge(c)}
         </td>
         <td>${_canEdit
           ? `<input type="text" class="form-input" style="min-width:120px;font-size:12px;"
@@ -2377,12 +2422,28 @@ window.PersonnelUI = (() => {
     });
   }
 
-  function changeCaseStatus(caseId, status) {
-    App.call('personnel', 'updateCase', { caseId: caseId, status: status }, () => {
-      Toast.show('Status updated.', 'success');
+  function changeCaseStatus(caseId, value) {
+    // 'stage:<key>' = an In-progress station (implies open); a bare word is
+    // a lifecycle status (the server clears any stage on leaving open).
+    const isStage = String(value).indexOf('stage:') === 0;
+    const payload = isStage
+      ? { caseId: caseId, status: 'open', stage: String(value).slice(6) }
+      : { caseId: caseId, status: value };
+    App.call('personnel', 'updateCase', payload, () => {
+      Toast.show(isStage ? 'Stage updated.' : 'Status updated.', 'success');
       const c = _cases.find(x => x.caseId === caseId);
-      if (c) c.status = status;
-      applyCaseFilter();   // re-render so the badge/row reflects deferral
+      if (c) {
+        if (isStage) {
+          c.status = 'open';
+          c.stage = payload.stage;
+          const s = _stages.find(x => x.key === payload.stage);
+          c.stageLabel = s ? s.label : payload.stage;
+        } else {
+          c.status = value;
+          if (value !== 'open') { c.stage = ''; c.stageLabel = ''; }
+        }
+      }
+      applyCaseFilter();   // re-render so the badge/row reflects the change
     });
   }
 
@@ -2545,6 +2606,10 @@ window.PersonnelUI = (() => {
                   onclick="PersonnelUI.showCaseDrafts('${c.caseId}')">
             <i class="ti ti-writing"></i>
           </button>
+          <button class="btn btn-secondary btn-sm" title="This case's assignment history"
+                  onclick="PersonnelUI.showCaseHistory('${c.caseId}')">
+            <i class="ti ti-history"></i>
+          </button>
         </td>
       </tr>`).join('');
 
@@ -2555,20 +2620,169 @@ window.PersonnelUI = (() => {
           <div class="card-title" style="margin:0;font-size:15px;">
             <i class="ti ti-users-group"></i> Candidate assignments <span class="text-muted text-sm">(${res.academicYear})</span>
           </div>
-          <span class="badge ${allCovered ? 'badge-success' : 'badge-warning'}">
-            ${res.fullyAssigned} of ${res.total} case(s) fully assigned
-          </span>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <span id="ah-pill"></span>
+            <span class="badge ${allCovered ? 'badge-success' : 'badge-warning'}">
+              ${res.fullyAssigned} of ${res.total} case(s) fully assigned
+            </span>
+          </div>
         </div>
         <p class="text-sm text-muted" style="margin:6px 0 10px;">
           Cases with unassigned parts sort to the top. The workload card above answers whether the
           load is balanced; this one answers whether every candidate is covered. Exporting the
-          workload produces one workbook with both.
+          workload produces one workbook with both. Each row's <i class="ti ti-history"></i> button
+          opens that case's assignment history.
         </p>
         <div class="table-wrap"><table class="data-table">
           <thead><tr><th>Candidate</th><th>Review</th><th>Who is drafting what</th><th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table></div>
       </div>`;
+    _loadHistoryPill();
+  }
+
+  // ── Assignment history (detail panel + recent-changes pill) ─
+  // Current state lives on the Candidate assignments card; history is a
+  // click-through. A case's history button (or the pill, for all cases)
+  // opens the full trail in the shared case-schedule-panel slot — same
+  // pattern as the schedule and drafting panels. The backfill button
+  // appears at the top of the panel only for a super admin while the
+  // trail is empty (one-time recovery), and hides itself after.
+  let _ahPanelCase = null;   // caseId in the open panel, or null = all cases
+
+  function _loadHistoryPill() {
+    const el = document.getElementById('ah-pill');
+    if (!el) return;
+    const yearSel = document.getElementById('cases-year');
+    App.call('personnel', 'listAssignmentHistory',
+      { academicYear: yearSel ? yearSel.value : '', limit: 1 }, res => {
+        const pill = document.getElementById('ah-pill');
+        if (!pill) return;   // card re-rendered meanwhile
+        const n = res.recentCount || 0;
+        if (n) {
+          pill.innerHTML = `<a class="badge badge-gold" style="cursor:pointer;" title="Assignment changes in the last 7 days — click for the trail"
+            onclick="PersonnelUI.showAllHistory()">${n} recent change${n === 1 ? '' : 's'}</a>`;
+        } else if (res.canBackfill && !res.tabMissing) {
+          // Empty trail, super admin: surface the one-time recovery here
+          // too, so it's reachable without opening a case's panel first.
+          pill.innerHTML = `<a class="badge" style="cursor:pointer;" title="One-time: recover past assignment changes from the audit log"
+            onclick="PersonnelUI.showAllHistory()">history empty — recover?</a>`;
+        } else {
+          pill.innerHTML = '';
+        }
+      }, () => {});
+  }
+
+  function showCaseHistory(caseId) { _openHistoryPanel(caseId); }
+  function showAllHistory()        { _openHistoryPanel(null); }
+
+  function _openHistoryPanel(caseId) {
+    const panel = document.getElementById('case-schedule-panel');
+    if (!panel) return;
+    _ahPanelCase = caseId || null;
+    panel.innerHTML = '<div class="module-loading"><div class="spinner"></div><span>Loading history…</span></div>';
+    panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+    const yearSel = document.getElementById('cases-year');
+    const payload = { academicYear: yearSel ? yearSel.value : '', limit: 200 };
+    if (_ahPanelCase) payload.caseId = _ahPanelCase;
+    App.call('personnel', 'listAssignmentHistory', payload,
+      res => _renderHistoryPanel(res),
+      () => { panel.innerHTML = '<p class="text-muted text-sm">Could not load the history.</p>'; });
+  }
+
+  function _renderHistoryPanel(res) {
+    const panel = document.getElementById('case-schedule-panel');
+    if (!panel) return;
+    const entries = res.entries || [];
+    const c = _ahPanelCase ? _cases.find(x => x.caseId === _ahPanelCase) : null;
+    const title = c
+      ? `Assignment history — ${c.name} (${c.reviewLabel || c.reviewType || ''}, ${c.academicYear || ''})`
+      : 'Assignment history — all cases';
+
+    const changeHtml = e => e.kind === 'assignment'
+      ? `<span class="badge badge-navy">assignee</span> ${e.prev || '<span class="text-muted">\u2014</span>'} <i class="ti ti-arrow-right" style="font-size:12px;"></i> ${e.next || '<span class="text-muted">\u2014</span>'}`
+      : e.kind === 'stage'
+      ? `<span class="badge badge-gold">stage</span> <span class="text-muted">${e.prev || '\u2014'}</span> <i class="ti ti-arrow-right" style="font-size:12px;"></i> ${e.next || '\u2014'}`
+      : `<span class="badge">status</span> <span class="text-muted">${e.prev || '\u2014'}</span> <i class="ti ti-arrow-right" style="font-size:12px;"></i> ${e.next}`;
+
+    let bodyHtml;
+    if (!entries.length) {
+      const why = res.tabMissing
+        ? 'The history tab hasn\u2019t been created yet — run setUp() after adding the Config/Setup entries.'
+        : _ahPanelCase
+        ? 'No recorded changes for this case yet — changes are captured as they happen.'
+        : 'No assignment changes recorded yet — changes are captured from now on, as they happen.';
+      bodyHtml = `<div class="empty-state text-sm">${why}</div>`;
+    } else if (_ahPanelCase) {
+      // One case: group the trail by component, chronological within each.
+      const byComp = {};
+      entries.forEach(e => (byComp[e.component] = byComp[e.component] || []).push(e));
+      bodyHtml = Object.keys(byComp).map(label => `
+        <div style="margin-bottom:14px;">
+          <div class="text-sm" style="font-weight:600;margin-bottom:4px;">${label}</div>
+          <div class="table-wrap"><table class="data-table">
+            <thead><tr><th>When</th><th>Change</th><th>By</th></tr></thead>
+            <tbody>${byComp[label].map(e => `
+              <tr>
+                <td class="text-sm" style="white-space:nowrap;">${e.at}${e.source === 'backfill' ? ' <span class="badge" title="Recovered from the audit log">recovered</span>' : ''}</td>
+                <td class="text-sm">${changeHtml(e)}</td>
+                <td class="text-sm text-muted">${e.by}</td>
+              </tr>`).join('')}</tbody>
+          </table></div>
+        </div>`).join('');
+    } else {
+      // All cases: flat, newest first, candidate column included.
+      bodyHtml = `
+        <div class="table-wrap"><table class="data-table">
+          <thead><tr><th>When</th><th>Candidate</th><th>Part</th><th>Change</th><th>By</th></tr></thead>
+          <tbody>${entries.map(e => `
+            <tr>
+              <td class="text-sm" style="white-space:nowrap;">${e.at}${e.source === 'backfill' ? ' <span class="badge" title="Recovered from the audit log">recovered</span>' : ''}</td>
+              <td class="text-sm"><strong>${e.candidate}</strong>${e.reviewType ? `<div class="text-muted">${e.reviewType} \u00B7 ${e.academicYear}</div>` : ''}</td>
+              <td class="text-sm">${e.component}</td>
+              <td class="text-sm">${changeHtml(e)}</td>
+              <td class="text-sm text-muted">${e.by}</td>
+            </tr>`).join('')}</tbody>
+        </table></div>`;
+    }
+
+    const backfillHtml = (res.canBackfill && !res.tabMissing) ? `
+      <div class="alert alert-info text-sm" style="margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+        <span>The trail is empty. One-time recovery can replay past assignment actions from the
+          platform audit log — the earliest change per component can\u2019t know its prior assignee,
+          and anything beyond the log\u2019s reach won\u2019t reconstruct.</span>
+        <button class="btn btn-secondary btn-sm" id="ah-backfill-btn" onclick="PersonnelUI.runHistoryBackfill()" style="flex-shrink:0;">
+          <i class="ti ti-database-import"></i> Recover from audit log
+        </button>
+      </div>` : '';
+
+    panel.innerHTML = `
+      <div class="card" style="border:1px solid #e3e6ea;">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+          <div class="card-title" style="margin:0;font-size:15px;"><i class="ti ti-history"></i> ${title}</div>
+          <button class="btn btn-secondary btn-sm" onclick="PersonnelUI.closeCaseSchedule()">Close</button>
+        </div>
+        <p class="text-sm text-muted" style="margin:8px 0 10px;">
+          Every reassignment, unassignment, drafted/reopened move, and file stage change, ${_ahPanelCase ? 'grouped by part of the assessment' : 'newest first'}.
+          The Candidate assignments card shows the current state.
+        </p>
+        ${backfillHtml}
+        ${bodyHtml}
+        ${res.total > entries.length ? `<p class="text-sm text-muted" style="margin-top:6px;">Showing the ${entries.length} most recent of ${res.total} change(s).</p>` : ''}
+      </div>`;
+  }
+
+  function runHistoryBackfill() {
+    if (!confirm('Recover past assignment changes from the audit log?\n\nThis runs once, into the empty history trail. Prior assignees are inferred by replaying the log in order; the earliest change per component can\u2019t know what came before it.')) return;
+    FormHelper.setLoading('ah-backfill-btn', true);
+    App.call('personnel', 'backfillAssignmentHistory', {}, res => {
+      const s = res.summary || {};
+      Toast.show('Recovered ' + (s.written || 0) + ' change(s) from ' + (s.scanned || 0) + ' log entries'
+        + (s.orphaned ? ' (' + s.orphaned + ' skipped — component since removed)' : '') + '.', 'success', 6000);
+      _openHistoryPanel(_ahPanelCase);   // re-render the open panel with the recovered trail
+      _loadHistoryPill();
+    }, () => FormHelper.setLoading('ah-backfill-btn', false));
   }
 
   /** The share-this-view card at the bottom of the Cases tab. Rendered once —
@@ -3149,6 +3363,7 @@ window.PersonnelUI = (() => {
     showCaseDrafts, assignDraft, markDrafted, reopenDraft,
     loadWorkload, exportWorkload,
     loadAssignments, renderCasesDeepLink,
+    showCaseHistory, showAllHistory, runHistoryBackfill, resyncTasks,
     setMatch, unmatch, setRowType, setRowStatus, setRowEffective,
     detectHistory, commitHistory,
     loadAnticipated, exportSheet, exportCsv,

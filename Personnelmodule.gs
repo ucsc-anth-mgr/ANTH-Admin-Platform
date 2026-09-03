@@ -64,7 +64,8 @@ const PersonnelModule = (() => {
                 'commitCallImport', 'computeScheduleForCase', 'listCaseComponents',
                 'listCommitteeMembers', 'assignComponent', 'markComponentDrafted',
                 'reopenComponent', 'committeeWorkload', 'exportWorkloadToSheet',
-                'caseAssignments'] },
+                'caseAssignments', 'listAssignmentHistory', 'backfillAssignmentHistory',
+                'resyncTasks'] },
     // department_chair: VIEW access — the reads admit the chair; every
     // mutation stays super_admin.
     { key: 'letters', label: 'Letter writers', icon: 'ti-mailbox',
@@ -81,7 +82,7 @@ const PersonnelModule = (() => {
       actions: ['getCommTemplates', 'saveCommTemplate', 'addCommTemplate', 'removeCommTemplate', 'previewCommunication',
                 'sendCommunications', 'draftCommunications', 'logCopiedCommunication',
                 'listCommunicationsLog', 'listPolicyDocs', 'savePolicyDocs'] },
-    { key: 'settings', label: 'Calendar', icon: 'ti-calendar-cog',
+    { key: 'calendar', label: 'Calendar', icon: 'ti-calendar-cog',
       roles: [], floor: 'super_admin',
       actions: ['getSchedulerSettings', 'saveSchedulerSettings', 'getCycle',
                 'setCycleAnchors', 'findCalendarDeadlines', 'computeCycleSchedule',
@@ -834,7 +835,23 @@ const PersonnelModule = (() => {
         votable: !!types[k].votable, major: !!types[k].major,
       })),
       statuses: STATUSES(),
+      stages: CASE_STAGES(),
     };
+  }
+
+  /** The ordered workflow-stage vocabulary (stations within 'open'). */
+  function CASE_STAGES() {
+    return (CONFIG.PERSONNEL && CONFIG.PERSONNEL.CASE_STAGES) || [];
+  }
+
+  /** Display label for a stage key ('' -> ''). Unknown keys pass through
+   *  raw rather than vanishing — a relabeled/removed vocabulary entry
+   *  should degrade visibly, not silently. */
+  function _stageLabel(key) {
+    const k = String(key || '').trim();
+    if (!k) return '';
+    const hit = CASE_STAGES().find(s => s.key === k);
+    return hit ? hit.label : k;
   }
 
   /**
@@ -1137,6 +1154,8 @@ const PersonnelModule = (() => {
         isElected:       String(r.IsElected).toUpperCase() === 'TRUE',
         notes:         r.Notes || '',
         status:        r.Status || 'open',
+        stage:         String(r.Stage || '').trim(),
+        stageLabel:    _stageLabel(r.Stage),
         effectiveDate: _histDate(r.EffectiveDate) || String(r.EffectiveDate || ''),
         updatedAt:     r.UpdatedAt ? _isoDate(r.UpdatedAt) : '',
         updatedBy:     r.UpdatedBy || '',
@@ -1151,10 +1170,11 @@ const PersonnelModule = (() => {
   }
 
   /**
-   * Update a single case's editable fields (review type, status, subjectRank,
-   * step). Re-derives isReappointment from subjectRank if that changes.
-   * super_admin only.
-   * @param {Object} payload - { caseId, reviewType?, status?, subjectRank?, step? }
+   * Update a single case's editable fields (review type, status, stage,
+   * subjectRank, step). Re-derives isReappointment from subjectRank if that
+   * changes. Stage is a station within 'open' (see CASE_STAGES) — setting
+   * one forces Status open; leaving open clears it. super_admin only.
+   * @param {Object} payload - { caseId, reviewType?, status?, stage?, subjectRank?, step? }
    */
   function updateCase(payload, user, roles) {
     _requireSuperAdmin(roles);
@@ -1172,6 +1192,22 @@ const PersonnelModule = (() => {
     if (p.status !== undefined) {
       if (STATUSES().indexOf(p.status) === -1) throw new Error('Unknown status: ' + p.status);
       fields.Status = p.status;
+      // Stages are stations WITHIN 'open' — leaving open clears the stage
+      // (unless this same call is explicitly setting one, validated below).
+      if (p.status !== 'open' && p.stage === undefined) fields.Stage = '';
+    }
+    if (p.stage !== undefined) {
+      const stage = String(p.stage || '').trim();
+      if (stage && !CASE_STAGES().some(s => s.key === stage)) {
+        throw new Error('Unknown stage: ' + stage);
+      }
+      fields.Stage = stage;
+      // Setting a stage implies the case is open (the UI sends both, but
+      // enforce the invariant server-side regardless of caller).
+      if (stage && p.status === undefined) fields.Status = 'open';
+      if (stage && fields.Status !== undefined && fields.Status !== 'open') {
+        throw new Error('A stage only applies to an open case.');
+      }
     }
     if (p.subjectRank !== undefined) {
       fields.SubjectRank = p.subjectRank;
@@ -1181,6 +1217,25 @@ const PersonnelModule = (() => {
     if (p.effectiveDate !== undefined) fields.EffectiveDate = String(p.effectiveDate || '').trim();
 
     DataService.update(SHEET(), CASES_TAB(), 'CaseID', id, fields);
+
+    // Stage moves land in the assignment-history trail (Kind 'stage',
+    // case-level — no component). Best-effort, same as the other kinds.
+    if (fields.Stage !== undefined && String(fields.Stage) !== String(existing[0].Stage || '').trim()) {
+      try {
+        DataService.insert(SHEET(), ASSIGN_HIST_TAB(), {
+          HistoryID:   DataService.generateId('AH'),
+          CaseID:      id,
+          ComponentID: '',
+          Kind:        'stage',
+          PrevValue:   String(existing[0].Stage || '').trim(),
+          NewValue:    String(fields.Stage),
+          ChangedBy:   user || '',
+          ChangedAt:   Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss'),
+        });
+      } catch (err) {
+        Logger.log('updateCase: stage history write failed (update unaffected): ' + err);
+      }
+    }
 
     // When a case becomes 'completed', append it to the candidate's review
     // history (so the ledger self-maintains). Only on the transition INTO
@@ -2531,7 +2586,165 @@ const PersonnelModule = (() => {
   // the component, never the work itself, so the two can't drift apart.
 
   function COMPONENTS_TAB()   { return CONFIG.TABS.COMPONENTS; }
+  function ASSIGN_HIST_TAB()  { return CONFIG.TABS.ASSIGNMENT_HISTORY; }
   function COMPONENT_TYPES()  { return (CONFIG.PERSONNEL && CONFIG.PERSONNEL.COMPONENT_TYPES) || {}; }
+
+  // ── Assignment history (change trail) ──────────────────────
+  // One row per meaningful change to a component's drafting assignment:
+  //   Kind 'assignment' — the assignee changed (PrevValue/NewValue are
+  //     emails; '' = unassigned or, on backfilled rows, unknown-before).
+  //   Kind 'status'     — the assignee is unchanged but the status moved
+  //     (assigned → drafted on mark-drafted; drafted → assigned on reopen).
+  // BEST-EFFORT by design: a history-write failure is logged and swallowed,
+  // never failing the primary action (same posture as the Service module's
+  // role reconciles). The tab must exist before these run — run setUp()
+  // after adding the Config/Setup paste-ins (see bottom of this file), or
+  // rows silently evaporate at write time (the sheet-column-drift lesson).
+  function _logAssignmentChange(caseId, componentId, prevAssignee, newAssignee, prevStatus, newStatus, user, whenStr) {
+    try {
+      let kind = '', prev = '', next = '';
+      if (String(prevAssignee) !== String(newAssignee)) {
+        kind = 'assignment'; prev = prevAssignee; next = newAssignee;
+      } else if (String(prevStatus) !== String(newStatus)) {
+        kind = 'status'; prev = prevStatus; next = newStatus;
+      } else {
+        return;   // nothing actually changed — no row
+      }
+      DataService.insert(SHEET(), ASSIGN_HIST_TAB(), {
+        HistoryID:   DataService.generateId('AH'),
+        CaseID:      caseId || '',
+        ComponentID: componentId || '',
+        Kind:        kind,
+        PrevValue:   prev,
+        NewValue:    next,
+        ChangedBy:   user || '',
+        ChangedAt:   whenStr || Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss'),
+      });
+    } catch (err) {
+      Logger.log('_logAssignmentChange: history write failed (primary action unaffected): ' + err);
+    }
+  }
+
+  /**
+   * Re-aligns open drafting tasks with the CURRENT effective drafts-due
+   * date after a schedule moves (proposed date saved or cleared, cycle
+   * anchors re-picked, spacing changed). For every assigned component
+   * whose captured DueAt no longer matches the live proposed-or-computed
+   * date: the dashboard task is corrected in place (Tasks.updateDueDate —
+   * identity and staleness clock preserved) and the component's DueAt is
+   * re-captured, so the "was <date>" drift note in My Cases clears
+   * naturally because captured and effective agree again.
+   *
+   * BEST-EFFORT throughout: a failure here logs and skips — it never
+   * fails the schedule save that triggered it. KNOWN LIMIT: a deadline
+   * moving upstream IN THE DEPARTMENT CALENDAR shifts schedules without
+   * any personnel-module mutation to hook, so those tasks catch up at the
+   * next schedule-touching save here — or on the Cases tab's manual
+   * "Re-sync dashboard tasks" button (resyncTasks), which runs this same
+   * helper on demand.
+   *
+   * ALSO SWEEPS ORPHANS: any open drafting task no longer backed by a
+   * matching assigned component — component gone, unassigned, drafted, or
+   * the task isn't the component's current one (a reassignment whose
+   * best-effort Tasks.resolve was swallowed) — is resolved here, so a
+   * stale "you're drafting X" can't linger on someone's dashboard. The
+   * sweep is module-wide regardless of the year filter: orphans aren't
+   * reliably year-scoped (their component may be gone entirely).
+   *
+   * @param {string} academicYear - reconcile due dates for this cycle only; '' = all
+   * @param {string} user - for the internal schedule computation and resolve attribution
+   * @returns {{ updated: number, orphaned: number }}
+   */
+  function _reconcileDraftTaskDueDates(academicYear, user) {
+    const yearFilter = String(academicYear || '').trim();
+    let updated = 0, orphaned = 0;
+    try {
+      const caseById = {};
+      DataService.getAll(SHEET(), CASES_TAB()).forEach(c => {
+        const status = String(c.Status || '').toLowerCase();
+        if (status === 'closed' || status === 'deferred' || status === 'completed') return;
+        if (yearFilter && String(c.AcademicYear).trim() !== yearFilter) return;
+        caseById[c.CaseID] = c;
+      });
+
+      // Live effective drafts-due, resolved once per (year, timeline) —
+      // the same proposed-over-computed logic My Cases displays.
+      const typeMap = (CONFIG.PERSONNEL && CONFIG.PERSONNEL.DIVISION_DEADLINE_BY_TYPE) || {};
+      const cycleCache = {};
+      const effectiveFor = (year, reviewType) => {
+        if (!cycleCache[year]) {
+          try {
+            cycleCache[year] = computeCycleSchedule({ academicYear: year }, user, ['super_admin']);
+          } catch (err) { cycleCache[year] = { schedules: null }; }
+        }
+        const rep = cycleCache[year];
+        if (!rep.schedules) return '';
+        const key = typeMap[String(reviewType)] === 'major' ? 'major' : 'merit';
+        const sch = rep.schedules[key] && rep.schedules[key].schedule;
+        const proposed = ((rep.proposedDates || {})[key] || {}).draftsDue || '';
+        const computed = (sch && sch.backward && sch.backward.draftsDue) || '';
+        return proposed || computed;
+      };
+
+      const allComps = DataService.getAll(SHEET(), COMPONENTS_TAB());
+      allComps.forEach(comp => {
+        if (String(comp.Status || '') !== 'assigned') return;
+        const c = caseById[comp.CaseID];
+        if (!c) return;   // other year, or terminal case
+        const eff = effectiveFor(String(c.AcademicYear).trim(), c.ReviewType);
+        if (!eff) return;                                  // no computable schedule — leave alone
+        const aligned = (eff === (_histDate(comp.DueAt) || ''));
+        try {
+          // The task's stored INSTANT is verified even when the sheet date
+          // is already right: a correct 'yyyy-MM-dd' in the component can
+          // sit in front of a wrong instant in the task (the old UTC-
+          // midnight parse stored dates as 5pm the previous day). Gating
+          // this on component drift left those ghosts unrepairable —
+          // updateDueDate compares by displayed day and no-ops when it
+          // already matches, so the unconditional call is cheap.
+          let taskFixed = false;
+          const taskId = String(comp.TaskID || '').trim();
+          if (taskId) {
+            const r = Tasks.updateDueDate(taskId, eff);
+            taskFixed = !!(r && r.status === 'updated');
+          }
+          if (!aligned) {
+            DataService.update(SHEET(), COMPONENTS_TAB(), 'ComponentID', comp.ComponentID,
+                               { DueAt: eff });
+          }
+          if (!aligned || taskFixed) updated++;
+        } catch (err) {
+          Logger.log('_reconcileDraftTaskDueDates: skipped ' + comp.ComponentID + ': ' + err);
+        }
+      });
+
+      // Orphan sweep: resolve open drafting tasks the components no longer
+      // vouch for. A task is legitimate only if its component still exists,
+      // is still 'assigned', still points at THIS task, and is assigned to
+      // the same person the task is — anything else is a leftover from a
+      // swallowed best-effort resolve (or a direct sheet edit).
+      const compById = {};
+      allComps.forEach(cp => { compById[cp.ComponentID] = cp; });
+      Tasks.openForModule('personnel').forEach(t => {
+        try {
+          const comp = compById[String(t.sourceId || '').trim()];
+          const legit = comp
+            && String(comp.Status || '') === 'assigned'
+            && String(comp.TaskID || '').trim() === String(t.taskId)
+            && _email(comp.AssignedTo) === _email(t.assignedTo);
+          if (legit) return;
+          Tasks.resolve(t.taskId, { resolvedBy: user,
+            note: comp ? 'Superseded — assignment changed' : 'Superseded — component removed' });
+          orphaned++;
+        } catch (err) {
+          Logger.log('_reconcileDraftTaskDueDates: orphan sweep skipped ' + t.taskId + ': ' + err);
+        }
+      });
+    } catch (err) {
+      Logger.log('_reconcileDraftTaskDueDates failed (schedule save unaffected): ' + err);
+    }
+    return { updated: updated, orphaned: orphaned };
+  }
   function COMPONENTS_BY_SERIES() {
     return (CONFIG.PERSONNEL && CONFIG.PERSONNEL.COMPONENTS_BY_SERIES) || {
       ladder: ['research', 'teaching_service'], teaching: ['combined'], lecturer: ['combined'],
@@ -2769,6 +2982,8 @@ const PersonnelModule = (() => {
     const found = DataService.query(SHEET(), COMPONENTS_TAB(), 'ComponentID', id);
     if (!found.length) throw new Error('Component not found: ' + id);
     const comp = found[0];
+    const prevAssignee = _email(comp.AssignedTo);
+    const prevStatus   = String(comp.Status || '');
 
     const assignee = _email(p.assignedTo);
     const cfg = DRAFT_TASK_CFG();
@@ -2786,6 +3001,7 @@ const PersonnelModule = (() => {
         AssignedTo: '', AssignedAt: '', AssignedBy: '',
         Status: 'unassigned', TaskID: '', DueAt: '',
       });
+      _logAssignmentChange(comp.CaseID, id, prevAssignee, '', prevStatus, 'unassigned', user);
       return { componentId: id, status: 'unassigned' };
     }
 
@@ -2848,6 +3064,12 @@ const PersonnelModule = (() => {
       TaskID:     taskId,
     });
 
+    // History: an assignee change logs as 'assignment'; a reopen (same
+    // assignee, drafted → assigned — reopenComponent delegates here) logs
+    // as 'status'. A same-person re-assign with no status change logs
+    // nothing.
+    _logAssignmentChange(comp.CaseID, id, prevAssignee, assignee, prevStatus, 'assigned', user);
+
     return {
       componentId: id, status: 'assigned', assignedTo: assignee,
       dueAt: dueAt, taskId: taskId,
@@ -2883,6 +3105,8 @@ const PersonnelModule = (() => {
     };
     if (p.notes !== undefined) fields.Notes = String(p.notes || '').trim();
     DataService.update(SHEET(), COMPONENTS_TAB(), 'ComponentID', id, fields);
+    _logAssignmentChange(comp.CaseID, id, _email(comp.AssignedTo), _email(comp.AssignedTo),
+                         String(comp.Status || ''), 'drafted', user);
 
     // The work is done, so the task should go — the queue never outlives it.
     try { Tasks.resolveForSource('personnel', id, { resolvedBy: user }); }
@@ -2914,6 +3138,197 @@ const PersonnelModule = (() => {
 
 
   /**
+   * The assignment-history trail, newest first, resolved for display:
+   * candidate names from the case, component labels from the type
+   * vocabulary, assignee emails from Auth. Chair may view (same gate as
+   * the other Cases-tab reads); mutations stay super_admin.
+   * @param {Object} payload - { academicYear?, caseId?, limit? (default 25, max 200) }
+   * @returns { entries[], total, canBackfill }
+   */
+  function listAssignmentHistory(payload, user, roles) {
+    _requireCaseView(roles);
+    const p = payload || {};
+    const year   = String(p.academicYear || '').trim();
+    const caseId = String(p.caseId || '').trim();
+    const limit  = Math.min(Number(p.limit) || 25, 200);
+    const isSuper = (roles || []).indexOf('super_admin') !== -1;
+
+    // Tolerate a not-yet-created tab (setUp not run): report empty rather
+    // than erroring, and let a super admin see the backfill affordance.
+    let raw = [];
+    try { raw = DataService.getAll(SHEET(), ASSIGN_HIST_TAB()) || []; }
+    catch (err) { return { entries: [], total: 0, recentCount: 0, canBackfill: isSuper, tabMissing: true }; }
+
+    const caseById = {};
+    DataService.getAll(SHEET(), CASES_TAB()).forEach(c => { caseById[c.CaseID] = c; });
+    const compById = {};
+    DataService.getAll(SHEET(), COMPONENTS_TAB()).forEach(c => { compById[c.ComponentID] = c; });
+    const types = COMPONENT_TYPES();
+
+    const nameCache = {};
+    const personName = email => {
+      const e = _email(email);
+      if (!e) return '';
+      if (!(e in nameCache)) {
+        const prof = Auth.getProfile(e);
+        nameCache[e] = prof ? (prof.name || e) : e;
+      }
+      return nameCache[e];
+    };
+
+    // Sheets auto-converts date-shaped strings into real Dates; read back,
+    // String() would give the long form and google.script.run can't carry a
+    // Date anyway — normalize to 'yyyy-MM-dd HH:mm' before it leaves.
+    const atStr = v => (v instanceof Date && !isNaN(v.getTime()))
+      ? Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm')
+      : String(v || '');
+
+    const rows = [];
+    raw.forEach(r => {
+      const c = caseById[r.CaseID];
+      if (year && (!c || String(c.AcademicYear).trim() !== year)) return;
+      if (caseId && String(r.CaseID) !== caseId) return;
+      const kind = String(r.Kind || '');
+      const comp = compById[r.ComponentID];
+      const typeKey = comp ? comp.ComponentType : '';
+      rows.push({
+        at:        atStr(r.ChangedAt) || atStr(r.CreatedAt),
+        caseId:    r.CaseID,
+        candidate: c ? (personName(c.CandidateEmail) || _email(c.CandidateEmail)) : '(case removed)',
+        reviewType: c ? (c.ReviewType || '') : '',
+        academicYear: c ? (c.AcademicYear || '') : '',
+        component: kind === 'stage'
+          ? '(whole file)'
+          : (types[typeKey] && types[typeKey].label) || typeKey || '(component removed)',
+        kind:      kind,
+        prev:      kind === 'assignment' ? (personName(r.PrevValue) || '')
+                 : kind === 'stage'      ? _stageLabel(r.PrevValue)
+                 : String(r.PrevValue || ''),
+        next:      kind === 'assignment' ? (personName(r.NewValue) || '')
+                 : kind === 'stage'      ? _stageLabel(r.NewValue)
+                 : String(r.NewValue || ''),
+        by:        personName(r.ChangedBy) || String(r.ChangedBy || ''),
+        source:    String(r.Source || 'live'),
+      });
+    });
+    rows.sort((a, b) => String(b.at).localeCompare(String(a.at)));
+
+    // For the recent-changes pill: how many of the filtered changes landed
+    // in the last 7 days. Lexicographic compare works on the normalized
+    // 'yyyy-MM-dd HH:mm' form.
+    const cutoff = Utilities.formatDate(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
+                                        Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm');
+    const recentCount = rows.filter(r => r.at && r.at >= cutoff).length;
+
+    return {
+      entries: rows.slice(0, limit),
+      total: rows.length,
+      recentCount: recentCount,
+      // The backfill affordance shows only while the trail is empty —
+      // it's one-time recovery plumbing, not a standing feature.
+      canBackfill: isSuper && raw.length === 0,
+    };
+  }
+
+
+  /**
+   * ONE-TIME backfill: replay assignComponent / markComponentDrafted /
+   * reopenComponent entries from the platform audit log into the
+   * AssignmentHistory tab, oldest first, inferring each change's
+   * prior value by carrying running state per component.
+   *
+   * This deliberately reads a PLATFORM-owned store (via AuditLog.recent,
+   * never the sheet directly) — justified as recovery of history that
+   * predates the tab, NOT a standing dependency; the live hooks are the
+   * source of record from here on. Honest limits: entries whose payloads
+   * were truncated or that predate the log's retention can't be
+   * reconstructed, and the first sighting of a component has an unknown
+   * prior assignee (recorded as '').
+   *
+   * Refuses to run when the tab already has rows (idempotence guard —
+   * the UI hides the button then too). super_admin only.
+   */
+  function backfillAssignmentHistory(payload, user, roles) {
+    _requireSuperAdmin(roles);
+
+    let existing = [];
+    try { existing = DataService.getAll(SHEET(), ASSIGN_HIST_TAB()) || []; }
+    catch (err) {
+      throw new Error('The AssignmentHistory tab does not exist yet — run setUp() first (see the Config/Setup paste-ins).');
+    }
+    if (existing.length) {
+      throw new Error('The history tab already has ' + existing.length +
+        ' row(s) — the backfill only runs into an empty tab.');
+    }
+
+    const ACTIONS_OF_INTEREST = ['assignComponent', 'markComponentDrafted', 'reopenComponent'];
+    const entries = (AuditLog.recent(5000) || [])
+      .filter(e => String(e.module) === 'personnel'
+                && String(e.status) === 'success'
+                && ACTIONS_OF_INTEREST.indexOf(String(e.action)) !== -1)
+      .reverse();   // recent() is newest-first; replay wants oldest-first
+
+    const compById = {};
+    DataService.getAll(SHEET(), COMPONENTS_TAB()).forEach(c => { compById[c.ComponentID] = c; });
+
+    const state = {};   // componentId -> { assignee, status } carried through the replay
+    let written = 0, unparseable = 0, orphaned = 0, noChange = 0;
+
+    entries.forEach(e => {
+      let p = null;
+      try { p = JSON.parse(String(e.payload || '')); } catch (err) { unparseable++; return; }
+      const id = String((p && p.componentId) || '').trim();
+      if (!id) { unparseable++; return; }
+      const comp = compById[id];
+      if (!comp) { orphaned++; return; }   // component since removed — no case to key on
+
+      const prev = state[id] || { assignee: '', status: '' };
+      let nextAssignee = prev.assignee, nextStatus = prev.status;
+      const action = String(e.action);
+      if (action === 'assignComponent') {
+        nextAssignee = _email(p.assignedTo);
+        nextStatus = nextAssignee ? 'assigned' : 'unassigned';
+      } else if (action === 'markComponentDrafted') {
+        nextStatus = 'drafted';
+      } else {           // reopenComponent
+        nextStatus = 'assigned';
+      }
+
+      const whenStr = e.timestamp
+        ? Utilities.formatDate(new Date(e.timestamp), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss')
+        : '';
+
+      let kind = '', pv = '', nv = '';
+      if (prev.assignee !== nextAssignee) { kind = 'assignment'; pv = prev.assignee; nv = nextAssignee; }
+      else if (prev.status !== nextStatus) { kind = 'status'; pv = prev.status; nv = nextStatus; }
+
+      if (kind) {
+        DataService.insert(SHEET(), ASSIGN_HIST_TAB(), {
+          HistoryID:   DataService.generateId('AH'),
+          CaseID:      comp.CaseID,
+          ComponentID: id,
+          Kind:        kind,
+          PrevValue:   pv,
+          NewValue:    nv,
+          ChangedBy:   e.user || '',
+          ChangedAt:   whenStr,
+          Source:      'backfill',
+        });
+        written++;
+      } else {
+        noChange++;
+      }
+      state[id] = { assignee: nextAssignee, status: nextStatus };
+    });
+
+    return { summary: {
+      scanned: entries.length, written: written,
+      unparseable: unparseable, orphaned: orphaned, noChange: noChange,
+    } };
+  }
+
+
+  /**
    * The committee's drafting workload — one row per member, so the assigner
    * can see at a glance whether the work is balanced. Every role-holder
    * appears, including those with nothing assigned: an empty plate is what
@@ -2935,8 +3350,11 @@ const PersonnelModule = (() => {
       caseById[c.CaseID] = {
         candidateEmail: _email(c.CandidateEmail),
         reviewType: c.ReviewType,
+        reviewLabel: t.label || c.ReviewType,
         major: !!t.major,
         academicYear: c.AcademicYear,
+        caseStatus: String(c.Status || 'open'),
+        caseStage: String(c.Stage || '').trim(),
       };
     });
 
@@ -2972,8 +3390,12 @@ const PersonnelModule = (() => {
         candidate: candidate ? (candidate.nameLastFirst || candidate.name) : c.candidateEmail,
         component: (compTypes[comp.ComponentType] && compTypes[comp.ComponentType].label) || comp.ComponentType,
         reviewType: c.reviewType,
+        reviewLabel: c.reviewLabel,
         dueAt: due,
         status: status,
+        caseStatus: c.caseStatus,
+        caseStage: c.caseStage,
+        caseStageLabel: _stageLabel(c.caseStage),
       });
     });
 
@@ -3208,6 +3630,58 @@ const PersonnelModule = (() => {
     aSheet.setFrozenRows(aHeaderRow);
     for (let c = 1; c <= aHeader.length; c++) aSheet.autoResizeColumn(c);
 
+    // Third sheet: the same assignments pivoted BY MEMBER — each committee
+    // member's candidates, the section they're drafting, and one combined
+    // Status column: the candidate's FILE status (its workflow stage while
+    // in progress, else the lifecycle word), suffixed "· ✓ drafted" when
+    // this member's own section is done.
+    const mSheet = ss.insertSheet('By member');
+    mSheet.getRange(1, 1).setValue('Drafting assignments by committee member — ' + rep.academicYear)
+      .setFontWeight('bold').setFontSize(13);
+    mSheet.getRange(2, 1).setValue('File status shows the workflow stage while a case is in progress; "✓ drafted" marks sections this member has completed.')
+      .setFontColor('#666666');
+
+    const fileStatus = it => {
+      const base = (it.caseStatus === 'open' || it.caseStatus === 'in_progress')
+        ? (it.caseStageLabel || 'In progress')
+        : it.caseStatus.charAt(0).toUpperCase() + it.caseStatus.slice(1);
+      return base + (it.status === 'drafted' ? ' · ✓ drafted' : '');
+    };
+
+    const mHeader = ['Member', 'Candidate', 'Review', 'Section', 'Due', 'Status'];
+    const mHeaderRow = 4;
+    mSheet.getRange(mHeaderRow, 1, 1, mHeader.length).setValues([mHeader])
+      .setFontWeight('bold').setBackground('#003C6C').setFontColor('#FFFFFF');
+
+    const mData = [];
+    const mSeparators = [];
+    rep.members.forEach(m => {
+      if (!m.items.length) {
+        mData.push([m.name, '(nothing assigned)', '', '', '', '']);
+      } else {
+        m.items.forEach((it, i) => {
+          mData.push([
+            i === 0 ? m.name : '',            // member once per block
+            it.candidate,
+            it.reviewLabel || it.reviewType,
+            it.component,
+            it.dueAt || '',
+            fileStatus(it),
+          ]);
+        });
+      }
+      mSeparators.push(mData.length);
+      mData.push(['', '', '', '', '', '']);
+    });
+    if (mData.length) {
+      mSheet.getRange(mHeaderRow + 1, 1, mData.length, mHeader.length).setValues(mData);
+      mSeparators.forEach(i => {
+        mSheet.getRange(mHeaderRow + 1 + i, 1, 1, mHeader.length).setBackground('#EFEFEF');
+      });
+    }
+    mSheet.setFrozenRows(mHeaderRow);
+    for (let c = 1; c <= mHeader.length; c++) mSheet.autoResizeColumn(c);
+
     const folderId = (CONFIG.PERSONNEL && CONFIG.PERSONNEL.EXPORT_FOLDER_ID) || '';
     if (folderId) {
       try {
@@ -3302,8 +3776,15 @@ const PersonnelModule = (() => {
     DataService.update(SHEET(), CYCLES_TAB(), 'CycleID', row.CycleID, {
       ProposedDates: Object.keys(proposed).length ? JSON.stringify(proposed) : '',
     });
+
+    // Only drafts-due feeds task deadlines — reconcile when that's the step
+    // that moved (set OR cleared; clearing falls back to the computed date).
+    const rec = (step === 'draftsDue')
+      ? _reconcileDraftTaskDueDates(year, user) : { updated: 0, orphaned: 0 };
+
     return { academicYear: year, timeline: timeline, step: step,
-             date: date, proposedDates: proposed };
+             date: date, proposedDates: proposed,
+             tasksReconciled: rec.updated, tasksOrphanResolved: rec.orphaned };
   }
 
 
@@ -3504,7 +3985,7 @@ const PersonnelModule = (() => {
     return {
       kinds: COMM_KINDS.map(k => Object.assign({ kind: k, builtIn: true }, _commTemplate(k)))
         .concat(_customKinds().map(c => Object.assign({ kind: c.key, builtIn: false }, _commTemplate(c.key)))),
-      tokens: '{Name} {FirstName} {Year} {Assignments} {Schedule} {PolicyDocs} {PortalLink}',
+      tokens: '{Name} {FirstName} {Year} {Assignments} {Schedule} {FileStages} {PolicyDocs} {PortalLink}',
     };
   }
 
@@ -3670,10 +4151,40 @@ const PersonnelModule = (() => {
       const who = candidate ? (candidate.nameLastFirst || candidate.name) : c.CandidateEmail;
       const label = (types[comp.ComponentType] && types[comp.ComponentType].label) || comp.ComponentType;
       const due = _histDate(comp.DueAt) || '';
+      const stage = _stageLabel(c.Stage);
       lines.push('• ' + label + ' — ' + who + ' (' + (c.ReviewType || 'review') + ')'
-        + (due ? ' — due ' + due : ''));
+        + (due ? ' — due ' + due : '')
+        + (stage ? ' — file: ' + stage : ''));
     });
     return lines.join('\n');
+  }
+
+  /** Every OPEN case's position in the workflow, as the {FileStages}
+   *  block — one line per case, ordered by stage (following the
+   *  CASE_STAGES sequence, unstaged first) then candidate. Unstaged open
+   *  cases appear as 'In progress (no stage)' rather than being omitted:
+   *  a status report with silent gaps invites wrong conclusions. */
+  function _fileStagesBlockFor(year) {
+    const types = REVIEW_TYPES();
+    const stageOrder = {};
+    CASE_STAGES().forEach((s, i) => { stageOrder[s.key] = i + 1; });
+
+    const rows = [];
+    DataService.getAll(SHEET(), CASES_TAB()).forEach(c => {
+      if (year && String(c.AcademicYear).trim() !== year) return;
+      if (String(c.Status || 'open') !== 'open') return;   // stages live within open
+      const candidate = Auth.getProfile(_email(c.CandidateEmail));
+      rows.push({
+        who: candidate ? (candidate.nameLastFirst || candidate.name) : c.CandidateEmail,
+        review: (types[c.ReviewType] && types[c.ReviewType].label) || c.ReviewType || 'review',
+        stageKey: String(c.Stage || '').trim(),
+        stage: _stageLabel(c.Stage) || 'In progress (no stage)',
+      });
+    });
+    if (!rows.length) return '(No open cases for ' + (year || 'this cycle') + '.)';
+    rows.sort((a, b) => ((stageOrder[a.stageKey] || 0) - (stageOrder[b.stageKey] || 0))
+      || String(a.who).localeCompare(String(b.who)));
+    return rows.map(r => '• ' + r.who + ' — ' + r.review + ' — ' + r.stage).join('\n');
   }
 
   /** The cycle's working schedule as the {Schedule} block — proposed dates first. */
@@ -3739,7 +4250,9 @@ const PersonnelModule = (() => {
     // {Schedule} or {Assignments} too.
     const usesSchedule = (tmpl.subject + tmpl.body).indexOf('{Schedule}') !== -1;
     const usesAssignments = (tmpl.subject + tmpl.body).indexOf('{Assignments}') !== -1;
+    const usesFileStages = (tmpl.subject + tmpl.body).indexOf('{FileStages}') !== -1;
     const scheduleBlock = usesSchedule ? _scheduleBlockFor(year, user, roles) : '';
+    const fileStagesBlock = usesFileStages ? _fileStagesBlockFor(year) : '';
     const policyDocsBlock = _policyDocsBlock();
 
     const drafts = [];
@@ -3765,6 +4278,7 @@ const PersonnelModule = (() => {
         .replace(/\{Year\}/g, year)
         .replace(/\{Assignments\}/g, assignmentsBlock)
         .replace(/\{Schedule\}/g, scheduleBlock)
+        .replace(/\{FileStages\}/g, fileStagesBlock)
         .replace(/\{PolicyDocs\}/g, policyDocsBlock)
         .replace(/\{PortalLink\}/g, portalLink);
 
@@ -4601,7 +5115,13 @@ const PersonnelModule = (() => {
       }
       saved.push(k);
     });
-    return { saved: saved, gaps: SCHEDULE_GAPS() };
+
+    // Spacing feeds every cycle's computed schedule — reconcile open
+    // drafting tasks across ALL years (nothing to do if nothing changed).
+    const rec = saved.length ? _reconcileDraftTaskDueDates('', user) : { updated: 0, orphaned: 0 };
+
+    return { saved: saved, gaps: SCHEDULE_GAPS(),
+             tasksReconciled: rec.updated, tasksOrphanResolved: rec.orphaned };
   }
 
   /**
@@ -4724,7 +5244,31 @@ const PersonnelModule = (() => {
       DataService.insert(SHEET(), CYCLES_TAB(),
         Object.assign({ CycleID: DataService.generateId('CYC') }, fields));
     }
-    return getCycle({ academicYear: year }, user, roles);
+
+    // A different anchor (or letters date) moves this cycle's computed
+    // schedule — re-align the open drafting tasks with it.
+    const rec = _reconcileDraftTaskDueDates(year, user);
+
+    const out = getCycle({ academicYear: year }, user, roles);
+    out.tasksReconciled = rec.updated;
+    out.tasksOrphanResolved = rec.orphaned;
+    return out;
+  }
+
+  /**
+   * On-demand re-sync of dashboard drafting tasks: re-dates open tasks to
+   * the current effective drafts-due and resolves orphans (tasks no
+   * component vouches for). The manual lever for the two gaps the
+   * automatic hooks can't reach — deadlines moved upstream IN THE
+   * DEPARTMENT CALENDAR (no module mutation to hook), and orphans from a
+   * swallowed best-effort resolve. Same helper the schedule saves run;
+   * this just runs it on demand.
+   * @param {Object} payload - { academicYear? } '' = all cycles
+   */
+  function resyncTasks(payload, user, roles) {
+    _requireSuperAdmin(roles);
+    const rec = _reconcileDraftTaskDueDates(String((payload || {}).academicYear || ''), user);
+    return { tasksReconciled: rec.updated, tasksOrphanResolved: rec.orphaned };
   }
 
   /**
@@ -4903,6 +5447,9 @@ const PersonnelModule = (() => {
     committeeWorkload,
     exportWorkloadToSheet,
     caseAssignments,
+    listAssignmentHistory,
+    backfillAssignmentHistory,
+    resyncTasks,
     // Scheduler
     findCalendarDeadlines,
     computeCaseSchedule,
@@ -4939,3 +5486,36 @@ const PersonnelModule = (() => {
   };
 
 })();
+
+// ============================================================
+// PASTE-INS for the AssignmentHistory feature (do these FIRST,
+// then run setUp() — the tab must exist before the write hooks
+// run, or history rows silently evaporate at write time).
+// ============================================================
+//
+// 1) Config.gs — add to CONFIG.TABS (with the other Personnel tabs):
+//
+//    // Academic Personnel — drafting-assignment change trail
+//    ASSIGNMENT_HISTORY: 'AssignmentHistory',
+//
+// 2) Setup.gs — add to the SCHEMA map (near REVIEW_HISTORY):
+//
+//    ASSIGNMENT_HISTORY: {
+//      tab: 'AssignmentHistory',
+//      // Academic Personnel — one row per meaningful change to a
+//      // component's drafting assignment. Written best-effort by
+//      // assignComponent / markComponentDrafted (reopen lands via
+//      // assignComponent); read by listAssignmentHistory.
+//      //   Kind      — 'assignment' (assignee changed; Prev/New are
+//      //               emails, '' = unassigned/unknown) or 'status'
+//      //               (Prev/New are statuses).
+//      //   ChangedBy/ChangedAt — the actual actor and moment (backfilled
+//      //               rows carry the ORIGINAL audit-log values, which is
+//      //               why these aren't just the meta columns).
+//      //   Source    — '' (live) or 'backfill' (replayed from the audit
+//      //               log by backfillAssignmentHistory).
+//      headers: ['HistoryID', 'CaseID', 'ComponentID', 'Kind',
+//                'PrevValue', 'NewValue', 'ChangedBy', 'ChangedAt', 'Source',
+//                'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+//      seed: [],
+//    },

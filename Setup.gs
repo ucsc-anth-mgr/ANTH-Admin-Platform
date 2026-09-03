@@ -587,6 +587,11 @@ const SETUP_SCHEMA = {
     //   IsReappointment— derived: true when SubjectRank is Assistant-level.
     //   IsMandatory    — timing flag parsed from the Call string.
     //   Status         — open / in_progress / deferred / closed / completed.
+    //   Stage          — where an OPEN case sits within "in progress": a key
+    //                    from CONFIG.PERSONNEL.CASE_STAGES (e.g.
+    //                    'waiting_external_letters'), or '' when untracked.
+    //                    Descriptive only — gating logic keys on Status, and
+    //                    Stage is cleared when Status leaves 'open'.
     //   IsElected      — TRUE when the candidate ELECTED this review rather
     //                    than being listed on the Call. Covers faculty at
     //                    indefinite steps (Professor 5+), who are only
@@ -605,7 +610,7 @@ const SETUP_SCHEMA = {
               'SubjectRank', 'Step', 'CallActionRaw', 'OAFlag',
               'YrsRank', 'YrsStep', 'Qtrs',
               'IsReappointment', 'IsMandatory', 'IsElected',
-              'Status', 'EffectiveDate', 'Notes',
+              'Status', 'Stage', 'EffectiveDate', 'Notes',
               'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
     seed: [],
   },
@@ -747,6 +752,27 @@ const SETUP_SCHEMA = {
     headers: ['ReviewID', 'PersonEmail', 'ReviewDate', 'ReviewCode',
               'TitleAtTime', 'StepAtTime', 'AcademicYear', 'Source', 'CaseID',
               'Notes', 'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
+    seed: [],
+  },
+
+  ASSIGNMENT_HISTORY: {
+    tab: 'AssignmentHistory',
+    // Academic Personnel — one row per meaningful change to a component's
+    // drafting assignment. Written best-effort by assignComponent /
+    // markComponentDrafted (reopen lands via assignComponent); read by
+    // listAssignmentHistory; seeded once by backfillAssignmentHistory
+    // replaying the platform audit log.
+    //   Kind      — 'assignment' (assignee changed; PrevValue/NewValue are
+    //               emails, '' = unassigned or, on backfilled rows,
+    //               unknown-before) or 'status' (PrevValue/NewValue are
+    //               statuses: assigned → drafted, drafted → assigned).
+    //   ChangedBy/ChangedAt — the actual actor and moment. Backfilled rows
+    //               carry the ORIGINAL audit-log values, which is why these
+    //               aren't just the meta columns.
+    //   Source    — '' (live write) or 'backfill' (replayed from the log).
+    headers: ['HistoryID', 'CaseID', 'ComponentID', 'Kind',
+              'PrevValue', 'NewValue', 'ChangedBy', 'ChangedAt', 'Source',
+              'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'],
     seed: [],
   },
 
@@ -943,6 +969,7 @@ function setUp() {
   _setupTab(personnelSS, SETUP_SCHEMA.PERSONNEL_SETTINGS);
   _setupTab(personnelSS, SETUP_SCHEMA.COMMUNICATIONS_LOG);
   _setupTab(personnelSS, SETUP_SCHEMA.LETTER_WRITERS);
+  _setupTab(personnelSS, SETUP_SCHEMA.ASSIGNMENT_HISTORY);
   _tidyDefaultSheet(personnelSS);
 
   // Department Service module spreadsheet gets its five tabs
@@ -1152,7 +1179,7 @@ function checkSetup() {
     ['INDIVIDUAL_STUDIES', CONFIG.SHEETS.INDIVIDUAL_STUDIES,
      [SETUP_SCHEMA.INDIVIDUAL_STUDIES.tab, SETUP_SCHEMA.INDIVIDUAL_STUDIES_TEMPLATES.tab,
       SETUP_SCHEMA.INDIVIDUAL_STUDIES_SETTINGS.tab, SETUP_SCHEMA.INDIVIDUAL_STUDIES_GRAD.tab]],
-    ['PERSONNEL',    CONFIG.SHEETS.PERSONNEL,    [SETUP_SCHEMA.PERSON_ATTRIBUTES.tab, SETUP_SCHEMA.CASES.tab, SETUP_SCHEMA.REVIEW_HISTORY.tab, SETUP_SCHEMA.COMPONENTS.tab, SETUP_SCHEMA.CYCLES.tab, SETUP_SCHEMA.PERSONNEL_SETTINGS.tab, SETUP_SCHEMA.COMMUNICATIONS_LOG.tab, SETUP_SCHEMA.LETTER_WRITERS.tab]],
+    ['PERSONNEL',    CONFIG.SHEETS.PERSONNEL,    [SETUP_SCHEMA.PERSON_ATTRIBUTES.tab, SETUP_SCHEMA.CASES.tab, SETUP_SCHEMA.REVIEW_HISTORY.tab, SETUP_SCHEMA.COMPONENTS.tab, SETUP_SCHEMA.CYCLES.tab, SETUP_SCHEMA.PERSONNEL_SETTINGS.tab, SETUP_SCHEMA.COMMUNICATIONS_LOG.tab, SETUP_SCHEMA.LETTER_WRITERS.tab, SETUP_SCHEMA.ASSIGNMENT_HISTORY.tab]],
     ['SERVICE',      CONFIG.SHEETS.SERVICE,
      [SETUP_SCHEMA.SERVICE_CATALOG.tab, SETUP_SCHEMA.SERVICE_ASSIGNMENTS.tab,
       SETUP_SCHEMA.SERVICE_CORRECTIONS.tab, SETUP_SCHEMA.SERVICE_NOMINATIONS.tab,
@@ -1222,6 +1249,7 @@ function _schemaPlacement() {
     { sheetKey: 'PERSONNEL',    def: SETUP_SCHEMA.PERSONNEL_SETTINGS },
     { sheetKey: 'PERSONNEL',    def: SETUP_SCHEMA.COMMUNICATIONS_LOG },
     { sheetKey: 'PERSONNEL',    def: SETUP_SCHEMA.LETTER_WRITERS },
+    { sheetKey: 'PERSONNEL',    def: SETUP_SCHEMA.ASSIGNMENT_HISTORY },
     { sheetKey: 'SERVICE',      def: SETUP_SCHEMA.SERVICE_CATALOG },
     { sheetKey: 'SERVICE',      def: SETUP_SCHEMA.SERVICE_ASSIGNMENTS },
     { sheetKey: 'SERVICE',      def: SETUP_SCHEMA.SERVICE_CORRECTIONS },
