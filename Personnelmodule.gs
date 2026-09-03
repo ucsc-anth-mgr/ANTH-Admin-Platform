@@ -32,13 +32,14 @@ const PersonnelModule = (() => {
   // ── Tab manifest (TabRegistry) ─────────────────────────────
   // Declares this module's tabs for the platform's per-role visibility
   // system (Admin → Modules → Tabs). Keys/labels/icons mirror the UI's
-  // showTab views. DEFAULTS mirror the server-side gates: nearly every
-  // action in this module is _requireSuperAdmin, so every tab except
-  // Roster defaults to super_admin only (roles: []); Roster's reads
-  // (listRoster, listRanks, getReviewHistory) are unguarded, so it
-  // defaults to ['*'] — anyone the module itself admits. Widen a tab's
-  // roles in the Tabs editor if the module ever admits non-admins who
-  // should see more.
+  // showTab views. DEFAULTS are conservative: management tabs default to
+  // super_admin only (roles: []); Roster / My cases default to the
+  // committee. The server-side gates are TWO-TIER: most mutations admit
+  // the MANAGER_ROLES (super_admin + staff_manager) via _requireManager,
+  // while the Calendar tab's policy knobs and the history backfill stay
+  // _requireSuperAdmin. Grant a role its tabs in the Tabs editor
+  // (Admin → Modules → Tabs) — getVisibleTabs resolves through
+  // TabRegistry, so the sheet override is honored.
   // NOTE (Phase 1): `actions` and `floor` are declarative until the
   // dispatch gateway lands — a visible tab does NOT grant actions; the
   // in-module checks (_requireSuperAdmin, assignee checks) remain the
@@ -66,8 +67,8 @@ const PersonnelModule = (() => {
                 'reopenComponent', 'committeeWorkload', 'exportWorkloadToSheet',
                 'caseAssignments', 'listAssignmentHistory', 'backfillAssignmentHistory',
                 'resyncTasks'] },
-    // department_chair: VIEW access — the reads admit the chair; every
-    // mutation stays super_admin.
+    // department_chair: VIEW access — the reads admit the chair;
+    // mutations stay with the managers.
     { key: 'letters', label: 'Letter writers', icon: 'ti-mailbox',
       roles: ['department_chair'], floor: 'super_admin',
       actions: ['listLetterCases', 'listWriters', 'upsertWriter', 'setWriterStage',
@@ -272,7 +273,8 @@ const PersonnelModule = (() => {
    * Edit a person's rank/step/years/salary. Rank must be one of the mapped
    * titles; series and tier are RE-DERIVED from it (never set directly), so
    * the derived-attribute invariant holds. Years and salary are raw values.
-   * Writes via the same supersede path as import. super_admin only.
+   * Writes via the same supersede path as import. Manager-gated
+   * (super_admin / staff_manager).
    *
    * @param {Object} payload - {
    *     email, rank, step, yrsRank?, yrsStep?, salary?, note?
@@ -283,7 +285,7 @@ const PersonnelModule = (() => {
    * @returns { email, rank, step, series, tier, yrsRank, yrsStep, salary }
    */
   function updatePersonAttributes(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireManager(roles);
     const p = payload || {};
     const email = _email(p.email);
     if (!email) throw new Error('email is required.');
@@ -353,7 +355,7 @@ const PersonnelModule = (() => {
    *   mapping values are header names (or '' if not detected).
    */
   function detectColumns(p, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireManager(roles);
     const parsed = _parseCsv((p && p.csv) || '');
     if (!parsed.rows.length) throw new Error('No data rows found in the file.');
 
@@ -489,7 +491,7 @@ const PersonnelModule = (() => {
    * @returns { summary, willSet[], skipped[] }
    */
   function previewRankImport(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireManager(roles);
     const rows = _rowsFromPayload(payload);
     const plan = _evaluateRankRows({ rows: rows, mapping: (payload || {}).mapping });
     return {
@@ -509,7 +511,7 @@ const PersonnelModule = (() => {
    * @returns { summary, set[], skipped[] }
    */
   function commitRankImport(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireManager(roles);
     const rows = _rowsFromPayload(payload);
     const plan = _evaluateRankRows({ rows: rows, mapping: (payload || {}).mapping });
     const set = [];
@@ -770,34 +772,54 @@ const PersonnelModule = (() => {
   }
 
   /**
+   * The roles that MANAGE this module — full mutation rights everywhere
+   * except the Calendar tab's policy knobs (cycle anchors, schedule
+   * spacing, proposed dates) and the one-time history backfill, which
+   * stay super_admin-only. One list, one place to widen later.
+   */
+  const MANAGER_ROLES = ['super_admin', 'staff_manager'];
+
+  function _isManager(roles) {
+    roles = roles || [];
+    return MANAGER_ROLES.some(r => roles.indexOf(r) !== -1);
+  }
+
+  function _requireManager(roles) {
+    if (!_isManager(roles)) {
+      throw new Error('This action is limited to department administrators.');
+    }
+  }
+
+  /**
    * Reads of people data (roster, attributes, review history) are for the
-   * committee and admins — NOT everyone the shell lets into the module.
-   * Rank, step, and salary are sensitive; a role that grants module entry
-   * for some future tab must not implicitly grant these.
+   * managers, the committee, and admins — NOT everyone the shell lets into
+   * the module. Rank, step, and salary are sensitive; a role that grants
+   * module entry for some future tab must not implicitly grant these.
    */
   function _requireRosterAccess(roles) {
     roles = roles || [];
-    if (roles.indexOf('super_admin') !== -1) return;
+    if (_isManager(roles)) return;
     if (roles.indexOf(COMMITTEE_ROLE()) !== -1) return;
     throw new Error('Roster data is limited to the personnel committee and administrators.');
   }
 
   /**
    * View access for the department chair: the chair sees Cases and Letter
-   * writers (reads only) — every mutation stays super_admin. 'department_chair'
-   * is an identity role assigned in Admin → Users, per the platform's
-   * roles-as-identity convention.
+   * writers (reads only) — mutations stay with the managers.
+   * 'department_chair' is an identity role assigned in Admin → Users, per
+   * the platform's roles-as-identity convention. Managers pass implicitly
+   * (mutation rights imply read rights).
    */
   function _requireCaseView(roles) {
     roles = roles || [];
-    if (roles.indexOf('super_admin') !== -1) return;
+    if (_isManager(roles)) return;
     if (roles.indexOf('department_chair') !== -1) return;
     throw new Error('Case data is limited to the department chair and administrators.');
   }
 
   function _requireSuperAdmin(roles) {
     if (!roles || roles.indexOf('super_admin') === -1) {
-      throw new Error('Only a super_admin may import rank/step data.');
+      throw new Error('This action is limited to super administrators.');
     }
   }
 
@@ -937,7 +959,7 @@ const PersonnelModule = (() => {
    * @param {Object} p - { csv }
    */
   function detectCallColumns(p, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireManager(roles);
     const parsed = _parseCsv((p && p.csv) || '');
     if (!parsed.rows.length) throw new Error('No data rows found in the file.');
     const hints = {
@@ -964,7 +986,7 @@ const PersonnelModule = (() => {
    * @returns { summary, rows: [ per-row plan ] }
    */
   function previewCallImport(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireManager(roles);
     const p = payload || {};
     const rows = _parseCsv(p.csv || '').rows;
     const mapping = p.mapping || {};
@@ -1022,7 +1044,7 @@ const PersonnelModule = (() => {
    * @returns { summary, created[], updated[], skipped[] }
    */
   function commitCallImport(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireManager(roles);
     const p = payload || {};
     const year = String(p.academicYear || '').trim();
     if (!year) throw new Error('Academic year is required.');
@@ -1173,11 +1195,11 @@ const PersonnelModule = (() => {
    * Update a single case's editable fields (review type, status, stage,
    * subjectRank, step). Re-derives isReappointment from subjectRank if that
    * changes. Stage is a station within 'open' (see CASE_STAGES) — setting
-   * one forces Status open; leaving open clears it. super_admin only.
+   * one forces Status open; leaving open clears it. Manager-gated.
    * @param {Object} payload - { caseId, reviewType?, status?, stage?, subjectRank?, step? }
    */
   function updateCase(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireManager(roles);
     const p = payload || {};
     const id = String(p.caseId || '').trim();
     if (!id) throw new Error('caseId is required.');
@@ -1713,7 +1735,7 @@ const PersonnelModule = (() => {
    * @returns { resolved:{...}, schedule:{...}|null, warnings[] }
    */
   function computeCaseSchedule(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireManager(roles);
     const p = payload || {};
     const warnings = [];
 
@@ -1813,7 +1835,7 @@ const PersonnelModule = (() => {
    * @param {Object} p - { csv }
    */
   function detectHistoryColumns(p, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireManager(roles);
     const parsed = _parseCsv((p && p.csv) || '');
     if (!parsed.rows.length) throw new Error('No data rows found in the file.');
     const hints = {
@@ -1838,7 +1860,7 @@ const PersonnelModule = (() => {
    * @param {Object} payload - { csv, mapping }
    */
   function previewHistoryImport(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireManager(roles);
     const p = payload || {};
     const rows = _parseCsv(p.csv || '').rows;
     const mapping = p.mapping || {};
@@ -1896,11 +1918,11 @@ const PersonnelModule = (() => {
    * Commit the review-history import. Replaces each matched person's
    * IMPORTED history (Source='imported') with the ledger's review rows —
    * so re-running is idempotent (a re-import refreshes, never duplicates).
-   * Case-sourced entries (Source='case') are left untouched. super_admin only.
+   * Case-sourced entries (Source='case') are left untouched. Manager-gated.
    * @param {Object} payload - { csv, mapping }
    */
   function commitHistoryImport(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireManager(roles);
     const p = payload || {};
     const rows = _parseCsv(p.csv || '').rows;
     const mapping = p.mapping || {};
@@ -2250,7 +2272,7 @@ const PersonnelModule = (() => {
    * @param {Object} payload - { prospectiveDate? ('yyyy-MM-dd') }
    */
   function listAnticipatedCandidates(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireManager(roles);
     const p = payload || {};
     const prospective = String(p.prospectiveDate || '').trim() || _upcomingJuly1();
 
@@ -2361,7 +2383,7 @@ const PersonnelModule = (() => {
    * @returns { url, id, name, rowCount }
    */
   function exportAnticipatedToSheet(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireManager(roles);
     const res = listAnticipatedCandidates(payload || {}, user, roles);
     const data = _anticipatedExportRows(res);
     if (!data.rows.length) throw new Error('No anticipated candidates to export.');
@@ -2424,7 +2446,7 @@ const PersonnelModule = (() => {
    * @returns { csv, filename, rowCount }
    */
   function exportAnticipatedToCsv(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireManager(roles);
     const res = listAnticipatedCandidates(payload || {}, user, roles);
     const data = _anticipatedExportRows(res);
     if (!data.rows.length) throw new Error('No anticipated candidates to export.');
@@ -2526,7 +2548,7 @@ const PersonnelModule = (() => {
    *     subjectRank?, step?, status?, effectiveDate?, isElected?, notes? }
    */
   function createCase(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireManager(roles);
     const p = payload || {};
     const email = _email(p.candidateEmail);
     if (!email) throw new Error('A candidate is required.');
@@ -2974,7 +2996,7 @@ const PersonnelModule = (() => {
    * @param {Object} payload - { componentId, assignedTo, dueAt? }
    */
   function assignComponent(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireManager(roles);
     const p = payload || {};
     const id = String(p.componentId || '').trim();
     if (!id) throw new Error('componentId is required.');
@@ -3092,10 +3114,10 @@ const PersonnelModule = (() => {
     if (!found.length) throw new Error('Component not found: ' + id);
     const comp = found[0];
 
-    // The person who owes the draft can mark it done; so can a super admin.
+    // The person who owes the draft can mark it done; so can a manager.
     const isAssignee = _email(comp.AssignedTo) === _email(user);
-    if (!isAssignee && (roles || []).indexOf('super_admin') === -1) {
-      throw new Error('Only the assignee or a super admin can mark this drafted.');
+    if (!isAssignee && !_isManager(roles)) {
+      throw new Error('Only the assignee or a manager can mark this drafted.');
     }
 
     const fields = {
@@ -3121,7 +3143,7 @@ const PersonnelModule = (() => {
    * @param {Object} payload - { componentId }
    */
   function reopenComponent(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireManager(roles);
     const id = String((payload || {}).componentId || '').trim();
     if (!id) throw new Error('componentId is required.');
     const found = DataService.query(SHEET(), COMPONENTS_TAB(), 'ComponentID', id);
@@ -3552,7 +3574,7 @@ const PersonnelModule = (() => {
    * @param {Object} payload - { academicYear? }
    */
   function exportWorkloadToSheet(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireManager(roles);
     const rep = committeeWorkload(payload || {}, user, roles);
     if (!rep.members.length) throw new Error('Nothing to export — the committee is empty.');
 
@@ -3907,22 +3929,37 @@ const PersonnelModule = (() => {
    */
   function getVisibleTabs(payload, user, roles) {
     roles = roles || [];
-    const isSuper = roles.indexOf('super_admin') !== -1;
-    const visible = TABS.filter(t => {
-      if (isSuper) return true;
-      const tr = t.roles || [];
-      if (tr.indexOf('*') !== -1) return true;
-      return tr.some(r => roles.indexOf(r) !== -1);
-    }).map(t => ({ key: t.key, label: t.label, icon: t.icon }));
-    // Where to land: admins on Roster (their working view); a committee
+    // Resolution is delegated to TabRegistry.visibleTabs, so the
+    // ModuleTabs sheet overrides saved in Admin → Modules → Tabs actually
+    // take effect — the in-code manifest is only the DEFAULT. The registry
+    // never throws on sheet trouble (it degrades to manifest defaults
+    // internally); the manifest filter below is the last-resort fallback
+    // if the registry itself is unreachable.
+    let visible = null;
+    try {
+      visible = TabRegistry.visibleTabs('personnel', roles);
+    } catch (err) {
+      Logger.log('getVisibleTabs: TabRegistry unavailable, using manifest defaults: ' + err);
+    }
+    if (!Array.isArray(visible)) {
+      const isSuper = roles.indexOf('super_admin') !== -1;
+      visible = TABS.filter(t => {
+        if (isSuper) return true;
+        const tr = t.roles || [];
+        if (tr.indexOf('*') !== -1) return true;
+        return tr.some(r => roles.indexOf(r) !== -1);
+      }).map(t => ({ key: t.key, label: t.label, icon: t.icon }));
+    }
+    // Where to land: managers on Roster (their working view); a committee
     // member on My cases (theirs); otherwise the first visible tab.
+    const canEdit = _isManager(roles);
     const keys = visible.map(t => t.key);
     let home = keys[0] || '';
-    if (isSuper && keys.indexOf('roster') !== -1) home = 'roster';
-    else if (!isSuper && keys.indexOf('mycases') !== -1) home = 'mycases';
+    if (canEdit && keys.indexOf('roster') !== -1) home = 'roster';
+    else if (!canEdit && keys.indexOf('mycases') !== -1) home = 'mycases';
     // canEdit tells the UI whether to render mutation affordances at all —
     // the server-side action gates remain the enforcement.
-    return { tabs: visible, home: home, canEdit: isSuper };
+    return { tabs: visible, home: home, canEdit: canEdit };
   }
 
   function COMM_LOG_TAB() { return CONFIG.TABS.COMMUNICATIONS_LOG; }
@@ -3981,7 +4018,7 @@ const PersonnelModule = (() => {
 
   /** The templates, for the editor UI. */
   function getCommTemplates(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireManager(roles);
     return {
       kinds: COMM_KINDS.map(k => Object.assign({ kind: k, builtIn: true }, _commTemplate(k)))
         .concat(_customKinds().map(c => Object.assign({ kind: c.key, builtIn: false }, _commTemplate(c.key)))),
@@ -3995,7 +4032,7 @@ const PersonnelModule = (() => {
    * @param {Object} payload - { label }
    */
   function addCommTemplate(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireManager(roles);
     const label = String((payload || {}).label || '').trim();
     if (!label) throw new Error('Give the template a name.');
     let key = 'c_' + label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40);
@@ -4015,7 +4052,7 @@ const PersonnelModule = (() => {
    *  any messages already sent under it — the kind key in old log rows just
    *  no longer resolves to a live template. */
   function removeCommTemplate(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireManager(roles);
     const kind = String((payload || {}).kind || '').trim();
     if (COMM_KINDS.indexOf(kind) !== -1) throw new Error('The built-in templates can be edited but not removed.');
     const list = _customKinds();
@@ -4088,7 +4125,7 @@ const PersonnelModule = (() => {
 
   /** The policy-documents list, for the management card. */
   function listPolicyDocs(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireManager(roles);
     return { docs: _policyDocs() };
   }
 
@@ -4099,7 +4136,7 @@ const PersonnelModule = (() => {
    * @param {Object} payload - { docs: [{name, url}] }
    */
   function savePolicyDocs(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireManager(roles);
     const docs = (Array.isArray((payload || {}).docs) ? payload.docs : [])
       .map(d => ({ name: String((d || {}).name || '').trim(), url: String((d || {}).url || '').trim() }))
       .filter(d => d.name && d.url);
@@ -4118,7 +4155,7 @@ const PersonnelModule = (() => {
 
   /** Save a template override to the Settings tab. Blank reverts to the default. */
   function saveCommTemplate(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireManager(roles);
     const p = payload || {};
     const kind = String(p.kind || '').trim();
     if (_allKindKeys().indexOf(kind) === -1) throw new Error('Unknown message kind: ' + kind);
@@ -4189,7 +4226,11 @@ const PersonnelModule = (() => {
 
   /** The cycle's working schedule as the {Schedule} block — proposed dates first. */
   function _scheduleBlockFor(year, user, roles) {
-    const rep = computeCycleSchedule({ academicYear: year }, user, roles);
+    // Internal read with elevated roles: the CALLER's gate
+    // (previewCommunication → _requireManager) is the boundary; the cycle
+    // actions themselves stay super_admin-only externally. Same pattern as
+    // myAssignments' cycle read.
+    const rep = computeCycleSchedule({ academicYear: year }, user, ['super_admin']);
     if (!rep.schedules) return '(No schedule could be computed for ' + year + '.)';
     const props = rep.proposedDates || {};
     const section = (label, sch, p) => {
@@ -4227,7 +4268,7 @@ const PersonnelModule = (() => {
    * @param {Object} payload - { kind, academicYear }
    */
   function previewCommunication(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireManager(roles);
     const p = payload || {};
     const kind = String(p.kind || '').trim();
     if (_allKindKeys().indexOf(kind) === -1) throw new Error('Unknown message kind: ' + kind);
@@ -4313,7 +4354,7 @@ const PersonnelModule = (() => {
    * @param {Object} payload - { kind, academicYear, drafts: [{email, subject, body}] }
    */
   function sendCommunications(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireManager(roles);
     const p = payload || {};
     const kind = String(p.kind || '').trim();
     if (_allKindKeys().indexOf(kind) === -1) throw new Error('Unknown message kind: ' + kind);
@@ -4361,7 +4402,7 @@ const PersonnelModule = (() => {
    * @param {Object} payload - { kind, academicYear, drafts: [{email, subject, body}] }
    */
   function draftCommunications(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireManager(roles);
     const p = payload || {};
     const kind = String(p.kind || '').trim();
     if (_allKindKeys().indexOf(kind) === -1) throw new Error('Unknown message kind: ' + kind);
@@ -4399,7 +4440,7 @@ const PersonnelModule = (() => {
 
   /** Log a draft the user copied into their own mail client. */
   function logCopiedCommunication(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireManager(roles);
     const p = payload || {};
     _logComm(String(p.kind || ''), String(p.academicYear || ''), _email(p.recipient),
              String(p.subject || ''), String(p.body || ''), 'copied', user);
@@ -4408,7 +4449,7 @@ const PersonnelModule = (() => {
 
   /** The most recent log entries, newest first. */
   function listCommunicationsLog(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireManager(roles);
     const limit = Math.min(Number((payload || {}).limit) || 20, 100);
     const rows = DataService.getAll(SHEET(), COMM_LOG_TAB()).map(r => ({
       kind: r.Kind, academicYear: r.AcademicYear, recipient: r.Recipient,
@@ -4432,7 +4473,7 @@ const PersonnelModule = (() => {
    */
   function myAssignments(payload, user, roles) {
     roles = roles || [];
-    if (roles.indexOf('super_admin') === -1 && roles.indexOf(COMMITTEE_ROLE()) === -1) {
+    if (!_isManager(roles) && roles.indexOf(COMMITTEE_ROLE()) === -1) {
       throw new Error('This view is for personnel committee members.');
     }
     const me = _email(user);
@@ -4650,7 +4691,7 @@ const PersonnelModule = (() => {
    *                             email, homepage, suggestedBy }
    */
   function upsertWriter(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireManager(roles);
     const p = payload || {};
     const name = String(p.name || '').trim();
     if (!name) throw new Error('The writer\'s name is required.');
@@ -4694,7 +4735,7 @@ const PersonnelModule = (() => {
 
   /** Move a writer's stage — free movement, always logged. */
   function setWriterStage(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireManager(roles);
     const p = payload || {};
     const stage = String(p.stage || '').trim();
     if (!LETTER_STAGES().some(s => s.key === stage)) throw new Error('Unknown stage: ' + stage);
@@ -4711,7 +4752,7 @@ const PersonnelModule = (() => {
 
   /** Append a follow-up note to the writer's trail. */
   function addWriterNote(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireManager(roles);
     const p = payload || {};
     const note = String(p.note || '').trim();
     if (!note) throw new Error('The note is empty.');
@@ -4729,7 +4770,7 @@ const PersonnelModule = (() => {
    * @param {Object} payload - { writerId, filename, base64 }
    */
   function uploadWriterEvidence(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireManager(roles);
     const p = payload || {};
     const w = _writerRow(p.writerId);
     const filename = String(p.filename || '').trim() || 'evidence.pdf';
@@ -4782,7 +4823,7 @@ const PersonnelModule = (() => {
    * @param {Object} payload - { writerId, fileId }
    */
   function removeWriterEvidence(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireManager(roles);
     const p = payload || {};
     const w = _writerRow(p.writerId);
     const fileId = String(p.fileId || '').trim();
@@ -4811,7 +4852,7 @@ const PersonnelModule = (() => {
   /** Remove a writer row (with the UI confirming first). The Drive evidence
    *  files are NOT deleted — records outlive roster pruning. */
   function removeWriter(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireManager(roles);
     const w = _writerRow((payload || {}).writerId);
     const sheet = SpreadsheetApp.openById(SHEET()).getSheetByName(WRITERS_TAB());
     const data = sheet.getDataRange().getValues();
@@ -4830,7 +4871,7 @@ const PersonnelModule = (() => {
    * answer to "where do we stand on letters". Lands in EXPORT_FOLDER_ID.
    */
   function exportWritersToSheet(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireManager(roles);
     const cases = listLetterCases({}, user, roles).cases || [];
     if (!cases.length) throw new Error('Nothing to export — no promotion or tracked cases.');
 
@@ -5266,7 +5307,7 @@ const PersonnelModule = (() => {
    * @param {Object} payload - { academicYear? } '' = all cycles
    */
   function resyncTasks(payload, user, roles) {
-    _requireSuperAdmin(roles);
+    _requireManager(roles);
     const rec = _reconcileDraftTaskDueDates(String((payload || {}).academicYear || ''), user);
     return { tasksReconciled: rec.updated, tasksOrphanResolved: rec.orphaned };
   }
